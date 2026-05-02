@@ -7,10 +7,11 @@
 pub mod cost;
 pub mod redact;
 
-pub use cost::{estimate_usd, BudgetCfg, BudgetCheck, BudgetLevel, CostEngine, CostEvent, CostSummary};
+pub use cost::{
+    estimate_usd, BudgetCfg, BudgetCheck, BudgetLevel, CostEngine, CostEvent, CostSummary,
+};
 pub use redact::{
-    classify_secret, default_vault_path, fingerprint_of,
-    Redactor, SecretKind, Vault, VaultEntry,
+    classify_secret, default_vault_path, fingerprint_of, Redactor, SecretKind, Vault, VaultEntry,
 };
 
 use serde::{Deserialize, Serialize};

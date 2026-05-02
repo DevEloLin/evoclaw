@@ -5,7 +5,10 @@
 //! Phase 3 (PRD §42 token-economy work). One mod covers DeepSeek, Kimi,
 //! Qwen, Ollama, vLLM, OpenRouter — anything OpenAI-compat.
 
-use crate::{ChatRequest, Message, ProviderError, Provider, Role, StreamEvent, ToolCall, ToolPayload, ToolSpec, Usage};
+use crate::{
+    ChatRequest, Message, Provider, ProviderError, Role, StreamEvent, ToolCall, ToolPayload,
+    ToolSpec, Usage,
+};
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
 use serde::Deserialize;
@@ -20,7 +23,11 @@ pub struct OpenAiCompatProvider {
 }
 
 impl OpenAiCompatProvider {
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
@@ -53,7 +60,10 @@ impl Provider for OpenAiCompatProvider {
             let body = resp.text().await.unwrap_or_default();
             return Err(ProviderError::Status { status, body });
         }
-        let raw: RawResponse = resp.json().await.map_err(|e| ProviderError::Decode(e.to_string()))?;
+        let raw: RawResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Decode(e.to_string()))?;
         let events = raw.into_events();
         Ok(stream::iter(events.into_iter().map(Ok)).boxed())
     }
@@ -86,11 +96,16 @@ fn serialize_message(m: &Message) -> Value {
     let mut v = json!({ "role": role, "content": m.content });
     if !m.tool_calls.is_empty() {
         v["tool_calls"] = Value::Array(
-            m.tool_calls.iter().map(|c| json!({
-                "id": c.id,
-                "type": "function",
-                "function": { "name": c.name, "arguments": c.arguments.to_string() }
-            })).collect(),
+            m.tool_calls
+                .iter()
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": { "name": c.name, "arguments": c.arguments.to_string() }
+                    })
+                })
+                .collect(),
         );
     }
     if !m.tool_results.is_empty() {
@@ -166,7 +181,8 @@ impl RawResponse {
                 events.push(StreamEvent::Delta(text));
             }
             for tc in choice.message.tool_calls {
-                let arguments: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
+                let arguments: Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
                 events.push(StreamEvent::ToolCallStart(ToolCall {
                     id: tc.id,
                     name: tc.function.name,
@@ -212,7 +228,11 @@ mod tests {
 
     #[test]
     fn build_body_includes_tools_when_full() {
-        let spec = ToolSpec { name: "read_file".into(), description: "x".into(), schema: json!({}) };
+        let spec = ToolSpec {
+            name: "read_file".into(),
+            description: "x".into(),
+            schema: json!({}),
+        };
         let req = ChatRequest {
             model: "m".into(),
             messages: vec![Message::user("hi")],
@@ -235,7 +255,11 @@ mod tests {
                     tool_calls: vec![],
                 },
             }],
-            usage: Some(RawUsage { prompt_tokens: 100, completion_tokens: 5, cached_tokens: 60 }),
+            usage: Some(RawUsage {
+                prompt_tokens: 100,
+                completion_tokens: 5,
+                cached_tokens: 60,
+            }),
         };
         let events = raw.into_events();
         // Delta, ToolCallFinish, Usage, Done

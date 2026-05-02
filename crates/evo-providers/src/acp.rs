@@ -17,19 +17,29 @@ pub struct AcpProvider {
 
 impl AcpProvider {
     pub async fn spawn(agent_id: &str) -> Result<Self, ProviderError> {
-        let cfg = evo_acp_client::load_agent(agent_id).await
-            .map_err(|e| ProviderError::Auth(format!(
-                "load agent {agent_id}: {e}; run `evoclaw agent add {agent_id}` first")))?;
+        let cfg = evo_acp_client::load_agent(agent_id).await.map_err(|e| {
+            ProviderError::Auth(format!(
+                "load agent {agent_id}: {e}; run `evoclaw agent add {agent_id}` first"
+            ))
+        })?;
         let client = Arc::new(evo_acp_client::AcpClient::new());
-        client.spawn(&cfg).await
-            .map_err(|e| ProviderError::Auth(format!(
+        client.spawn(&cfg).await.map_err(|e| {
+            ProviderError::Auth(format!(
                 "spawn {} failed: {e}; install: {}",
                 cfg.command,
-                evo_acp_client::find_agent(agent_id).map(|p| p.install_hint).unwrap_or("(catalog)"),
-            )))?;
-        client.initialize("evoclaw", env!("CARGO_PKG_VERSION")).await
+                evo_acp_client::find_agent(agent_id)
+                    .map(|p| p.install_hint)
+                    .unwrap_or("(catalog)"),
+            ))
+        })?;
+        client
+            .initialize("evoclaw", env!("CARGO_PKG_VERSION"))
+            .await
             .map_err(|e| ProviderError::Auth(format!("ACP initialize: {e}")))?;
-        Ok(Self { client, agent_id: agent_id.into() })
+        Ok(Self {
+            client,
+            agent_id: agent_id.into(),
+        })
     }
 }
 
@@ -39,14 +49,22 @@ impl Provider for AcpProvider {
         &self,
         req: ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
-        let prompt_text = req.messages.iter()
+        let prompt_text = req
+            .messages
+            .iter()
             .rev()
             .find(|m| matches!(m.role, Role::User))
             .map(|m| m.content.clone())
             .unwrap_or_default();
-        let session_id = self.client.new_session().await
+        let session_id = self
+            .client
+            .new_session()
+            .await
             .map_err(|e| ProviderError::Auth(format!("session/new: {e}")))?;
-        let response = self.client.prompt(&session_id, &prompt_text).await
+        let response = self
+            .client
+            .prompt(&session_id, &prompt_text)
+            .await
             .map_err(|e| ProviderError::Auth(format!("session/prompt: {e}")))?;
         let text = extract_response_text(&response);
         let mut events: Vec<Result<StreamEvent, ProviderError>> = Vec::new();
@@ -61,26 +79,42 @@ impl Provider for AcpProvider {
 }
 
 fn extract_response_text(v: &serde_json::Value) -> String {
-    if let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+    if let Some(blocks) = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
         let mut s = String::new();
         for b in blocks {
             if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                if let Some(t) = b.get("text").and_then(|t| t.as_str()) { s.push_str(t); }
+                if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                    s.push_str(t);
+                }
             }
         }
-        if !s.is_empty() { return s; }
+        if !s.is_empty() {
+            return s;
+        }
     }
     if let Some(blocks) = v.get("content").and_then(|c| c.as_array()) {
         let mut s = String::new();
         for b in blocks {
             if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                if let Some(t) = b.get("text").and_then(|t| t.as_str()) { s.push_str(t); }
+                if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                    s.push_str(t);
+                }
             }
         }
-        if !s.is_empty() { return s; }
+        if !s.is_empty() {
+            return s;
+        }
     }
-    if let Some(t) = v.as_str() { return t.to_string(); }
-    if let Some(t) = v.get("text").and_then(|t| t.as_str()) { return t.to_string(); }
+    if let Some(t) = v.as_str() {
+        return t.to_string();
+    }
+    if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
+        return t.to_string();
+    }
     serde_json::to_string(v).unwrap_or_default()
 }
 

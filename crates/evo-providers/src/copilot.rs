@@ -4,7 +4,10 @@
 //! - Short-lived `tid=*` session token held in memory, refreshed on demand
 //! - Body wire format = OpenAI-compat (Copilot accepts `chat/completions`)
 
-use crate::{ChatRequest, Message, Provider, ProviderError, Role, StreamEvent, ToolCall, ToolPayload, ToolSpec, Usage};
+use crate::{
+    ChatRequest, Message, Provider, ProviderError, Role, StreamEvent, ToolCall, ToolPayload,
+    ToolSpec, Usage,
+};
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -29,13 +32,22 @@ pub struct DeviceCodeResponse {
     pub interval: u64,
     pub expires_in: u64,
 }
-fn default_interval() -> u64 { 5 }
+fn default_interval() -> u64 {
+    5
+}
 
 #[derive(Debug, Serialize)]
-struct DeviceCodeRequest<'a> { client_id: &'a str, scope: &'a str }
+struct DeviceCodeRequest<'a> {
+    client_id: &'a str,
+    scope: &'a str,
+}
 
 #[derive(Debug, Serialize)]
-struct AccessTokenRequest<'a> { client_id: &'a str, device_code: &'a str, grant_type: &'a str }
+struct AccessTokenRequest<'a> {
+    client_id: &'a str,
+    device_code: &'a str,
+    grant_type: &'a str,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -44,17 +56,26 @@ enum AccessTokenResponse {
     Granted { access_token: String },
 }
 
-pub async fn request_device_code(client: &reqwest::Client) -> Result<DeviceCodeResponse, ProviderError> {
-    let resp = client.post(DEVICE_CODE_URL)
+pub async fn request_device_code(
+    client: &reqwest::Client,
+) -> Result<DeviceCodeResponse, ProviderError> {
+    let resp = client
+        .post(DEVICE_CODE_URL)
         .header("Accept", "application/json")
-        .json(&DeviceCodeRequest { client_id: CLIENT_ID, scope: "read:user" })
-        .send().await?;
+        .json(&DeviceCodeRequest {
+            client_id: CLIENT_ID,
+            scope: "read:user",
+        })
+        .send()
+        .await?;
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
         return Err(ProviderError::Status { status, body });
     }
-    resp.json().await.map_err(|e| ProviderError::Decode(e.to_string()))
+    resp.json()
+        .await
+        .map_err(|e| ProviderError::Decode(e.to_string()))
 }
 
 pub async fn poll_access_token(
@@ -69,19 +90,25 @@ pub async fn poll_access_token(
             return Err(ProviderError::Auth("device flow timed out".into()));
         }
         tokio::time::sleep(std::time::Duration::from_secs(interval_secs.max(2))).await;
-        let resp = client.post(ACCESS_TOKEN_URL)
+        let resp = client
+            .post(ACCESS_TOKEN_URL)
             .header("Accept", "application/json")
             .json(&AccessTokenRequest {
                 client_id: CLIENT_ID,
                 device_code,
                 grant_type: "urn:ietf:params:oauth:grant-type:device_code",
             })
-            .send().await?;
-        let parsed: AccessTokenResponse = resp.json().await
+            .send()
+            .await?;
+        let parsed: AccessTokenResponse = resp
+            .json()
+            .await
             .map_err(|e| ProviderError::Decode(e.to_string()))?;
         match parsed {
             AccessTokenResponse::Pending { error } => {
-                if error == "authorization_pending" || error == "slow_down" { continue; }
+                if error == "authorization_pending" || error == "slow_down" {
+                    continue;
+                }
                 return Err(ProviderError::Auth(error));
             }
             AccessTokenResponse::Granted { access_token } => return Ok(access_token),
@@ -90,10 +117,16 @@ pub async fn poll_access_token(
 }
 
 #[derive(Debug, Deserialize)]
-struct CopilotTokenResponse { token: String, expires_at: u64 }
+struct CopilotTokenResponse {
+    token: String,
+    expires_at: u64,
+}
 
 #[derive(Debug, Clone)]
-struct EphemeralToken { token: String, expires_at_unix: u64 }
+struct EphemeralToken {
+    token: String,
+    expires_at_unix: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct CopilotProvider {
@@ -115,7 +148,9 @@ impl CopilotProvider {
 
     async fn fresh_session_token(&self) -> Result<String, ProviderError> {
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         {
             let cache = self.cache.lock().await;
             if let Some(tok) = cache.as_ref() {
@@ -124,20 +159,28 @@ impl CopilotProvider {
                 }
             }
         }
-        let resp = self.client.get(COPILOT_TOKEN_URL)
+        let resp = self
+            .client
+            .get(COPILOT_TOKEN_URL)
             .header("Authorization", format!("token {}", self.github_token))
             .header("Editor-Version", EDITOR_VERSION)
             .header("Editor-Plugin-Version", EDITOR_PLUGIN_VERSION)
             .header("User-Agent", "GitHubCopilot/1.0")
-            .send().await?;
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(ProviderError::Status { status, body });
         }
-        let parsed: CopilotTokenResponse = resp.json().await
+        let parsed: CopilotTokenResponse = resp
+            .json()
+            .await
             .map_err(|e| ProviderError::Decode(e.to_string()))?;
-        let tok = EphemeralToken { token: parsed.token, expires_at_unix: parsed.expires_at };
+        let tok = EphemeralToken {
+            token: parsed.token,
+            expires_at_unix: parsed.expires_at,
+        };
         let copy = tok.token.clone();
         let mut cache = self.cache.lock().await;
         *cache = Some(tok);
@@ -153,20 +196,25 @@ impl Provider for CopilotProvider {
     ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
         let session_token = self.fresh_session_token().await?;
         let body = build_body(&req);
-        let resp = self.client.post(COPILOT_CHAT_URL)
+        let resp = self
+            .client
+            .post(COPILOT_CHAT_URL)
             .header("Authorization", format!("Bearer {session_token}"))
             .header("Editor-Version", EDITOR_VERSION)
             .header("Editor-Plugin-Version", EDITOR_PLUGIN_VERSION)
             .header("Copilot-Integration-Id", "vscode-chat")
             .header("OpenAI-Intent", "conversation-edits")
             .json(&body)
-            .send().await?;
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(ProviderError::Status { status, body });
         }
-        let raw: RawOpenAiLikeResponse = resp.json().await
+        let raw: RawOpenAiLikeResponse = resp
+            .json()
+            .await
             .map_err(|e| ProviderError::Decode(e.to_string()))?;
         let events = raw.into_events();
         Ok(stream::iter(events.into_iter().map(Ok)).boxed())
@@ -192,15 +240,24 @@ fn build_body(req: &ChatRequest) -> Value {
 
 fn serialize_message(m: &Message) -> Value {
     let role = match m.role {
-        Role::System => "system", Role::User => "user",
-        Role::Assistant => "assistant", Role::Tool => "tool",
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
     };
     let mut v = json!({"role": role, "content": m.content});
     if !m.tool_calls.is_empty() {
-        v["tool_calls"] = Value::Array(m.tool_calls.iter().map(|c| json!({
-            "id": c.id, "type": "function",
-            "function": {"name": c.name, "arguments": c.arguments.to_string()}
-        })).collect());
+        v["tool_calls"] = Value::Array(
+            m.tool_calls
+                .iter()
+                .map(|c| {
+                    json!({
+                        "id": c.id, "type": "function",
+                        "function": {"name": c.name, "arguments": c.arguments.to_string()}
+                    })
+                })
+                .collect(),
+        );
     }
     if !m.tool_results.is_empty() {
         if let Some(tr) = m.tool_results.first() {
@@ -215,22 +272,38 @@ fn serialize_tool(t: &ToolSpec) -> Value {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawOpenAiLikeResponse { choices: Vec<RawChoice>, #[serde(default)] usage: Option<RawUsage> }
-#[derive(Debug, Deserialize)]
-struct RawChoice { message: RawMsg }
-#[derive(Debug, Deserialize)]
-struct RawMsg {
-    #[serde(default)] content: Option<String>,
-    #[serde(default)] tool_calls: Vec<RawToolCall>,
+struct RawOpenAiLikeResponse {
+    choices: Vec<RawChoice>,
+    #[serde(default)]
+    usage: Option<RawUsage>,
 }
 #[derive(Debug, Deserialize)]
-struct RawToolCall { id: String, function: RawFn }
+struct RawChoice {
+    message: RawMsg,
+}
 #[derive(Debug, Deserialize)]
-struct RawFn { name: String, arguments: String }
+struct RawMsg {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<RawToolCall>,
+}
+#[derive(Debug, Deserialize)]
+struct RawToolCall {
+    id: String,
+    function: RawFn,
+}
+#[derive(Debug, Deserialize)]
+struct RawFn {
+    name: String,
+    arguments: String,
+}
 #[derive(Debug, Deserialize)]
 struct RawUsage {
-    prompt_tokens: u64, completion_tokens: u64,
-    #[serde(default)] cached_tokens: u64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 impl RawOpenAiLikeResponse {
@@ -241,9 +314,12 @@ impl RawOpenAiLikeResponse {
                 events.push(StreamEvent::Delta(text));
             }
             for tc in c.message.tool_calls {
-                let arguments: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
+                let arguments: Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
                 events.push(StreamEvent::ToolCallStart(ToolCall {
-                    id: tc.id, name: tc.function.name, arguments,
+                    id: tc.id,
+                    name: tc.function.name,
+                    arguments,
                 }));
             }
             events.push(StreamEvent::ToolCallFinish);
@@ -266,12 +342,17 @@ mod tests {
 
     #[test]
     fn build_body_includes_tools_when_full() {
-        let spec = ToolSpec { name: "x".into(), description: "y".into(), schema: json!({}) };
+        let spec = ToolSpec {
+            name: "x".into(),
+            description: "y".into(),
+            schema: json!({}),
+        };
         let req = ChatRequest {
             model: "gpt-4o".into(),
             messages: vec![Message::user("hi")],
             tools: ToolPayload::Full(vec![spec]),
-            max_tokens: 100, temperature: 0.0,
+            max_tokens: 100,
+            temperature: 0.0,
         };
         let body = build_body(&req);
         let tools = body.get("tools").unwrap().as_array().unwrap();
@@ -281,8 +362,17 @@ mod tests {
     #[test]
     fn raw_response_synthesises_text_and_finish() {
         let raw = RawOpenAiLikeResponse {
-            choices: vec![RawChoice { message: RawMsg { content: Some("ok".into()), tool_calls: vec![] } }],
-            usage: Some(RawUsage { prompt_tokens: 10, completion_tokens: 1, cached_tokens: 0 }),
+            choices: vec![RawChoice {
+                message: RawMsg {
+                    content: Some("ok".into()),
+                    tool_calls: vec![],
+                },
+            }],
+            usage: Some(RawUsage {
+                prompt_tokens: 10,
+                completion_tokens: 1,
+                cached_tokens: 0,
+            }),
         };
         let events = raw.into_events();
         assert!(matches!(events[0], StreamEvent::Delta(_)));
@@ -291,7 +381,10 @@ mod tests {
 
     #[test]
     fn ephemeral_token_struct_clones() {
-        let t = EphemeralToken { token: "tid=abc".into(), expires_at_unix: 9999 };
+        let t = EphemeralToken {
+            token: "tid=abc".into(),
+            expires_at_unix: 9999,
+        };
         let c = t.clone();
         assert_eq!(c.token, "tid=abc");
     }

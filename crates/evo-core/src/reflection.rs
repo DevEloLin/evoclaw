@@ -4,7 +4,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SkillUpdateDecision { Create, Update, Merge, Deprecate, None }
+pub enum SkillUpdateDecision {
+    Create,
+    Update,
+    Merge,
+    Deprecate,
+    None,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReflectionRecord {
@@ -99,7 +105,10 @@ mod tests {
         }"#;
         let r = parse_reflection(raw).unwrap();
         assert!(r.success);
-        assert!(matches!(r.skill_update_decision, SkillUpdateDecision::Create));
+        assert!(matches!(
+            r.skill_update_decision,
+            SkillUpdateDecision::Create
+        ));
     }
 
     #[test]

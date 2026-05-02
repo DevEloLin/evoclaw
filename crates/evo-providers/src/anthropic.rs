@@ -23,7 +23,11 @@ impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self::with_base_url("https://api.anthropic.com/v1", api_key, model)
     }
-    pub fn with_base_url(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn with_base_url(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
@@ -31,7 +35,9 @@ impl AnthropicProvider {
             client: reqwest::Client::new(),
         }
     }
-    fn endpoint(&self) -> String { format!("{}/messages", self.base_url) }
+    fn endpoint(&self) -> String {
+        format!("{}/messages", self.base_url)
+    }
 }
 
 #[async_trait]
@@ -54,7 +60,10 @@ impl Provider for AnthropicProvider {
             let body = resp.text().await.unwrap_or_default();
             return Err(ProviderError::Status { status, body });
         }
-        let raw: RawResponse = resp.json().await.map_err(|e| ProviderError::Decode(e.to_string()))?;
+        let raw: RawResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Decode(e.to_string()))?;
         let events = raw.into_events();
         Ok(stream::iter(events.into_iter().map(Ok)).boxed())
     }
@@ -90,8 +99,13 @@ fn build_body(req: &ChatRequest) -> Value {
 }
 
 fn system_cache(req: &ChatRequest) -> bool {
-    req.messages.iter().any(|m| m.role == Role::System
-        && matches!(m.cache_control, CacheKind::Persistent | CacheKind::Ephemeral))
+    req.messages.iter().any(|m| {
+        m.role == Role::System
+            && matches!(
+                m.cache_control,
+                CacheKind::Persistent | CacheKind::Ephemeral
+            )
+    })
 }
 
 fn system_block(text: &str, cache: bool) -> Value {
@@ -163,8 +177,14 @@ struct RawResponse {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RawContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     #[serde(other)]
     Other,
 }
@@ -186,7 +206,11 @@ impl RawResponse {
                     events.push(StreamEvent::Delta(text));
                 }
                 RawContentBlock::ToolUse { id, name, input } => {
-                    events.push(StreamEvent::ToolCallStart(ToolCall { id, name, arguments: input }));
+                    events.push(StreamEvent::ToolCallStart(ToolCall {
+                        id,
+                        name,
+                        arguments: input,
+                    }));
                 }
                 _ => {}
             }
@@ -237,7 +261,8 @@ mod tests {
             model: "claude".into(),
             messages: vec![sys, Message::user("hi")],
             tools: ToolPayload::Full(Vec::new()),
-            max_tokens: 100, temperature: 0.0,
+            max_tokens: 100,
+            temperature: 0.0,
         };
         let body = build_body(&req);
         let sysv = &body["system"];
@@ -248,7 +273,8 @@ mod tests {
     #[test]
     fn serialize_tool_uses_input_schema_not_parameters() {
         let t = ToolSpec {
-            name: "x".into(), description: "y".into(),
+            name: "x".into(),
+            description: "y".into(),
             schema: json!({"type": "object"}),
         };
         let s = serialize_tool(&t);
@@ -260,14 +286,20 @@ mod tests {
     fn raw_response_synthesises_events_with_tool_use() {
         let raw = RawResponse {
             content: vec![
-                RawContentBlock::Text { text: "thinking".into() },
+                RawContentBlock::Text {
+                    text: "thinking".into(),
+                },
                 RawContentBlock::ToolUse {
                     id: "toolu_1".into(),
                     name: "read_file".into(),
                     input: json!({"path": "x"}),
                 },
             ],
-            usage: Some(RawUsage { input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 60 }),
+            usage: Some(RawUsage {
+                input_tokens: 100,
+                output_tokens: 5,
+                cache_read_input_tokens: 60,
+            }),
         };
         let events = raw.into_events();
         assert!(matches!(events[0], StreamEvent::Delta(_)));
@@ -278,11 +310,15 @@ mod tests {
     #[test]
     fn raw_response_no_tool_call_terminates_uniformly() {
         let raw = RawResponse {
-            content: vec![RawContentBlock::Text { text: "hello".into() }],
+            content: vec![RawContentBlock::Text {
+                text: "hello".into(),
+            }],
             usage: None,
         };
         let events = raw.into_events();
-        assert!(events.iter().any(|e| matches!(e, StreamEvent::ToolCallFinish)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolCallFinish)));
         assert!(matches!(events.last().unwrap(), StreamEvent::Done));
     }
 }

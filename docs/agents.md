@@ -19,12 +19,15 @@ responder.
 
 ## Built-in catalog
 
-| ID        | Bin             | Args                     | Install                                  |
-|-----------|-----------------|--------------------------|------------------------------------------|
-| `claude`  | `claude`        | `--acp`                  | `npm i -g @anthropic-ai/claude-code`     |
-| `codex`   | `codex`         | `--acp`                  | `pip install codex-cli` (or `cargo`)     |
-| `cursor`  | `cursor-agent`  | `--acp`                  | Bundled with the Cursor desktop app      |
-| `copilot` | `gh`            | `copilot suggest --acp`  | `gh extension install github/gh-copilot` |
+| ID          | Bin             | Args                     | Install                                  |
+|-------------|-----------------|--------------------------|------------------------------------------|
+| `claude`    | `claude`        | `--acp`                  | `npm i -g @anthropic-ai/claude-code`     |
+| `codex`     | `codex`         | `--acp`                  | `npm i -g @openai/codex`                 |
+| `cursor`    | `cursor-agent`  | `--acp`                  | Bundled with the Cursor desktop app      |
+| `copilot`   | `gh`            | `copilot suggest --acp`  | `gh extension install github/gh-copilot` |
+| `gemini`    | `gemini`        | `--acp`                  | `npm i -g @google/gemini-cli`            |
+| `aider`     | `aider`         | `--acp`                  | `pipx install aider-chat`                |
+| `qwen-code` | `qwen`          | `--acp`                  | `npm i -g @qwen-code/qwen-code`          |
 
 Inspect the catalog at any time:
 
