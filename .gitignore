@@ -1,19 +1,17 @@
+# Build artifacts
 /target/
 **/*.rs.bk
 *.swp
+
+# OS / editor junk
 .DS_Store
-
-# transient evoclaw test data
-/.evoclaw-test/
-
-# editor / OS junk
 .idea/
 .vscode/
 .claude/
 
-# do NOT ignore:
-# - Cargo.lock (binary; locked deps)
-# - prd/ specs
-# - tmp/ reference projects (user-managed)
-tmp/
-prd/
+# Transient test data
+/.evoclaw-test/
+
+# Cargo.lock IS committed (binary, locked deps, reproducible builds).
+# prd/ specs and tmp/ reference material live outside this repo;
+# the public landing-page repo is https://github.com/develolin/EvoClawSite

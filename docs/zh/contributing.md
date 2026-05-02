@@ -148,6 +148,50 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ---
 
+## 发版与版本号同步
+
+**每次有意义的改动都要全局升版。** 版本号写在**两个 `version` 文件**里，
+它们必须**严格保持一致**：
+
+- `EvoClaw/version`（本仓库）
+- `EvoClawSite/version`（站点仓库 <https://github.com/develolin/EvoClawSite>）
+
+升版时必须**同时**更新下列所有位置：
+
+1. `EvoClaw/version` —— 单行，`vX.Y.Z\n`
+2. `EvoClawSite/version` —— 同值
+3. `EvoClaw/Cargo.toml` `[workspace.package].version` —— `"X.Y.Z"`（SemVer，不带 `v` 前缀）
+4. `EvoClaw/README.md` 与 `EvoClaw/docs/zh/README.md`：
+   - 横幅 ASCII 行 `local-first · self-evolving · vX.Y.Z`
+   - "Versioning / 版本" 段（`Both currently read **`vX.Y.Z`**`）
+   - 文末 "ships in vX.Y.Z"
+5. `EvoClawSite/index.html` 与 `EvoClawSite/zh.html`：
+   - JSON-LD `SoftwareApplication` 中的 `softwareVersion`
+   - Resources 行（`Version: vX.Y.Z` / `版本：vX.Y.Z`）
+   - FAQ JSON-LD 中关于"是否生产就绪"的答案
+
+按 SemVer 升号：
+
+| 升号 | 触发条件 |
+|------|---------|
+| `+1` patch（`v0.1.5 → v0.1.6`） | bug 修复、文档重写、CI 工作流改动、加 LICENSE 等。 |
+| `+1` minor（`v0.1.x → v0.2.0`） | 新 CLI 子命令、新内置工具、新内置 provider / MCP profile，向后兼容的扩展。 |
+| `+1` major（`v0.x.y → v1.0.0`） | 改 `~/.evoclaw/` 目录结构、JSONL 记录 schema、公共 Rust API 或 CLI flag 的破坏性变更。 |
+
+PR 前快速自检：
+
+```bash
+diff EvoClaw/version EvoClawSite/version && echo MATCH
+grep '^version' EvoClaw/Cargo.toml          # cargo SemVer（不带 v）
+grep -rE 'v[0-9]+\.[0-9]+\.[0-9]+' EvoClaw/README.md EvoClaw/docs/zh/README.md \
+  EvoClawSite/index.html EvoClawSite/zh.html | grep -v "v0\.X\.Y" | sort -u
+```
+
+两个 `version` 文件必须读到同一个值。**CI 抓不到漏改**（这是流程纪律），
+开 PR 之前请手动跑一遍上面的自检。
+
+---
+
 ## 报 issue
 
 GitHub issue 包含：
