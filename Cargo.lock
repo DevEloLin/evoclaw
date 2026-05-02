@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "evo-acp-client"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "evo-cli"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "evo-core"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "evo-gateway"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "evo-mcp-client"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "evo-mock-provider"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "evo-providers",
@@ -412,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "evo-policy"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "hex",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "evo-providers"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "evo-stdio-rpc"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "serde",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "evo-tools"
-version = "0.0.1"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "evo-policy",

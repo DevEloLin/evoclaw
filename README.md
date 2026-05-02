@@ -95,7 +95,7 @@ $ evoclaw
    ║      ███████╗██╗   ██╗ ██████╗  ██████╗██╗      █████╗ ██╗    ║
    ║      ██╔════╝██║   ██║██╔═══██╗██╔════╝██║     ██╔══██╗██║    ║
    ║                          ...                                  ║
-   ║             local-first · self-evolving · v0.1.5              ║
+   ║             local-first · self-evolving · v0.1.6              ║
    ╚═══════════════════════════════════════════════════════════════╝
 
    ┌─ context ─────────────────────────────────────────────────────┐
@@ -258,7 +258,7 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 7   — Multi-channel        | ⏳ v0.6 plan | future     | Telegram / Slack / Discord plugins, Local Dashboard, trust-FSM auto-promote, group-mention enforcement |
 | 8   — Deep hardening       | ⏳ v0.7 plan | future     | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
-Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.1.5.
+Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.1.6.
 
 ---
 
@@ -282,7 +282,7 @@ The version of this code is recorded in [`./version`](./version). The site repo 
 - `EvoClaw/version` (this repo)
 - `EvoClawSite/version`
 
-A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.1.5`**.
+A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.1.6`**.
 
 ---
 
