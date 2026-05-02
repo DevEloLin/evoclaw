@@ -1,3 +1,8 @@
+# EvoClaw — tag-based release.
+#
+# This workflow only runs when pushing version tags like v0.1.0.
+# main branch pushes do not package or publish releases.
+
 name: Release
 
 on:
@@ -15,35 +20,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS Apple Silicon
           - os: macos-latest
             target: aarch64-apple-darwin
             bin_name: evoclaw
             archive_name: evoclaw-aarch64-apple-darwin.tar.gz
             archive_type: tar
 
-          # macOS Intel
           - os: macos-13
             target: x86_64-apple-darwin
             bin_name: evoclaw
             archive_name: evoclaw-x86_64-apple-darwin.tar.gz
             archive_type: tar
 
-          # Linux x64, Ubuntu / Debian / CentOS 等
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin_name: evoclaw
             archive_name: evoclaw-x86_64-unknown-linux-gnu.tar.gz
             archive_type: tar
 
-          # Linux x64 static, 更适合跨发行版
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             bin_name: evoclaw
             archive_name: evoclaw-x86_64-unknown-linux-musl.tar.gz
             archive_type: tar
 
-          # Windows x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin_name: evoclaw.exe
