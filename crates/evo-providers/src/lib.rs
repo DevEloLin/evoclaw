@@ -20,7 +20,12 @@ pub use openai::OpenAiCompatProvider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Role { System, User, Assistant, Tool }
+pub enum Role {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
 
 /// Cache hint per PRD §42.2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -44,17 +49,37 @@ pub struct Message {
     pub cache_control: CacheKind,
 }
 
-fn is_default_cache(c: &CacheKind) -> bool { matches!(c, CacheKind::None) }
+fn is_default_cache(c: &CacheKind) -> bool {
+    matches!(c, CacheKind::None)
+}
 
 impl Message {
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: text.into(), tool_calls: Vec::new(), tool_results: Vec::new(), cache_control: CacheKind::None }
+        Self {
+            role: Role::User,
+            content: text.into(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+            cache_control: CacheKind::None,
+        }
     }
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: text.into(), tool_calls: Vec::new(), tool_results: Vec::new(), cache_control: CacheKind::Persistent }
+        Self {
+            role: Role::System,
+            content: text.into(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+            cache_control: CacheKind::Persistent,
+        }
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: text.into(), tool_calls: Vec::new(), tool_results: Vec::new(), cache_control: CacheKind::None }
+        Self {
+            role: Role::Assistant,
+            content: text.into(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+            cache_control: CacheKind::None,
+        }
     }
 }
 
@@ -90,7 +115,11 @@ pub struct Usage {
 
 impl Usage {
     pub fn cache_hit_rate(&self) -> f64 {
-        if self.input_tokens == 0 { 0.0 } else { self.cached_tokens as f64 / self.input_tokens as f64 }
+        if self.input_tokens == 0 {
+            0.0
+        } else {
+            self.cached_tokens as f64 / self.input_tokens as f64
+        }
     }
 }
 
@@ -144,7 +173,10 @@ mod tests {
     }
     #[test]
     fn message_system_is_persistent() {
-        assert!(matches!(Message::system("x").cache_control, CacheKind::Persistent));
+        assert!(matches!(
+            Message::system("x").cache_control,
+            CacheKind::Persistent
+        ));
     }
     #[test]
     fn cache_hit_rate_zero_safe() {
@@ -152,7 +184,11 @@ mod tests {
     }
     #[test]
     fn cache_hit_rate_typical() {
-        let u = Usage { input_tokens: 1000, cached_tokens: 700, output_tokens: 200 };
+        let u = Usage {
+            input_tokens: 1000,
+            cached_tokens: 700,
+            output_tokens: 200,
+        };
         assert!((u.cache_hit_rate() - 0.7).abs() < 1e-9);
     }
 }

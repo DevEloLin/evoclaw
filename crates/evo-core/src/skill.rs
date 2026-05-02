@@ -6,11 +6,27 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-pub enum SkillState { Draft, Candidate, Active, Degraded, Deprecated, Archived }
+pub enum SkillState {
+    Draft,
+    Candidate,
+    Active,
+    Degraded,
+    Deprecated,
+    Archived,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub enum SkillKind { Sop, Diagnostic, Browser, Coding, Ops, Api, Workflow, ToolWrapper }
+pub enum SkillKind {
+    Sop,
+    Diagnostic,
+    Browser,
+    Coding,
+    Ops,
+    Api,
+    Workflow,
+    ToolWrapper,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillStep {
@@ -73,15 +89,27 @@ pub struct Skill {
 }
 
 impl Skill {
-    pub fn new_draft(id: impl Into<String>, name: impl Into<String>, kind: SkillKind, task_id: impl Into<String>) -> Self {
+    pub fn new_draft(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        kind: SkillKind,
+        task_id: impl Into<String>,
+    ) -> Self {
         Self {
-            id: id.into(), name: name.into(), kind,
-            version: 1, description: String::new(),
-            triggers: Vec::new(), environment: serde_json::Value::Null,
-            preconditions: Vec::new(), steps: Vec::new(),
-            verification: String::new(), success_criteria: Vec::new(),
+            id: id.into(),
+            name: name.into(),
+            kind,
+            version: 1,
+            description: String::new(),
+            triggers: Vec::new(),
+            environment: serde_json::Value::Null,
+            preconditions: Vec::new(),
+            steps: Vec::new(),
+            verification: String::new(),
+            success_criteria: Vec::new(),
             failure_patterns: Vec::new(),
-            score: 0.5, state: SkillState::Draft,
+            score: 0.5,
+            state: SkillState::Draft,
             parent: None,
             created_from_task: task_id.into(),
             updated_at: Utc::now(),
@@ -136,24 +164,43 @@ impl Skill {
     fn maybe_transition_after_score_change(&mut self) {
         let s = self.score;
         match self.state {
-            SkillState::Candidate if self.stats.success >= 3 && s >= 0.7 => self.transition(SkillState::Active, "promoted"),
-            SkillState::Candidate | SkillState::Active if (0.3..0.7).contains(&s) => self.transition(SkillState::Degraded, "score in [0.3,0.7)"),
-            SkillState::Degraded if s >= 0.7 && self.stats.consecutive_failures == 0 && self.stats.success >= 3 => self.transition(SkillState::Active, "recovered"),
-            SkillState::Degraded if s < 0.3 || self.stats.consecutive_failures >= 5 => self.transition(SkillState::Deprecated, "deprecated"),
+            SkillState::Candidate if self.stats.success >= 3 && s >= 0.7 => {
+                self.transition(SkillState::Active, "promoted")
+            }
+            SkillState::Candidate | SkillState::Active if (0.3..0.7).contains(&s) => {
+                self.transition(SkillState::Degraded, "score in [0.3,0.7)")
+            }
+            SkillState::Degraded
+                if s >= 0.7 && self.stats.consecutive_failures == 0 && self.stats.success >= 3 =>
+            {
+                self.transition(SkillState::Active, "recovered")
+            }
+            SkillState::Degraded if s < 0.3 || self.stats.consecutive_failures >= 5 => {
+                self.transition(SkillState::Deprecated, "deprecated")
+            }
             SkillState::Draft if s < 0.1 => self.transition(SkillState::Deprecated, "draft died"),
             _ => {}
         }
     }
 
     fn transition(&mut self, new_state: SkillState, note: &str) {
-        if self.state == new_state { return; }
-        self.changelog.push(format!("v{} {:?} → {:?} ({note})", self.version, self.state, new_state));
+        if self.state == new_state {
+            return;
+        }
+        self.changelog.push(format!(
+            "v{} {:?} → {:?} ({note})",
+            self.version, self.state, new_state
+        ));
         self.state = new_state;
         self.updated_at = Utc::now();
     }
 
-    pub fn auto_enable(&self) -> bool { matches!(self.state, SkillState::Active) }
-    pub fn can_be_searched(&self) -> bool { !matches!(self.state, SkillState::Archived) }
+    pub fn auto_enable(&self) -> bool {
+        matches!(self.state, SkillState::Active)
+    }
+    pub fn can_be_searched(&self) -> bool {
+        !matches!(self.state, SkillState::Archived)
+    }
 
     pub async fn save_yaml(&self, dir: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
         let dir = dir.as_ref();
@@ -182,7 +229,9 @@ pub fn parse_yaml(text: &str) -> Result<Skill, String> {
 mod tests {
     use super::*;
 
-    fn s() -> Skill { Skill::new_draft("skill-1", "test skill", SkillKind::Sop, "task-1") }
+    fn s() -> Skill {
+        Skill::new_draft("skill-1", "test skill", SkillKind::Sop, "task-1")
+    }
 
     #[test]
     fn new_skill_starts_draft_with_score_0_5() {
@@ -206,7 +255,12 @@ mod tests {
         sk.record_success();
         sk.record_success();
         sk.record_success();
-        assert!(matches!(sk.state, SkillState::Active), "got {:?} score={}", sk.state, sk.score);
+        assert!(
+            matches!(sk.state, SkillState::Active),
+            "got {:?} score={}",
+            sk.state,
+            sk.score
+        );
     }
 
     #[test]
@@ -221,8 +275,13 @@ mod tests {
         let mut sk = s();
         sk.state = SkillState::Active;
         sk.score = 0.8;
-        for _ in 0..5 { sk.record_failure(); }
-        assert!(matches!(sk.state, SkillState::Deprecated | SkillState::Degraded));
+        for _ in 0..5 {
+            sk.record_failure();
+        }
+        assert!(matches!(
+            sk.state,
+            SkillState::Deprecated | SkillState::Degraded
+        ));
         assert!(sk.score < 0.7);
     }
 
@@ -238,7 +297,9 @@ mod tests {
     async fn yaml_round_trip() {
         let mut p = std::env::temp_dir();
         let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         p.push(format!("evo-skill-{stamp}"));
         let sk = s();
         let path = sk.save_yaml(&p).await.unwrap();

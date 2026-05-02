@@ -68,11 +68,17 @@ impl Session {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path).await?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
         Ok(Self { path, file })
     }
 
-    pub fn path(&self) -> &Path { &self.path }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 
     pub async fn append(&mut self, record: &SessionRecord) -> std::io::Result<()> {
         let mut line = serde_json::to_string(record)
@@ -87,7 +93,9 @@ impl Session {
         let mut reader = BufReader::new(f).lines();
         let mut out = Vec::new();
         while let Some(line) = reader.next_line().await? {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             let r: SessionRecord = serde_json::from_str(&line)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             out.push(r);
@@ -103,7 +111,10 @@ mod tests {
 
     fn unique_log() -> PathBuf {
         let mut p = std::env::temp_dir();
-        let stamp = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let stamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         p.push(format!("evo-session-{stamp}.jsonl"));
         p
     }
@@ -128,7 +139,11 @@ mod tests {
                 result_truncated: "exit=0\n…".into(),
                 is_error: false,
             }],
-            usage: Some(RecordedUsage { input: 600, cached: 400, output: 50 }),
+            usage: Some(RecordedUsage {
+                input: 600,
+                cached: 400,
+                output: 50,
+            }),
             ts: "2026-05-02T11:39:05Z".parse().unwrap(),
         })
     }
@@ -142,7 +157,9 @@ mod tests {
         s.append(&SessionRecord::End(EndRecord {
             state: "COMPLETED".into(),
             finished_at: "2026-05-02T11:39:10Z".parse().unwrap(),
-        })).await.unwrap();
+        }))
+        .await
+        .unwrap();
         drop(s);
         let records = Session::read_all(&path).await.unwrap();
         assert_eq!(records.len(), 3);

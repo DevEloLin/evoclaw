@@ -13,9 +13,12 @@ pub const ACP_PROTOCOL_VERSION: &str = "0.1.0";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AcpError {
-    #[error("rpc: {0}")] Rpc(#[from] RpcError),
-    #[error("config: {0}")] Config(String),
-    #[error("io: {0}")] Io(#[from] std::io::Error),
+    #[error("rpc: {0}")]
+    Rpc(#[from] RpcError),
+    #[error("config: {0}")]
+    Config(String),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +34,7 @@ pub struct AgentProfile {
 pub const CATALOG: &[AgentProfile] = &[
     AgentProfile {
         id: "claude",
-        name: "Claude Agent",
+        name: "Claude Agent (Anthropic)",
         bin: "claude",
         args: &["--acp"],
         install_hint: "npm install -g @anthropic-ai/claude-code",
@@ -39,7 +42,7 @@ pub const CATALOG: &[AgentProfile] = &[
     },
     AgentProfile {
         id: "codex",
-        name: "Codex CLI",
+        name: "Codex CLI (OpenAI)",
         bin: "codex",
         args: &["--acp"],
         install_hint: "npm install -g @openai/codex",
@@ -60,6 +63,30 @@ pub const CATALOG: &[AgentProfile] = &[
         args: &["copilot", "suggest", "--acp"],
         install_hint: "brew install gh && gh extension install github/gh-copilot",
         auth_hint: "first run: `gh auth login` then `gh copilot` (your Copilot subscription)",
+    },
+    AgentProfile {
+        id: "gemini",
+        name: "Gemini CLI (Google)",
+        bin: "gemini",
+        args: &["--acp"],
+        install_hint: "npm install -g @google/gemini-cli",
+        auth_hint: "first run: `gemini` opens Google OAuth (Gemini Code Assist) or set GEMINI_API_KEY",
+    },
+    AgentProfile {
+        id: "aider",
+        name: "Aider (open-source pair programmer)",
+        bin: "aider",
+        args: &["--acp"],
+        install_hint: "pipx install aider-chat (or pip install aider-chat)",
+        auth_hint: "configure with any model: e.g. `aider --model deepseek-chat`, key via env DEEPSEEK_API_KEY",
+    },
+    AgentProfile {
+        id: "qwen-code",
+        name: "Qwen Code (阿里通义灵码 CLI)",
+        bin: "qwen",
+        args: &["--acp"],
+        install_hint: "npm install -g @qwen-code/qwen-code",
+        auth_hint: "first run: `qwen` prompts for DashScope API key (https://bailian.console.aliyun.com)",
     },
 ];
 
@@ -83,7 +110,9 @@ pub struct AgentConfig {
 impl AgentConfig {
     pub fn from_profile(p: &AgentProfile) -> Self {
         Self {
-            id: p.id.into(), name: p.name.into(), command: p.bin.into(),
+            id: p.id.into(),
+            name: p.name.into(),
+            command: p.bin.into(),
             args: p.args.iter().map(|s| s.to_string()).collect(),
             env: Vec::new(),
             installed_at: Some(chrono::Utc::now()),
@@ -102,9 +131,12 @@ impl AgentConfig {
 fn home() -> Result<PathBuf, AcpError> {
     Ok(BaseDirs::new()
         .ok_or_else(|| AcpError::Config("no home dir".into()))?
-        .home_dir().to_path_buf())
+        .home_dir()
+        .to_path_buf())
 }
-pub fn agents_dir() -> Result<PathBuf, AcpError> { Ok(home()?.join(".evoclaw/agents")) }
+pub fn agents_dir() -> Result<PathBuf, AcpError> {
+    Ok(home()?.join(".evoclaw/agents"))
+}
 pub fn agent_config_path(id: &str) -> Result<PathBuf, AcpError> {
     Ok(agents_dir()?.join(format!("{id}.toml")))
 }
@@ -126,14 +158,20 @@ pub async fn load_agent(id: &str) -> Result<AgentConfig, AcpError> {
 
 pub async fn list_agents() -> Result<Vec<AgentConfig>, AcpError> {
     let dir = agents_dir()?;
-    if !dir.exists() { return Ok(Vec::new()); }
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     let mut entries = tokio::fs::read_dir(&dir).await?;
     while let Some(e) = entries.next_entry().await? {
         let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("toml") { continue; }
+        if p.extension().and_then(|s| s.to_str()) != Some("toml") {
+            continue;
+        }
         if let Ok(s) = tokio::fs::read_to_string(&p).await {
-            if let Ok(cfg) = toml::from_str::<AgentConfig>(&s) { out.push(cfg); }
+            if let Ok(cfg) = toml::from_str::<AgentConfig>(&s) {
+                out.push(cfg);
+            }
         }
     }
     Ok(out)
@@ -141,7 +179,9 @@ pub async fn list_agents() -> Result<Vec<AgentConfig>, AcpError> {
 
 pub async fn remove_agent(id: &str) -> Result<(), AcpError> {
     let path = agent_config_path(id)?;
-    if path.exists() { tokio::fs::remove_file(&path).await?; }
+    if path.exists() {
+        tokio::fs::remove_file(&path).await?;
+    }
     Ok(())
 }
 
@@ -152,7 +192,10 @@ pub struct AcpClient {
 
 impl AcpClient {
     pub fn new() -> Self {
-        Self { rpc: Arc::new(StdioRpcClient::new()), initialized: tokio::sync::Mutex::new(false) }
+        Self {
+            rpc: Arc::new(StdioRpcClient::new()),
+            initialized: tokio::sync::Mutex::new(false),
+        }
     }
 
     pub async fn spawn(&self, cfg: &AgentConfig) -> Result<(), AcpError> {
@@ -160,33 +203,59 @@ impl AcpClient {
         Ok(())
     }
 
-    pub async fn initialize(&self, client_name: &str, client_version: &str) -> Result<Value, AcpError> {
+    pub async fn initialize(
+        &self,
+        client_name: &str,
+        client_version: &str,
+    ) -> Result<Value, AcpError> {
         let mut init = self.initialized.lock().await;
-        if *init { return Ok(Value::Null); }
-        let result = self.rpc.call("initialize", json!({
-            "protocolVersion": ACP_PROTOCOL_VERSION,
-            "clientInfo": { "name": client_name, "version": client_version },
-            "capabilities": { "fs": false }
-        })).await?;
-        self.rpc.notify("notifications/initialized", json!({})).await.ok();
+        if *init {
+            return Ok(Value::Null);
+        }
+        let result = self
+            .rpc
+            .call(
+                "initialize",
+                json!({
+                    "protocolVersion": ACP_PROTOCOL_VERSION,
+                    "clientInfo": { "name": client_name, "version": client_version },
+                    "capabilities": { "fs": false }
+                }),
+            )
+            .await?;
+        self.rpc
+            .notify("notifications/initialized", json!({}))
+            .await
+            .ok();
         *init = true;
         Ok(result)
     }
 
     pub async fn new_session(&self) -> Result<String, AcpError> {
         let r = self.rpc.call("session/new", json!({})).await?;
-        Ok(r.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string())
+        Ok(r.get("sessionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     pub async fn prompt(&self, session_id: &str, text: &str) -> Result<Value, AcpError> {
-        Ok(self.rpc.call("session/prompt", json!({
-            "sessionId": session_id,
-            "prompt": [{ "type": "text", "text": text }]
-        })).await?)
+        Ok(self
+            .rpc
+            .call(
+                "session/prompt",
+                json!({
+                    "sessionId": session_id,
+                    "prompt": [{ "type": "text", "text": text }]
+                }),
+            )
+            .await?)
     }
 
     pub async fn cancel(&self, session_id: &str) -> Result<(), AcpError> {
-        self.rpc.notify("session/cancel", json!({"sessionId": session_id})).await?;
+        self.rpc
+            .notify("session/cancel", json!({"sessionId": session_id}))
+            .await?;
         Ok(())
     }
 
@@ -197,7 +266,9 @@ impl AcpClient {
 }
 
 impl Default for AcpClient {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -205,9 +276,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_has_4_named_agents() {
+    fn catalog_has_7_named_agents() {
         let ids: Vec<_> = CATALOG.iter().map(|a| a.id).collect();
-        assert_eq!(ids, vec!["claude", "codex", "cursor", "copilot"]);
+        assert_eq!(
+            ids,
+            vec![
+                "claude",
+                "codex",
+                "cursor",
+                "copilot",
+                "gemini",
+                "aider",
+                "qwen-code"
+            ]
+        );
     }
 
     #[test]

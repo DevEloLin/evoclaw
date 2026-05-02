@@ -174,7 +174,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 | 升号 | 触发条件 |
 |------|---------|
-| `+1` patch（`v0.1.5 → v0.1.6`） | bug 修复、文档重写、CI 工作流改动、加 LICENSE 等。 |
+| `+1` patch（`v0.1.9 → v0.1.10`） | bug 修复、文档重写、CI 工作流改动、加 LICENSE 等。 |
 | `+1` minor（`v0.1.x → v0.2.0`） | 新 CLI 子命令、新内置工具、新内置 provider / MCP profile，向后兼容的扩展。 |
 | `+1` major（`v0.x.y → v1.0.0`） | 改 `~/.evoclaw/` 目录结构、JSONL 记录 schema、公共 Rust API 或 CLI flag 的破坏性变更。 |
 
@@ -187,8 +187,11 @@ grep -rE 'v[0-9]+\.[0-9]+\.[0-9]+' EvoClaw/README.md EvoClaw/docs/zh/README.md \
   EvoClawSite/index.html EvoClawSite/zh.html | grep -v "v0\.X\.Y" | sort -u
 ```
 
-两个 `version` 文件必须读到同一个值。**CI 抓不到漏改**（这是流程纪律），
-开 PR 之前请手动跑一遍上面的自检。
+`./scripts/check.sh` 内置 `version sync` 门禁，会断言
+`EvoClaw/version` 文件与 `Cargo.toml` 的 `[workspace.package].version`
+保持一致（不一致直接 fail）。两个 `version` 文件
+（`EvoClaw/version` vs `EvoClawSite/version`）在不同仓库里，
+跨仓库一致性仍是流程纪律 —— 开 PR 之前请手动跑一遍上面的自检。
 
 ---
 

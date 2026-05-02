@@ -56,12 +56,19 @@ pub struct VaultEntry {
 }
 
 impl Default for Vault {
-    fn default() -> Self { Self { version: 1, entries: Vec::new() } }
+    fn default() -> Self {
+        Self {
+            version: 1,
+            entries: Vec::new(),
+        }
+    }
 }
 
 impl Vault {
     pub async fn load(path: &Path) -> Result<Self, std::io::Error> {
-        if !path.exists() { return Ok(Self::default()); }
+        if !path.exists() {
+            return Ok(Self::default());
+        }
         let raw = tokio::fs::read_to_string(path).await?;
         let v: Self = serde_json::from_str(&raw)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -106,7 +113,9 @@ impl Vault {
         self.entries.iter().find(|e| e.name == name)
     }
 
-    pub fn list(&self) -> &[VaultEntry] { &self.entries }
+    pub fn list(&self) -> &[VaultEntry] {
+        &self.entries
+    }
 
     #[cfg(unix)]
     async fn chmod_600(path: &Path) -> Result<(), std::io::Error> {
@@ -116,7 +125,9 @@ impl Vault {
     }
 
     #[cfg(not(unix))]
-    async fn chmod_600(_path: &Path) -> Result<(), std::io::Error> { Ok(()) }
+    async fn chmod_600(_path: &Path) -> Result<(), std::io::Error> {
+        Ok(())
+    }
 }
 
 pub fn default_vault_path(evoclaw_dir: &Path) -> PathBuf {
@@ -140,15 +151,15 @@ pub enum SecretKind {
 impl SecretKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::OpenAi             => "openai_key",
-            Self::Anthropic          => "anthropic_key",
-            Self::GitHubPat          => "github_pat",
-            Self::AwsKeyId           => "aws_key_id",
-            Self::AwsSecret          => "aws_secret",
-            Self::Jwt                => "jwt",
-            Self::Password           => "password",
+            Self::OpenAi => "openai_key",
+            Self::Anthropic => "anthropic_key",
+            Self::GitHubPat => "github_pat",
+            Self::AwsKeyId => "aws_key_id",
+            Self::AwsSecret => "aws_secret",
+            Self::Jwt => "jwt",
+            Self::Password => "password",
             Self::GenericHighEntropy => "high_entropy",
-            Self::Unknown            => "unknown",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -157,17 +168,26 @@ impl SecretKind {
 /// we'd rather over-redact than leak.
 pub fn classify_secret(s: &str) -> SecretKind {
     let t = s.trim();
-    if t.starts_with("sk-ant-") { return SecretKind::Anthropic; }
-    if t.starts_with("sk-") && t.len() >= 20 { return SecretKind::OpenAi; }
-    if t.starts_with("ghp_") || t.starts_with("gho_") ||
-       t.starts_with("ghu_") || t.starts_with("ghs_") ||
-       t.starts_with("ghr_") {
+    if t.starts_with("sk-ant-") {
+        return SecretKind::Anthropic;
+    }
+    if t.starts_with("sk-") && t.len() >= 20 {
+        return SecretKind::OpenAi;
+    }
+    if t.starts_with("ghp_")
+        || t.starts_with("gho_")
+        || t.starts_with("ghu_")
+        || t.starts_with("ghs_")
+        || t.starts_with("ghr_")
+    {
         return SecretKind::GitHubPat;
     }
     if t.starts_with("AKIA") && t.len() == 20 && t.chars().all(|c| c.is_ascii_alphanumeric()) {
         return SecretKind::AwsKeyId;
     }
-    if looks_like_jwt(t) { return SecretKind::Jwt; }
+    if looks_like_jwt(t) {
+        return SecretKind::Jwt;
+    }
     if t.len() >= 32 && shannon_entropy(t) >= 4.0 {
         return SecretKind::GenericHighEntropy;
     }
@@ -175,15 +195,21 @@ pub fn classify_secret(s: &str) -> SecretKind {
 }
 
 fn looks_like_jwt(s: &str) -> bool {
-    if !s.starts_with("eyJ") { return false; }
+    if !s.starts_with("eyJ") {
+        return false;
+    }
     s.split('.').count() == 3 && s.len() >= 40
 }
 
 /// Shannon entropy in bits per character.
 pub fn shannon_entropy(s: &str) -> f64 {
-    if s.is_empty() { return 0.0; }
+    if s.is_empty() {
+        return 0.0;
+    }
     let mut counts = HashMap::new();
-    for c in s.chars() { *counts.entry(c).or_insert(0u32) += 1; }
+    for c in s.chars() {
+        *counts.entry(c).or_insert(0u32) += 1;
+    }
     let len = s.chars().count() as f64;
     let mut h = 0.0;
     for &c in counts.values() {
@@ -210,7 +236,9 @@ pub struct Redactor {
 
 impl Redactor {
     pub fn from_vault(v: &Vault) -> Self {
-        let mut mappings: Vec<(String, String)> = v.entries.iter()
+        let mut mappings: Vec<(String, String)> = v
+            .entries
+            .iter()
             .filter(|e| !e.value.is_empty())
             .map(|e| (e.value.clone(), format!("${{SECRET:{}}}", e.name)))
             .collect();
@@ -235,8 +263,12 @@ impl Redactor {
         (out, hits + pattern_hits)
     }
 
-    pub fn is_empty(&self) -> bool { self.mappings.is_empty() }
-    pub fn entry_count(&self) -> usize { self.mappings.len() }
+    pub fn is_empty(&self) -> bool {
+        self.mappings.is_empty()
+    }
+    pub fn entry_count(&self) -> usize {
+        self.mappings.len()
+    }
 }
 
 /// Walk the text token-by-token (whitespace + simple-punctuation split) and
@@ -248,11 +280,21 @@ pub fn scrub_patterns(text: &str) -> (String, usize) {
     let mut buf = String::new();
     let mut in_token = false;
     for c in text.chars() {
-        if c.is_whitespace() || c == ',' || c == ';' || c == ')' || c == ']' || c == '}' || c == '"' || c == '\'' {
+        if c.is_whitespace()
+            || c == ','
+            || c == ';'
+            || c == ')'
+            || c == ']'
+            || c == '}'
+            || c == '"'
+            || c == '\''
+        {
             if in_token {
                 let (replaced, hit) = redact_token(&buf);
                 out.push_str(&replaced);
-                if hit { hits += 1; }
+                if hit {
+                    hits += 1;
+                }
                 buf.clear();
                 in_token = false;
             }
@@ -265,7 +307,9 @@ pub fn scrub_patterns(text: &str) -> (String, usize) {
     if in_token {
         let (replaced, hit) = redact_token(&buf);
         out.push_str(&replaced);
-        if hit { hits += 1; }
+        if hit {
+            hits += 1;
+        }
     }
     (out, hits)
 }
@@ -301,7 +345,10 @@ mod tests {
 
     #[test]
     fn classify_openai_sk() {
-        assert_eq!(classify_secret("sk-1234567890ABCDEFghij"), SecretKind::OpenAi);
+        assert_eq!(
+            classify_secret("sk-1234567890ABCDEFghij"),
+            SecretKind::OpenAi
+        );
     }
     #[test]
     fn classify_anthropic_overrides_openai() {
@@ -318,7 +365,10 @@ mod tests {
     }
     #[test]
     fn classify_aws_key_id() {
-        assert_eq!(classify_secret("AKIAIOSFODNN7EXAMPLE"), SecretKind::AwsKeyId);
+        assert_eq!(
+            classify_secret("AKIAIOSFODNN7EXAMPLE"),
+            SecretKind::AwsKeyId
+        );
     }
     #[test]
     fn classify_jwt() {
@@ -383,7 +433,8 @@ mod tests {
     #[test]
     fn redactor_scrubs_jwt_in_authorization_header() {
         let r = Redactor::default();
-        let (out, _) = r.scrub("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig_value_x");
+        let (out, _) =
+            r.scrub("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig_value_x");
         assert!(out.contains("[REDACTED:jwt:"));
     }
 
@@ -431,7 +482,10 @@ mod tests {
 
     #[tokio::test]
     async fn vault_save_then_load_round_trip() {
-        let dir = std::env::temp_dir().join(format!("evo-vault-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "evo-vault-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let path = dir.join("vault.json");
         let mut v = Vault::default();

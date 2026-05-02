@@ -74,11 +74,18 @@ pub async fn parse_request(stream: &mut TcpStream) -> std::io::Result<ParsedRequ
     while body.len() < content_length {
         let mut chunk = vec![0u8; 4096];
         let m = stream.read(&mut chunk).await?;
-        if m == 0 { break; }
+        if m == 0 {
+            break;
+        }
         body.extend_from_slice(&chunk[..m]);
     }
     body.truncate(content_length);
-    Ok(ParsedRequest { method, path, auth, body })
+    Ok(ParsedRequest {
+        method,
+        path,
+        auth,
+        body,
+    })
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -86,15 +93,28 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 pub fn auth_ok(req: &ParsedRequest, cfg: &GatewayConfig) -> bool {
-    let Some(header) = req.auth.as_deref() else { return false; };
-    let Some(token) = header.strip_prefix("Bearer ") else { return false; };
+    let Some(header) = req.auth.as_deref() else {
+        return false;
+    };
+    let Some(token) = header.strip_prefix("Bearer ") else {
+        return false;
+    };
     cfg.allowlist.iter().any(|t| t == token)
 }
 
-pub async fn write_response(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) -> std::io::Result<()> {
+pub async fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
     let reason = match status {
-        200 => "OK", 400 => "Bad Request", 401 => "Unauthorized",
-        404 => "Not Found", 405 => "Method Not Allowed", 500 => "Internal Server Error",
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        500 => "Internal Server Error",
         _ => "OK",
     };
     let head = format!(
@@ -107,7 +127,9 @@ pub async fn write_response(stream: &mut TcpStream, status: u16, content_type: &
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ChatReq { pub input: String }
+pub struct ChatReq {
+    pub input: String,
+}
 
 #[derive(Debug, Serialize)]
 pub struct ChatResp {
@@ -128,16 +150,30 @@ pub async fn handle_chat<P: Provider>(
     let session = Session::open(&log_path).await?;
     let memory = Memory::at(cfg.memory_dir.clone());
     let cost = Arc::new(CostEngine::at(cfg.cost_log.clone(), BudgetCfg::default()));
-    let tool_ctx = ToolContext { workspace: cfg.workspace.clone(), allow_user_prompt: false, ..Default::default() };
+    let tool_ctx = ToolContext {
+        workspace: cfg.workspace.clone(),
+        allow_user_prompt: false,
+        ..Default::default()
+    };
     let mut runtime = ConversationRuntime::new(
-        provider, registry, session, tool_ctx,
-        evo_core::runtime::RuntimeConfig { model: model.into(), ..Default::default() },
+        provider,
+        registry,
+        session,
+        tool_ctx,
+        evo_core::runtime::RuntimeConfig {
+            model: model.into(),
+            ..Default::default()
+        },
     )
     .with_cost_engine(cost)
     .with_memory(memory)
     .with_skills_dir(cfg.skills_dir.clone());
     let outcome = runtime.run(&req.input).await?;
-    Ok(ChatResp { task_id: outcome.task_id, turns: outcome.turns, final_text: outcome.final_text })
+    Ok(ChatResp {
+        task_id: outcome.task_id,
+        turns: outcome.turns,
+        final_text: outcome.final_text,
+    })
 }
 
 pub async fn serve<P: Provider + 'static>(
@@ -179,11 +215,25 @@ async fn route<P: Provider>(
     model: &str,
 ) -> std::io::Result<()> {
     match (req.method.as_str(), req.path.as_str()) {
-        ("GET", "/") => write_response(stream, 200, "text/html; charset=utf-8", INDEX_HTML.as_bytes()).await,
+        ("GET", "/") => {
+            write_response(
+                stream,
+                200,
+                "text/html; charset=utf-8",
+                INDEX_HTML.as_bytes(),
+            )
+            .await
+        }
         ("GET", "/healthz") => write_response(stream, 200, "text/plain", b"ok").await,
         ("POST", "/chat") => {
             if !auth_ok(&req, cfg) {
-                return write_response(stream, 401, "application/json", br#"{"error":"unauthorized"}"#).await;
+                return write_response(
+                    stream,
+                    401,
+                    "application/json",
+                    br#"{"error":"unauthorized"}"#,
+                )
+                .await;
             }
             let body: ChatReq = match serde_json::from_slice(&req.body) {
                 Ok(b) => b,
@@ -215,21 +265,30 @@ mod tests {
         GatewayConfig {
             bind: "127.0.0.1:0".into(),
             allowlist: vec!["dev".into(), "alice-pair-123".into()],
-            workspace: "/tmp/x".into(), logs_dir: "/tmp/x".into(),
-            memory_dir: "/tmp/x".into(), skills_dir: "/tmp/x".into(),
+            workspace: "/tmp/x".into(),
+            logs_dir: "/tmp/x".into(),
+            memory_dir: "/tmp/x".into(),
+            skills_dir: "/tmp/x".into(),
             cost_log: "/tmp/x".into(),
         }
     }
 
     fn req_with_auth(auth: Option<&str>) -> ParsedRequest {
-        ParsedRequest { method: "POST".into(), path: "/chat".into(),
-            auth: auth.map(String::from), body: Vec::new() }
+        ParsedRequest {
+            method: "POST".into(),
+            path: "/chat".into(),
+            auth: auth.map(String::from),
+            body: Vec::new(),
+        }
     }
 
     #[test]
     fn auth_ok_accepts_listed_token() {
         assert!(auth_ok(&req_with_auth(Some("Bearer dev")), &cfg()));
-        assert!(auth_ok(&req_with_auth(Some("Bearer alice-pair-123")), &cfg()));
+        assert!(auth_ok(
+            &req_with_auth(Some("Bearer alice-pair-123")),
+            &cfg()
+        ));
     }
 
     #[test]

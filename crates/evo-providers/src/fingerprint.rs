@@ -15,7 +15,9 @@ pub enum ToolPayload {
 }
 
 impl ToolPayload {
-    pub fn is_reuse(&self) -> bool { matches!(self, ToolPayload::Reuse(_)) }
+    pub fn is_reuse(&self) -> bool {
+        matches!(self, ToolPayload::Reuse(_))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -27,13 +29,20 @@ pub struct ToolFingerprint {
 
 impl Default for ToolFingerprint {
     fn default() -> Self {
-        Self { hash: None, last_full_send_turn: 0, reset_every: DEFAULT_RESET_EVERY }
+        Self {
+            hash: None,
+            last_full_send_turn: 0,
+            reset_every: DEFAULT_RESET_EVERY,
+        }
     }
 }
 
 impl ToolFingerprint {
     pub fn with_reset_every(reset_every: u64) -> Self {
-        Self { reset_every, ..Self::default() }
+        Self {
+            reset_every,
+            ..Self::default()
+        }
     }
 
     pub fn payload_for_turn(&mut self, turn: u64, tools: Vec<ToolSpec>) -> ToolPayload {
@@ -70,40 +79,59 @@ mod tests {
     use serde_json::json;
 
     fn t(name: &str) -> ToolSpec {
-        ToolSpec { name: name.into(), description: format!("desc {name}"), schema: json!({}) }
+        ToolSpec {
+            name: name.into(),
+            description: format!("desc {name}"),
+            schema: json!({}),
+        }
     }
 
     #[test]
     fn first_turn_sends_full() {
         let mut f = ToolFingerprint::default();
-        assert!(matches!(f.payload_for_turn(0, vec![t("read_file")]), ToolPayload::Full(_)));
+        assert!(matches!(
+            f.payload_for_turn(0, vec![t("read_file")]),
+            ToolPayload::Full(_)
+        ));
     }
 
     #[test]
     fn unchanged_tools_reused_after_first() {
         let mut f = ToolFingerprint::default();
         let _ = f.payload_for_turn(0, vec![t("a"), t("b")]);
-        assert!(matches!(f.payload_for_turn(1, vec![t("a"), t("b")]), ToolPayload::Reuse(_)));
+        assert!(matches!(
+            f.payload_for_turn(1, vec![t("a"), t("b")]),
+            ToolPayload::Reuse(_)
+        ));
     }
 
     #[test]
     fn reset_every_n_resends_full() {
         let mut f = ToolFingerprint::with_reset_every(5);
         let _ = f.payload_for_turn(0, vec![t("a")]);
-        assert!(matches!(f.payload_for_turn(5, vec![t("a")]), ToolPayload::Full(_)));
+        assert!(matches!(
+            f.payload_for_turn(5, vec![t("a")]),
+            ToolPayload::Full(_)
+        ));
     }
 
     #[test]
     fn changed_tools_resends_full() {
         let mut f = ToolFingerprint::default();
         let _ = f.payload_for_turn(0, vec![t("a")]);
-        assert!(matches!(f.payload_for_turn(1, vec![t("a"), t("b")]), ToolPayload::Full(_)));
+        assert!(matches!(
+            f.payload_for_turn(1, vec![t("a"), t("b")]),
+            ToolPayload::Full(_)
+        ));
     }
 
     #[test]
     fn order_does_not_matter_for_hash() {
         let mut f = ToolFingerprint::default();
         let _ = f.payload_for_turn(0, vec![t("a"), t("b")]);
-        assert!(matches!(f.payload_for_turn(1, vec![t("b"), t("a")]), ToolPayload::Reuse(_)));
+        assert!(matches!(
+            f.payload_for_turn(1, vec![t("b"), t("a")]),
+            ToolPayload::Reuse(_)
+        ));
     }
 }

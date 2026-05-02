@@ -174,7 +174,7 @@ Use SemVer:
 
 | Bump | When |
 |------|------|
-| `+1` patch (`v0.1.5 → v0.1.6`) | Bug fix, doc rewrite, CI workflow change, license addition. |
+| `+1` patch (`v0.1.9 → v0.1.10`) | Bug fix, doc rewrite, CI workflow change, license addition. |
 | `+1` minor (`v0.1.x → v0.2.0`) | New CLI subcommand, new built-in tool, new built-in provider/MCP catalog entry, schema-compatible additions. |
 | `+1` major (`v0.x.y → v1.0.0`) | Breaking change to `~/.evoclaw/` layout, JSONL record schema, public Rust API, or CLI flags. |
 
@@ -187,9 +187,12 @@ grep -rE 'v[0-9]+\.[0-9]+\.[0-9]+' EvoClaw/README.md EvoClaw/docs/zh/README.md \
   EvoClawSite/index.html EvoClawSite/zh.html | grep -v "v0\.X\.Y" | sort -u
 ```
 
-The two `version` files must agree on the same semantic value. CI will not
-catch a missed bump (it is a process rule), so run the sanity block above
-before opening the PR.
+`./scripts/check.sh` runs a `version sync` gate that asserts the
+`EvoClaw/version` file matches `Cargo.toml` `[workspace.package].version`
+(it fails the build on drift). The two `version` files (`EvoClaw/version`
+vs `EvoClawSite/version`) live in separate repos, so the cross-repo
+match is still a process rule — run the sanity block above before
+opening the PR.
 
 ---
 
