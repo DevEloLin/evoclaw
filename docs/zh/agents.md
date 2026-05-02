@@ -18,12 +18,15 @@ GitHub Copilot 的同一个开放协议。当你选用 ACP 代理时，那个代
 
 ## 内置目录
 
-| ID        | 可执行名         | 参数                       | 安装方式                                  |
-|-----------|------------------|----------------------------|-------------------------------------------|
-| `claude`  | `claude`         | `--acp`                    | `npm i -g @anthropic-ai/claude-code`      |
-| `codex`   | `codex`          | `--acp`                    | `pip install codex-cli`（或 `cargo`）     |
-| `cursor`  | `cursor-agent`   | `--acp`                    | 随 Cursor 桌面端附带                      |
-| `copilot` | `gh`             | `copilot suggest --acp`    | `gh extension install github/gh-copilot`  |
+| ID          | 可执行名         | 参数                       | 安装方式                                  |
+|-------------|------------------|----------------------------|-------------------------------------------|
+| `claude`    | `claude`         | `--acp`                    | `npm i -g @anthropic-ai/claude-code`      |
+| `codex`     | `codex`          | `--acp`                    | `npm i -g @openai/codex`                  |
+| `cursor`    | `cursor-agent`   | `--acp`                    | 随 Cursor 桌面端附带                       |
+| `copilot`   | `gh`             | `copilot suggest --acp`    | `gh extension install github/gh-copilot`  |
+| `gemini`    | `gemini`         | `--acp`                    | `npm i -g @google/gemini-cli`             |
+| `aider`     | `aider`          | `--acp`                    | `pipx install aider-chat`                 |
+| `qwen-code` | `qwen`           | `--acp`                    | `npm i -g @qwen-code/qwen-code`           |
 
 随时查看：
 

@@ -14,9 +14,12 @@ pub const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
-    #[error("rpc: {0}")] Rpc(#[from] RpcError),
-    #[error("config: {0}")] Config(String),
-    #[error("io: {0}")] Io(#[from] std::io::Error),
+    #[error("rpc: {0}")]
+    Rpc(#[from] RpcError),
+    #[error("config: {0}")]
+    Config(String),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Debug, Clone)]
@@ -105,15 +108,20 @@ pub struct ServerConfig {
     pub id: String,
     pub name: String,
     pub command: String,
-    #[serde(default)] pub args: Vec<String>,
-    #[serde(default)] pub env: Vec<(String, String)>,
-    #[serde(default)] pub installed_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    #[serde(default)]
+    pub installed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl ServerConfig {
     pub fn from_profile(p: &ServerProfile) -> Self {
         Self {
-            id: p.id.into(), name: p.name.into(), command: p.command.into(),
+            id: p.id.into(),
+            name: p.name.into(),
+            command: p.command.into(),
             args: p.args.iter().map(|s| s.to_string()).collect(),
             env: Vec::new(),
             installed_at: Some(chrono::Utc::now()),
@@ -132,9 +140,12 @@ impl ServerConfig {
 fn home() -> Result<PathBuf, McpError> {
     Ok(BaseDirs::new()
         .ok_or_else(|| McpError::Config("no home dir".into()))?
-        .home_dir().to_path_buf())
+        .home_dir()
+        .to_path_buf())
 }
-pub fn servers_dir() -> Result<PathBuf, McpError> { Ok(home()?.join(".evoclaw/mcp")) }
+pub fn servers_dir() -> Result<PathBuf, McpError> {
+    Ok(home()?.join(".evoclaw/mcp"))
+}
 pub fn server_config_path(id: &str) -> Result<PathBuf, McpError> {
     Ok(servers_dir()?.join(format!("{id}.toml")))
 }
@@ -156,14 +167,20 @@ pub async fn load_server(id: &str) -> Result<ServerConfig, McpError> {
 
 pub async fn list_servers() -> Result<Vec<ServerConfig>, McpError> {
     let dir = servers_dir()?;
-    if !dir.exists() { return Ok(Vec::new()); }
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     let mut entries = tokio::fs::read_dir(&dir).await?;
     while let Some(e) = entries.next_entry().await? {
         let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("toml") { continue; }
+        if p.extension().and_then(|s| s.to_str()) != Some("toml") {
+            continue;
+        }
         if let Ok(s) = tokio::fs::read_to_string(&p).await {
-            if let Ok(cfg) = toml::from_str::<ServerConfig>(&s) { out.push(cfg); }
+            if let Ok(cfg) = toml::from_str::<ServerConfig>(&s) {
+                out.push(cfg);
+            }
         }
     }
     Ok(out)
@@ -171,33 +188,43 @@ pub async fn list_servers() -> Result<Vec<ServerConfig>, McpError> {
 
 pub async fn remove_server(id: &str) -> Result<(), McpError> {
     let path = server_config_path(id)?;
-    if path.exists() { tokio::fs::remove_file(&path).await?; }
+    if path.exists() {
+        tokio::fs::remove_file(&path).await?;
+    }
     Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpTool {
     pub name: String,
-    #[serde(default)] pub description: String,
+    #[serde(default)]
+    pub description: String,
     #[serde(default, rename = "inputSchema")]
     pub input_schema: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolCallResult {
-    #[serde(default)] pub content: Vec<ToolContent>,
-    #[serde(default, rename = "isError")] pub is_error: bool,
+    #[serde(default)]
+    pub content: Vec<ToolContent>,
+    #[serde(default, rename = "isError")]
+    pub is_error: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum ToolContent {
-    #[serde(rename = "text")] Text { text: String },
-    #[serde(rename = "image")] Image {
-        #[serde(default)] data: String,
-        #[serde(default, rename = "mimeType")] mime_type: String,
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image {
+        #[serde(default)]
+        data: String,
+        #[serde(default, rename = "mimeType")]
+        mime_type: String,
     },
-    #[serde(other)] Other,
+    #[serde(other)]
+    Other,
 }
 
 pub struct McpClient {
@@ -207,7 +234,10 @@ pub struct McpClient {
 
 impl McpClient {
     pub fn new() -> Self {
-        Self { rpc: Arc::new(StdioRpcClient::new()), initialized: tokio::sync::Mutex::new(false) }
+        Self {
+            rpc: Arc::new(StdioRpcClient::new()),
+            initialized: tokio::sync::Mutex::new(false),
+        }
     }
 
     pub async fn spawn(&self, cfg: &ServerConfig) -> Result<(), McpError> {
@@ -215,15 +245,30 @@ impl McpClient {
         Ok(())
     }
 
-    pub async fn initialize(&self, client_name: &str, client_version: &str) -> Result<Value, McpError> {
+    pub async fn initialize(
+        &self,
+        client_name: &str,
+        client_version: &str,
+    ) -> Result<Value, McpError> {
         let mut init = self.initialized.lock().await;
-        if *init { return Ok(Value::Null); }
-        let result = self.rpc.call("initialize", json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": { "tools": {}, "resources": {}, "prompts": {} },
-            "clientInfo": { "name": client_name, "version": client_version }
-        })).await?;
-        self.rpc.notify("notifications/initialized", json!({})).await.ok();
+        if *init {
+            return Ok(Value::Null);
+        }
+        let result = self
+            .rpc
+            .call(
+                "initialize",
+                json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": { "tools": {}, "resources": {}, "prompts": {} },
+                    "clientInfo": { "name": client_name, "version": client_version }
+                }),
+            )
+            .await?;
+        self.rpc
+            .notify("notifications/initialized", json!({}))
+            .await
+            .ok();
         *init = true;
         Ok(result)
     }
@@ -234,8 +279,15 @@ impl McpClient {
         serde_json::from_value(tools_val).map_err(|e| McpError::Config(e.to_string()))
     }
 
-    pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<ToolCallResult, McpError> {
-        let r = self.rpc.call("tools/call", json!({"name": name, "arguments": arguments})).await?;
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<ToolCallResult, McpError> {
+        let r = self
+            .rpc
+            .call("tools/call", json!({"name": name, "arguments": arguments}))
+            .await?;
         serde_json::from_value(r).map_err(|e| McpError::Config(e.to_string()))
     }
 
@@ -246,7 +298,9 @@ impl McpClient {
 }
 
 impl Default for McpClient {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

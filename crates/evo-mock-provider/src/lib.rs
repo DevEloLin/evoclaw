@@ -12,9 +12,14 @@ pub enum Turn {
 }
 
 impl Turn {
-    pub fn final_text(s: impl Into<String>) -> Self { Turn::FinalText(s.into()) }
+    pub fn final_text(s: impl Into<String>) -> Self {
+        Turn::FinalText(s.into())
+    }
     pub fn tool_call(name: impl Into<String>, args: Value) -> Self {
-        Turn::ToolCall { name: name.into(), args }
+        Turn::ToolCall {
+            name: name.into(),
+            args,
+        }
     }
 }
 
@@ -29,17 +34,30 @@ enum Mode {
 
 impl MockProvider {
     pub fn scripted(turns: Vec<Turn>) -> Self {
-        Self { mode: Mode::Scripted(Mutex::new(turns.into())) }
+        Self {
+            mode: Mode::Scripted(Mutex::new(turns.into())),
+        }
     }
     pub fn looping_tool_call(name: impl Into<String>, args: Value) -> Self {
-        Self { mode: Mode::Looping { name: name.into(), args } }
+        Self {
+            mode: Mode::Looping {
+                name: name.into(),
+                args,
+            },
+        }
     }
 
     fn next_turn(&self) -> Turn {
         match &self.mode {
-            Mode::Scripted(q) => q.lock().unwrap().pop_front()
+            Mode::Scripted(q) => q
+                .lock()
+                .unwrap()
+                .pop_front()
                 .expect("MockProvider scripted: ran past end of turns"),
-            Mode::Looping { name, args } => Turn::ToolCall { name: name.clone(), args: args.clone() },
+            Mode::Looping { name, args } => Turn::ToolCall {
+                name: name.clone(),
+                args: args.clone(),
+            },
         }
     }
 }
@@ -55,7 +73,11 @@ impl Provider for MockProvider {
             Turn::FinalText(s) => vec![
                 StreamEvent::Delta(s),
                 StreamEvent::ToolCallFinish,
-                StreamEvent::Usage(Usage { input_tokens: 100, cached_tokens: 60, output_tokens: 10 }),
+                StreamEvent::Usage(Usage {
+                    input_tokens: 100,
+                    cached_tokens: 60,
+                    output_tokens: 10,
+                }),
                 StreamEvent::Done,
             ],
             Turn::ToolCall { name, args } => vec![
@@ -66,7 +88,11 @@ impl Provider for MockProvider {
                     arguments: args,
                 }),
                 StreamEvent::ToolCallFinish,
-                StreamEvent::Usage(Usage { input_tokens: 100, cached_tokens: 60, output_tokens: 10 }),
+                StreamEvent::Usage(Usage {
+                    input_tokens: 100,
+                    cached_tokens: 60,
+                    output_tokens: 10,
+                }),
                 StreamEvent::Done,
             ],
         };
@@ -76,7 +102,10 @@ impl Provider for MockProvider {
 
 fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     format!("{nanos:x}")
 }
 
@@ -102,7 +131,9 @@ mod tests {
         let mut s = p.stream(req()).await.unwrap();
         let mut text = String::new();
         while let Some(e) = s.next().await {
-            if let StreamEvent::Delta(t) = e.unwrap() { text.push_str(&t); }
+            if let StreamEvent::Delta(t) = e.unwrap() {
+                text.push_str(&t);
+            }
         }
         assert_eq!(text, "hello");
     }
@@ -114,7 +145,9 @@ mod tests {
             let mut s = p.stream(req()).await.unwrap();
             let mut got = false;
             while let Some(e) = s.next().await {
-                if let StreamEvent::ToolCallStart(_) = e.unwrap() { got = true; }
+                if let StreamEvent::ToolCallStart(_) = e.unwrap() {
+                    got = true;
+                }
             }
             assert!(got);
         }

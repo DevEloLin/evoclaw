@@ -43,20 +43,37 @@ impl McpToolWrapper {
         }
     }
 
-    pub fn server_id(&self) -> &str { &self.server_id }
-    pub fn remote_name(&self) -> &str { &self.remote_name }
+    pub fn server_id(&self) -> &str {
+        &self.server_id
+    }
+    pub fn remote_name(&self) -> &str {
+        &self.remote_name
+    }
 }
 
 #[async_trait]
 impl Tool for McpToolWrapper {
-    fn name(&self) -> &str { &self.qualified_name }
-    fn description(&self) -> &str { &self.description }
-    fn permission(&self) -> Permission { Permission::P3 }
-    fn schema(&self) -> Value { self.schema.clone() }
+    fn name(&self) -> &str {
+        &self.qualified_name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn permission(&self) -> Permission {
+        Permission::P3
+    }
+    fn schema(&self) -> Value {
+        self.schema.clone()
+    }
 
     async fn run(&self, _ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
-        let result = self.client.call_tool(&self.remote_name, args).await
-            .map_err(|e| ToolError::Internal(format!("mcp[{}].{}: {e}", self.server_id, self.remote_name)))?;
+        let result = self
+            .client
+            .call_tool(&self.remote_name, args)
+            .await
+            .map_err(|e| {
+                ToolError::Internal(format!("mcp[{}].{}: {e}", self.server_id, self.remote_name))
+            })?;
         let text = render_content(&result.content);
         if result.is_error {
             return Err(ToolError::Internal(text));
@@ -70,11 +87,15 @@ fn render_content(blocks: &[ToolContent]) -> String {
     for b in blocks {
         match b {
             ToolContent::Text { text } => {
-                if !out.is_empty() { out.push('\n'); }
+                if !out.is_empty() {
+                    out.push('\n');
+                }
                 out.push_str(text);
             }
             ToolContent::Image { mime_type, .. } => {
-                if !out.is_empty() { out.push('\n'); }
+                if !out.is_empty() {
+                    out.push('\n');
+                }
                 out.push_str(&format!("[image: {mime_type}]"));
             }
             ToolContent::Other => { /* skip unknown */ }
@@ -92,7 +113,9 @@ pub async fn install_server(
 ) -> Result<usize, evo_mcp_client::McpError> {
     let client = Arc::new(McpClient::new());
     client.spawn(cfg).await?;
-    client.initialize("evoclaw", env!("CARGO_PKG_VERSION")).await?;
+    client
+        .initialize("evoclaw", env!("CARGO_PKG_VERSION"))
+        .await?;
     let tools = client.list_tools().await?;
     let n = tools.len();
     for t in tools {
@@ -114,7 +137,10 @@ pub async fn install_server(
 pub async fn install_all(registry: &mut ToolRegistry) -> usize {
     let servers = match evo_mcp_client::list_servers().await {
         Ok(s) => s,
-        Err(e) => { tracing::warn!(error=%e, "list_servers failed"); return 0; }
+        Err(e) => {
+            tracing::warn!(error=%e, "list_servers failed");
+            return 0;
+        }
     };
     let mut attached = 0usize;
     for cfg in servers {
@@ -139,17 +165,22 @@ mod tests {
     #[test]
     fn render_content_concatenates_text_blocks() {
         let blocks = vec![
-            ToolContent::Text { text: "alpha".into() },
-            ToolContent::Text { text: "beta".into() },
+            ToolContent::Text {
+                text: "alpha".into(),
+            },
+            ToolContent::Text {
+                text: "beta".into(),
+            },
         ];
         assert_eq!(render_content(&blocks), "alpha\nbeta");
     }
 
     #[test]
     fn render_content_includes_image_marker() {
-        let blocks = vec![
-            ToolContent::Image { data: "ignored".into(), mime_type: "image/png".into() },
-        ];
+        let blocks = vec![ToolContent::Image {
+            data: "ignored".into(),
+            mime_type: "image/png".into(),
+        }];
         assert!(render_content(&blocks).contains("image/png"));
     }
 

@@ -18,13 +18,23 @@ pub struct CompressionConfig {
 }
 
 impl Default for CompressionConfig {
-    fn default() -> Self { Self { turn_period: 5, keep_recent: 10, max_segment: 400 } }
+    fn default() -> Self {
+        Self {
+            turn_period: 5,
+            keep_recent: 10,
+            max_segment: 400,
+        }
+    }
 }
 
 pub fn compress_if_due(messages: &mut [Message], turn: u64, cfg: CompressionConfig) -> bool {
-    if cfg.turn_period == 0 || turn % cfg.turn_period != 0 || turn == 0 { return false; }
+    if cfg.turn_period == 0 || turn % cfg.turn_period != 0 || turn == 0 {
+        return false;
+    }
     let len = messages.len();
-    if len <= cfg.keep_recent { return false; }
+    if len <= cfg.keep_recent {
+        return false;
+    }
     let cutoff = len - cfg.keep_recent;
     let mut changed = false;
     for msg in messages.iter_mut().take(cutoff) {
@@ -67,7 +77,9 @@ fn compress_one_tag(haystack: &str, open: &str, close: &str, max_segment: usize)
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max + TRUNCATE_MARKER.len() * 2 { return s.to_string(); }
+    if s.len() <= max + TRUNCATE_MARKER.len() * 2 {
+        return s.to_string();
+    }
     let half = max / 2;
     let head_end = floor_char_boundary(s, half);
     let tail_start = ceil_char_boundary(s, s.len().saturating_sub(half));
@@ -75,11 +87,15 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
-    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
     i
 }
 fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) { i += 1; }
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
     i
 }
 
@@ -89,7 +105,13 @@ mod tests {
     use evo_providers::{CacheKind, Role};
 
     fn msg(body: &str) -> Message {
-        Message { role: Role::User, content: body.into(), tool_calls: Vec::new(), tool_results: Vec::new(), cache_control: CacheKind::None }
+        Message {
+            role: Role::User,
+            content: body.into(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+            cache_control: CacheKind::None,
+        }
     }
 
     #[test]
@@ -115,7 +137,10 @@ mod tests {
             assert_eq!(m.content.len(), big.len(), "msg {i} should be untouched");
         }
         for (i, m) in v.iter().enumerate().take(5) {
-            assert!(m.content.contains(TRUNCATE_MARKER), "msg {i} should be truncated");
+            assert!(
+                m.content.contains(TRUNCATE_MARKER),
+                "msg {i} should be truncated"
+            );
             assert!(m.content.len() < big.len() / 2);
         }
     }
@@ -129,7 +154,11 @@ mod tests {
 
     #[test]
     fn compress_tags_handles_multiple_tags_in_one_message() {
-        let s = format!("<thinking>{}</thinking><tool_use>{}</tool_use>", "x".repeat(1000), "y".repeat(1000));
+        let s = format!(
+            "<thinking>{}</thinking><tool_use>{}</tool_use>",
+            "x".repeat(1000),
+            "y".repeat(1000)
+        );
         let out = compress_tags(&s, 100);
         assert_eq!(out.matches(TRUNCATE_MARKER).count(), 2);
     }

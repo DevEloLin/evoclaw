@@ -42,3 +42,26 @@ jobs:
 
       - name: Check build
         run: cargo check --workspace
+
+      - name: Run repo gates (LOC budget, prompt budget, tool count, doc sync, version sync)
+        run: ./scripts/check.sh
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit --deny warnings

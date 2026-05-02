@@ -1,7 +1,14 @@
 # EvoClaw — tag-based release.
 #
-# This workflow only runs when pushing version tags like v0.1.0.
+# This workflow only runs when pushing version tags like v0.1.9.
 # main branch pushes do not package or publish releases.
+#
+# Release trigger:
+#   git tag -a v0.1.9 -m "Release v0.1.9"
+#   git push origin v0.1.9
+#
+# Optional release notes:
+#   .github/release-notes/v0.1.9.md
 
 name: Release
 
@@ -13,6 +20,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -20,30 +31,42 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS Apple Silicon
           - os: macos-latest
             target: aarch64-apple-darwin
             bin_name: evoclaw
             archive_name: evoclaw-aarch64-apple-darwin.tar.gz
             archive_type: tar
 
-          - os: macos-13
+          # macOS Intel
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             bin_name: evoclaw
             archive_name: evoclaw-x86_64-apple-darwin.tar.gz
             archive_type: tar
 
+          # Linux x64, Ubuntu / Debian / CentOS etc.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin_name: evoclaw
             archive_name: evoclaw-x86_64-unknown-linux-gnu.tar.gz
             archive_type: tar
 
+          # Linux ARM64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bin_name: evoclaw
+            archive_name: evoclaw-aarch64-unknown-linux-gnu.tar.gz
+            archive_type: tar
+
+          # Linux x64 static, better for cross-distro compatibility
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             bin_name: evoclaw
             archive_name: evoclaw-x86_64-unknown-linux-musl.tar.gz
             archive_type: tar
 
+          # Windows x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin_name: evoclaw.exe
@@ -77,6 +100,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/${{ matrix.bin_name }} dist/evoclaw
+          chmod +x dist/evoclaw
           cd dist
           tar -czf ../${{ matrix.archive_name }} evoclaw
           cd ..
@@ -107,6 +131,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -119,8 +146,59 @@ jobs:
           find artifacts -type f -name "*.zip" -exec cp {} release/ \;
           find artifacts -type f -name "*.sha256" -exec cp {} release/ \;
 
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          NOTES_FILE=".github/release-notes/${GITHUB_REF_NAME}.md"
+
+          if [ -f "$NOTES_FILE" ]; then
+            cp "$NOTES_FILE" release_body.md
+          else
+            cat > release_body.md <<EOF
+          # EvoClaw ${GITHUB_REF_NAME}
+
+          EvoClaw is a local-first, CLI-first, self-evolving personal AI assistant built with Rust.
+
+          This release was created from tag \`${GITHUB_REF_NAME}\`.
+
+          ---
+
+          ## Artifacts
+
+          This release includes binaries for:
+
+          - macOS Apple Silicon
+          - macOS Intel
+          - Linux x64
+          - Linux ARM64
+          - Linux x64 static musl
+          - Windows x64
+
+          Each artifact includes a matching \`.sha256\` checksum file.
+
+          ---
+
+          ## Install
+
+          Download the artifact for your platform from this release.
+
+          Homebrew support is planned through:
+
+          \`\`\`bash
+          brew install develolin/tap/evoclaw
+          \`\`\`
+
+          ---
+
+          ## Notes
+
+          Detailed release notes were not provided for this version.
+          EOF
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
+          body_path: release_body.md
           generate_release_notes: true

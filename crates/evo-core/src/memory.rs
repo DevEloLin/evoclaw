@@ -6,7 +6,14 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-pub enum MemoryLayer { L0, L1, L2, L3, L4, L5 }
+pub enum MemoryLayer {
+    L0,
+    L1,
+    L2,
+    L3,
+    L4,
+    L5,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRecord {
@@ -23,22 +30,35 @@ pub struct MemoryRecord {
 }
 
 impl MemoryRecord {
-    pub fn new(layer: MemoryLayer, content: impl Into<String>, source: impl Into<String>, confidence: f32) -> Self {
+    pub fn new(
+        layer: MemoryLayer,
+        content: impl Into<String>,
+        source: impl Into<String>,
+        confidence: f32,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: format!("mem-{}", now.format("%Y%m%dT%H%M%S%.6f")),
-            layer, content: content.into(), source: source.into(),
-            confidence, tags: Vec::new(),
-            created_at: now, expires_at: None,
+            layer,
+            content: content.into(),
+            source: source.into(),
+            confidence,
+            tags: Vec::new(),
+            created_at: now,
+            expires_at: None,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Memory { root: PathBuf }
+pub struct Memory {
+    root: PathBuf,
+}
 
 impl Memory {
-    pub fn at(root: impl Into<PathBuf>) -> Self { Self { root: root.into() } }
+    pub fn at(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
 
     fn layer_path(&self, layer: MemoryLayer) -> PathBuf {
         self.root.join(format!("{}.jsonl", layer_name(layer)))
@@ -64,36 +84,56 @@ impl Memory {
         };
         let mut out = Vec::new();
         for line in text.lines() {
-            if line.trim().is_empty() { continue; }
-            if let Ok(rec) = serde_json::from_str::<MemoryRecord>(line) { out.push(rec); }
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(rec) = serde_json::from_str::<MemoryRecord>(line) {
+                out.push(rec);
+            }
         }
         Ok(out)
     }
 
-    pub async fn search(&self, query: &str, layers: &[MemoryLayer], limit: usize) -> std::io::Result<Vec<MemoryRecord>> {
+    pub async fn search(
+        &self,
+        query: &str,
+        layers: &[MemoryLayer],
+        limit: usize,
+    ) -> std::io::Result<Vec<MemoryRecord>> {
         let mut hits = Vec::new();
         let q = query.to_lowercase();
         for layer in layers {
             for rec in self.read_all(*layer).await? {
                 if rec.content.to_lowercase().contains(&q)
-                    || rec.tags.iter().any(|t| t.to_lowercase().contains(&q)) {
+                    || rec.tags.iter().any(|t| t.to_lowercase().contains(&q))
+                {
                     hits.push(rec);
-                    if hits.len() >= limit { break; }
+                    if hits.len() >= limit {
+                        break;
+                    }
                 }
             }
-            if hits.len() >= limit { break; }
+            if hits.len() >= limit {
+                break;
+            }
         }
         hits.sort_by_key(|r| std::cmp::Reverse(r.created_at));
         Ok(hits)
     }
 
-    pub fn root(&self) -> &Path { &self.root }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 }
 
 fn layer_name(l: MemoryLayer) -> &'static str {
     match l {
-        MemoryLayer::L0 => "L0", MemoryLayer::L1 => "L1", MemoryLayer::L2 => "L2",
-        MemoryLayer::L3 => "L3", MemoryLayer::L4 => "L4", MemoryLayer::L5 => "L5",
+        MemoryLayer::L0 => "L0",
+        MemoryLayer::L1 => "L1",
+        MemoryLayer::L2 => "L2",
+        MemoryLayer::L3 => "L3",
+        MemoryLayer::L4 => "L4",
+        MemoryLayer::L5 => "L5",
     }
 }
 
@@ -109,7 +149,9 @@ pub fn redact(input: &str) -> String {
 fn redact_line(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     for marker in ["set-cookie:", "sessionid=", "csrftoken=", "authorization:"] {
-        if lower.contains(marker) { return "[REDACTED:cookie/auth]\n".into(); }
+        if lower.contains(marker) {
+            return "[REDACTED:cookie/auth]\n".into();
+        }
     }
     if lower.contains("bearer ") {
         return redact_token_segments(line, "bearer ");
@@ -120,9 +162,8 @@ fn redact_line(line: &str) -> String {
 /// Find every occurrence of an API-key-like prefix and replace from the prefix
 /// through the next whitespace/quote/comma boundary.
 fn redact_key_prefixes(line: &str) -> String {
-    const PREFIXES: &[(&str, usize)] = &[
-        ("sk-", 6), ("ghp_", 6), ("sk_live_", 10), ("sk_test_", 10),
-    ];
+    const PREFIXES: &[(&str, usize)] =
+        &[("sk-", 6), ("ghp_", 6), ("sk_live_", 10), ("sk_test_", 10)];
     let mut out = String::with_capacity(line.len());
     let mut idx = 0;
     while idx < line.len() {
@@ -142,7 +183,8 @@ fn redact_key_prefixes(line: &str) -> String {
         };
         // Tail of the prefix until whitespace / quote / comma / newline.
         let after = &line[abs + prefix.len()..];
-        let tail_end = after.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
+        let tail_end = after
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
             .unwrap_or(after.len());
         let total_len = prefix.len() + tail_end;
         if total_len >= min_len {
@@ -166,7 +208,9 @@ fn redact_token_segments(line: &str, marker_lower: &str) -> String {
         let abs = idx + pos;
         out.push_str(&line[idx..abs + marker_lower.len()]);
         let after = &line[abs + marker_lower.len()..];
-        let token_end = after.find(|c: char| c.is_whitespace()).unwrap_or(after.len());
+        let token_end = after
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(after.len());
         out.push_str("[REDACTED:bearer]");
         idx = abs + marker_lower.len() + token_end;
     }
@@ -206,9 +250,14 @@ mod tests {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let mut p = std::env::temp_dir();
         let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::SeqCst);
-        p.push(format!("evo-mem-{name}-{}-{stamp}-{seq}", std::process::id()));
+        p.push(format!(
+            "evo-mem-{name}-{}-{stamp}-{seq}",
+            std::process::id()
+        ));
         p
     }
 
@@ -234,7 +283,9 @@ mod tests {
     #[tokio::test]
     async fn search_empty_when_no_match() {
         let m = Memory::at(unique_root("none"));
-        m.write(MemoryRecord::new(MemoryLayer::L3, "alpha", "task", 0.5)).await.unwrap();
+        m.write(MemoryRecord::new(MemoryLayer::L3, "alpha", "task", 0.5))
+            .await
+            .unwrap();
         let hits = m.search("zeta", &[MemoryLayer::L3], 10).await.unwrap();
         assert!(hits.is_empty());
     }

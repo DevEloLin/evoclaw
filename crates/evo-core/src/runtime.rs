@@ -1,10 +1,14 @@
 //! Agent loop: PRD §10.1 + §31 Phase 1 subset of FSM.
 
 use crate::compression::{compress_if_due, CompressionConfig};
-use crate::distillation::{build_distillation_prompt, parse_distilled_skill, skill_from_reflection_quick, DistillCtx};
+use crate::distillation::{
+    build_distillation_prompt, parse_distilled_skill, skill_from_reflection_quick, DistillCtx,
+};
 use crate::memory::{Memory, MemoryLayer, MemoryRecord};
 use crate::prompt::{build_system_prompt, PromptCtx};
-use crate::reflection::{build_reflection_prompt, parse_reflection, ReflectionCtx, ReflectionRecord, SkillUpdateDecision};
+use crate::reflection::{
+    build_reflection_prompt, parse_reflection, ReflectionCtx, ReflectionRecord, SkillUpdateDecision,
+};
 use crate::session::{
     EndRecord, RecordedToolCall, RecordedUsage, Session, SessionRecord, TaskRecord, TurnRecord,
 };
@@ -69,7 +73,12 @@ pub struct RuntimeConfig {
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
-        Self { max_turns: 25, max_tokens: 1024, temperature: 0.2, model: "gpt-4o-mini".into() }
+        Self {
+            max_turns: 25,
+            max_tokens: 1024,
+            temperature: 0.2,
+            model: "gpt-4o-mini".into(),
+        }
     }
 }
 
@@ -103,7 +112,12 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         let mut prompt_ctx = PromptCtx::today_in(tool_ctx.workspace.display().to_string());
         prompt_ctx.tool_names = registry.names();
         Self {
-            provider, registry, session, tool_ctx, prompt_ctx, config,
+            provider,
+            registry,
+            session,
+            tool_ctx,
+            prompt_ctx,
+            config,
             fingerprint: ToolFingerprint::default(),
             summaries: SummaryParser::default(),
             compression_cfg: CompressionConfig::default(),
@@ -160,14 +174,18 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
     }
 
     fn scrub_value(&self, v: &serde_json::Value) -> serde_json::Value {
-        if self.redactor.is_none() { return v.clone(); }
+        if self.redactor.is_none() {
+            return v.clone();
+        }
         match v {
             serde_json::Value::String(s) => serde_json::Value::String(self.scrub(s)),
-            serde_json::Value::Array(items) => serde_json::Value::Array(
-                items.iter().map(|x| self.scrub_value(x)).collect(),
-            ),
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(|x| self.scrub_value(x)).collect())
+            }
             serde_json::Value::Object(map) => serde_json::Value::Object(
-                map.iter().map(|(k, val)| (k.clone(), self.scrub_value(val))).collect(),
+                map.iter()
+                    .map(|(k, val)| (k.clone(), self.scrub_value(val)))
+                    .collect(),
             ),
             _ => v.clone(),
         }
@@ -179,13 +197,15 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         // only placeholders, never the raw secret.
         let user_input_safe = self.scrub(user_input);
         let task_id = format!("task-{}", Utc::now().format("%Y%m%dT%H%M%S%.3f"));
-        self.session.append(&SessionRecord::Task(TaskRecord {
-            task_id: task_id.clone(),
-            user_input: user_input_safe.clone(),
-            source: "cli".into(),
-            model: self.config.model.clone(),
-            started_at: Utc::now(),
-        })).await?;
+        self.session
+            .append(&SessionRecord::Task(TaskRecord {
+                task_id: task_id.clone(),
+                user_input: user_input_safe.clone(),
+                source: "cli".into(),
+                model: self.config.model.clone(),
+                started_at: Utc::now(),
+            }))
+            .await?;
 
         let system_msg = Message::system(build_system_prompt(&self.prompt_ctx));
         let mut history: Vec<Message> = vec![system_msg];
@@ -239,11 +259,14 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             // Scrub assistant text in case the model echoed a registered secret
             // (it shouldn't, but treat the boundary as untrusted).
             let assistant_text_safe = self.scrub(&assistant_text);
-            let safe_calls: Vec<ToolCall> = tool_calls.iter().map(|c| ToolCall {
-                id: c.id.clone(),
-                name: c.name.clone(),
-                arguments: self.scrub_value(&c.arguments),
-            }).collect();
+            let safe_calls: Vec<ToolCall> = tool_calls
+                .iter()
+                .map(|c| ToolCall {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    arguments: self.scrub_value(&c.arguments),
+                })
+                .collect();
             history.push(Message {
                 role: evo_providers::Role::Assistant,
                 content: assistant_text_safe.clone(),
@@ -258,7 +281,11 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             let mut tool_results: Vec<ToolResult> = Vec::with_capacity(tool_calls.len());
             for call in &tool_calls {
                 let safe_args = self.scrub_value(&call.arguments);
-                match self.registry.invoke(&self.tool_ctx, &call.name, call.arguments.clone()).await {
+                match self
+                    .registry
+                    .invoke(&self.tool_ctx, &call.name, call.arguments.clone())
+                    .await
+                {
                     Ok(out) => {
                         let safe_out = self.scrub(&out);
                         recorded_calls.push(RecordedToolCall {
@@ -267,7 +294,11 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                             result_truncated: safe_out.clone(),
                             is_error: false,
                         });
-                        tool_results.push(ToolResult { call_id: call.id.clone(), content: safe_out, is_error: false });
+                        tool_results.push(ToolResult {
+                            call_id: call.id.clone(),
+                            content: safe_out,
+                            is_error: false,
+                        });
                     }
                     Err(e) => {
                         let err = self.scrub(&e.to_string());
@@ -277,7 +308,11 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                             result_truncated: err.clone(),
                             is_error: true,
                         });
-                        tool_results.push(ToolResult { call_id: call.id.clone(), content: err, is_error: true });
+                        tool_results.push(ToolResult {
+                            call_id: call.id.clone(),
+                            content: err,
+                            is_error: true,
+                        });
                     }
                 }
             }
@@ -285,26 +320,32 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             // PRD §35 — record cost event before persisting turn (so doctor sees it).
             if let (Some(cost), Some(u)) = (&self.cost, usage.as_ref()) {
                 let usd = estimate_usd(u.input_tokens, u.cached_tokens, u.output_tokens);
-                let _ = cost.record(&CostEvent {
-                    ts: Utc::now(),
-                    task_id: task_id.clone(),
-                    model: self.config.model.clone(),
-                    input_tokens: u.input_tokens,
-                    cached_tokens: u.cached_tokens,
-                    output_tokens: u.output_tokens,
-                    usd,
-                }).await;
+                let _ = cost
+                    .record(&CostEvent {
+                        ts: Utc::now(),
+                        task_id: task_id.clone(),
+                        model: self.config.model.clone(),
+                        input_tokens: u.input_tokens,
+                        cached_tokens: u.cached_tokens,
+                        output_tokens: u.output_tokens,
+                        usd,
+                    })
+                    .await;
             }
 
-            self.session.append(&SessionRecord::Turn(TurnRecord {
-                turn,
-                summary,
-                tool_calls: recorded_calls,
-                usage: usage.map(|u| RecordedUsage {
-                    input: u.input_tokens, cached: u.cached_tokens, output: u.output_tokens,
-                }),
-                ts: Utc::now(),
-            })).await?;
+            self.session
+                .append(&SessionRecord::Turn(TurnRecord {
+                    turn,
+                    summary,
+                    tool_calls: recorded_calls,
+                    usage: usage.map(|u| RecordedUsage {
+                        input: u.input_tokens,
+                        cached: u.cached_tokens,
+                        output: u.output_tokens,
+                    }),
+                    ts: Utc::now(),
+                }))
+                .await?;
 
             if tool_calls.is_empty() {
                 completed = true;
@@ -320,7 +361,8 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         // already-scrubbed user_input so reflection cannot leak secrets even
         // by accident.
         let reflection = if completed && (self.memory.is_some() || self.skills_dir.is_some()) {
-            self.reflection_round(&task_id, &final_text, &user_input_safe).await
+            self.reflection_round(&task_id, &final_text, &user_input_safe)
+                .await
         } else {
             None
         };
@@ -331,13 +373,22 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             (false, _) => TaskState::Failed,
         };
 
-        self.session.append(&SessionRecord::End(EndRecord {
-            state: format!("{terminal:?}").to_uppercase(),
-            finished_at: Utc::now(),
-        })).await?;
+        self.session
+            .append(&SessionRecord::End(EndRecord {
+                state: format!("{terminal:?}").to_uppercase(),
+                finished_at: Utc::now(),
+            }))
+            .await?;
 
-        if !completed { return Err(RuntimeError::MaxTurns(self.config.max_turns)); }
-        Ok(RunOutcome { task_id, turns: turn + 1, final_text, completed })
+        if !completed {
+            return Err(RuntimeError::MaxTurns(self.config.max_turns));
+        }
+        Ok(RunOutcome {
+            task_id,
+            turns: turn + 1,
+            final_text,
+            completed,
+        })
     }
 
     /// PRD §11 — Reflection + Distillation closeout. Best-effort: any IO or
@@ -391,15 +442,21 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 "task={task_id}\nuser_input={user_input}\nsuccess={}\nsummary={}\ngoal={}\nfailures={}",
                 refl.success, refl.summary, refl.user_real_goal, refl.failure_patterns.join("; ")
             );
-            let mut record = MemoryRecord::new(MemoryLayer::L3, body, "reflection", refl.confidence);
-            record.tags = vec!["reflection".into(), if refl.success { "success" } else { "failure" }.into()];
+            let mut record =
+                MemoryRecord::new(MemoryLayer::L3, body, "reflection", refl.confidence);
+            record.tags = vec![
+                "reflection".into(),
+                if refl.success { "success" } else { "failure" }.into(),
+            ];
             let _ = mem.write(record).await;
         }
 
         // Distillation → Skill DRAFT (PRD §11.3).
         if let Some(dir) = self.skills_dir.clone() {
             if !matches!(refl.skill_update_decision, SkillUpdateDecision::None) {
-                let skill = self.distil_skill(task_id, &refl, user_input, final_text).await;
+                let skill = self
+                    .distil_skill(task_id, &refl, user_input, final_text)
+                    .await;
                 if let Some(sk) = skill {
                     let _ = sk.save_yaml(&dir).await;
                 }
@@ -439,7 +496,9 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                     Ok(StreamEvent::Delta(t)) => text.push_str(&t),
                     Ok(StreamEvent::Done) => break,
                     Ok(_) => {}
-                    Err(_) => return Some(skill_from_reflection_quick(reflection, task_id, user_input)),
+                    Err(_) => {
+                        return Some(skill_from_reflection_quick(reflection, task_id, user_input))
+                    }
                 }
             }
         } else {
@@ -453,14 +512,20 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
 
     fn compose_initial_user_msg(&self, user_input: &str) -> Message {
         let history = self.summaries.render_history_block();
-        let prefix = if history.is_empty() { String::new() } else { format!("{history}\n\n") };
+        let prefix = if history.is_empty() {
+            String::new()
+        } else {
+            format!("{history}\n\n")
+        };
         Message::user(format!("{prefix}<user_input>\n{user_input}\n</user_input>"))
     }
 
     fn compose_next_user_msg(&self, tool_results: Vec<ToolResult>) -> Message {
         let history = self.summaries.render_history_block();
         let mut parts = Vec::new();
-        if !history.is_empty() { parts.push(history); }
+        if !history.is_empty() {
+            parts.push(history);
+        }
         parts.push("<tool_results>".into());
         for r in &tool_results {
             parts.push(format!("[{}] {}", r.call_id, r.content));
@@ -473,18 +538,24 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
 }
 
 fn head_tail(s: &str, max: usize) -> String {
-    if s.len() <= max + 8 { return s.to_string(); }
+    if s.len() <= max + 8 {
+        return s.to_string();
+    }
     let half = max / 2;
     let head_end = floor_char_boundary(s, half);
     let tail_start = ceil_char_boundary(s, s.len().saturating_sub(half));
     format!("{} ... {}", &s[..head_end], &s[tail_start..])
 }
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
-    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
     i
 }
 fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) { i += 1; }
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
     i
 }
 
@@ -496,7 +567,9 @@ mod tests {
     fn unique_log() -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         p.push(format!("evo-runtime-{stamp}.jsonl"));
         p
     }
@@ -504,7 +577,9 @@ mod tests {
     fn unique_ws() -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         p.push(format!("evo-rt-ws-{stamp}"));
         std::fs::create_dir_all(&p).unwrap();
         p
@@ -518,7 +593,11 @@ mod tests {
         let registry = Arc::new(ToolRegistry::with_builtins());
         let session = Session::open(unique_log()).await.unwrap();
         let mut rt = ConversationRuntime::new(
-            provider, registry, session, ToolContext::default(), RuntimeConfig::default(),
+            provider,
+            registry,
+            session,
+            ToolContext::default(),
+            RuntimeConfig::default(),
         );
         let out = rt.run("hi").await.unwrap();
         assert!(out.completed);
@@ -527,13 +606,24 @@ mod tests {
 
     #[tokio::test]
     async fn max_turns_yields_error() {
-        let provider = Arc::new(MockProvider::looping_tool_call("read_file", serde_json::json!({"path": "x"})));
+        let provider = Arc::new(MockProvider::looping_tool_call(
+            "read_file",
+            serde_json::json!({"path": "x"}),
+        ));
         let registry = Arc::new(ToolRegistry::with_builtins());
         let session = Session::open(unique_log()).await.unwrap();
         let mut rt = ConversationRuntime::new(
-            provider, registry, session,
-            ToolContext { workspace: unique_ws(), ..Default::default() },
-            RuntimeConfig { max_turns: 3, ..Default::default() },
+            provider,
+            registry,
+            session,
+            ToolContext {
+                workspace: unique_ws(),
+                ..Default::default()
+            },
+            RuntimeConfig {
+                max_turns: 3,
+                ..Default::default()
+            },
         );
         let err = rt.run("loop").await.expect_err("should hit max turns");
         assert!(matches!(err, RuntimeError::MaxTurns(3)));

@@ -19,15 +19,16 @@ warn() { echo "WARN $*"; [[ "$STRICT" == "1" ]] && exit 1 || true; }
 ok()   { echo "OK   $*"; }
 
 # Parallel arrays — bash 3.2 compatible (macOS default).
-# Caps reflect v0.5 (Phase 4.5 + 4.6) actual scope (PRD §45.2 + DEV_PLAN §0):
+# Caps reflect v0.1.9 actual scope (post fmt expansion + Phase 4.5/4.6/5/6):
+# - evo-cli: REPL + onboard wizard (21 providers + model picker) + agent/mcp/secret
+#            subcommands + mcp_tools bridge + welcome banner + replay
 # - evo-core: full learning loop (skill/memory/reflection/distillation/compression/skill_tree)
-# - evo-cli: REPL + onboard wizard + agent/mcp subcommands + mcp_tools bridge
-#            + secret subcommand + redesigned welcome banner
-# - evo-providers: OpenAI-compat + Anthropic + Copilot + ACP adapter
+# - evo-providers: OpenAI-compat + Anthropic + Copilot + ACP adapter (with /v1/models fetcher)
 # - evo-policy: permission ladder + cost engine + Vault/Redactor (PRD §13.4)
-# Hard fail triggers at total > 6600 (6000 target + 10% slack).
+# - evo-tools: 7 built-in tools (capped at 10 by PRD §43)
+# Hard fail triggers at total > 9460 LOC (8600 target + 10% slack).
 crates=(evo-cli   evo-core evo-tools evo-providers evo-policy)
-caps=(  1800      2500     1700       1300          800)
+caps=(  2400      2700     1100       1500          900)
 core_total=0
 echo "== LOC budget =="
 for i in "${!crates[@]}"; do
@@ -45,8 +46,8 @@ for i in "${!crates[@]}"; do
   fi
   core_total=$((core_total + loc))
 done
-echo "core total: $core_total / 6000 LOC ($(( 100 * core_total / 6000 ))%)"
-(( core_total > 6600 )) && fail "core total > 6000 by >10%"
+echo "core total: $core_total / 8600 LOC ($(( 100 * core_total / 8600 ))%)"
+(( core_total > 9460 )) && fail "core total > 8600 by >10%"
 
 echo
 echo "== docs sync =="
@@ -105,6 +106,22 @@ echo
 echo "== tool count =="
 tools=$(grep -cE '^inventory::submit!\(ToolFactory' crates/evo-tools/src/lib.rs || true)
 if (( tools <= 10 )); then ok "$tools / 10 tools registered (PRD §43)"; else fail "$tools tools registered, exceeds PRD §43 cap of 10"; fi
+
+echo
+echo "== version sync =="
+# Source of truth for the release version is the workspace Cargo.toml.
+# The user-facing `version` file mirrors it with a leading "v".
+cargo_ver=$(awk -F\" '/^version[[:space:]]*=/ {print $2; exit}' Cargo.toml)
+file_ver=$(tr -d '[:space:]' < version 2>/dev/null || true)
+if [[ -z "$cargo_ver" ]]; then
+  fail "could not parse workspace.package.version from Cargo.toml"
+elif [[ -z "$file_ver" ]]; then
+  fail "version file missing or empty"
+elif [[ "$file_ver" != "v$cargo_ver" ]]; then
+  fail "version drift: Cargo.toml=$cargo_ver, version file=$file_ver (expected v$cargo_ver)"
+else
+  ok "version sync: Cargo.toml=$cargo_ver, version=$file_ver"
+fi
 
 echo
 echo "All gates passed."

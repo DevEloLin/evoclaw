@@ -10,9 +10,13 @@ pub fn extract_summary(reply: &str) -> Option<String> {
     let after = &reply[start + "<summary>".len()..];
     let end = after.find("</summary>")?;
     let raw = after[..end].trim();
-    if raw.is_empty() { return None; }
+    if raw.is_empty() {
+        return None;
+    }
     let mut chars: String = raw.chars().take(SUMMARY_MAX_CHARS).collect();
-    if raw.chars().count() > SUMMARY_MAX_CHARS { chars.push('…'); }
+    if raw.chars().count() > SUMMARY_MAX_CHARS {
+        chars.push('…');
+    }
     Some(chars)
 }
 
@@ -24,32 +28,50 @@ pub struct SummaryParser {
 
 impl Default for SummaryParser {
     fn default() -> Self {
-        Self { history: VecDeque::with_capacity(DEFAULT_HISTORY_DEPTH), depth: DEFAULT_HISTORY_DEPTH }
+        Self {
+            history: VecDeque::with_capacity(DEFAULT_HISTORY_DEPTH),
+            depth: DEFAULT_HISTORY_DEPTH,
+        }
     }
 }
 
 impl SummaryParser {
     pub fn with_depth(depth: usize) -> Self {
-        Self { history: VecDeque::with_capacity(depth), depth }
+        Self {
+            history: VecDeque::with_capacity(depth),
+            depth,
+        }
     }
 
     pub fn ingest(&mut self, reply: &str) -> Option<String> {
         let s = extract_summary(reply)?;
-        while self.history.len() >= self.depth { self.history.pop_front(); }
+        while self.history.len() >= self.depth {
+            self.history.pop_front();
+        }
         self.history.push_back(s.clone());
         Some(s)
     }
 
     pub fn render_history_block(&self) -> String {
-        if self.history.is_empty() { return String::new(); }
+        if self.history.is_empty() {
+            return String::new();
+        }
         let mut out = String::from("<history>\n");
-        for s in &self.history { out.push_str("- "); out.push_str(s); out.push('\n'); }
+        for s in &self.history {
+            out.push_str("- ");
+            out.push_str(s);
+            out.push('\n');
+        }
         out.push_str("</history>");
         out
     }
 
-    pub fn len(&self) -> usize { self.history.len() }
-    pub fn is_empty(&self) -> bool { self.history.is_empty() }
+    pub fn len(&self) -> usize {
+        self.history.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.history.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -58,7 +80,10 @@ mod tests {
 
     #[test]
     fn extract_basic() {
-        assert_eq!(extract_summary("<summary>read ok</summary> rest"), Some("read ok".into()));
+        assert_eq!(
+            extract_summary("<summary>read ok</summary> rest"),
+            Some("read ok".into())
+        );
     }
 
     #[test]

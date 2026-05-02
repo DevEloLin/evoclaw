@@ -25,7 +25,11 @@ impl PromptCtx {
 }
 
 pub fn build_system_prompt(ctx: &PromptCtx) -> String {
-    let l1 = if ctx.l1_index.trim().is_empty() { "(none)" } else { ctx.l1_index.as_str() };
+    let l1 = if ctx.l1_index.trim().is_empty() {
+        "(none)"
+    } else {
+        ctx.l1_index.as_str()
+    };
     let tools = ctx.tool_names.join(", ");
     format!(
         "You are EvoClaw. Today: {date}. Workspace: {ws}. Memory L1: {l1}\n\
@@ -34,7 +38,10 @@ pub fn build_system_prompt(ctx: &PromptCtx) -> String {
          Verify with tools, never assume. Read before edit. Workspace-only writes by default.\n\
          On failure: 1st read stderr; 2nd analyze; 3rd switch tool; 4th ask_user.\n\
          Never log secrets. Cookies stay in Browser Worker — never in this context.",
-        date = ctx.date, ws = ctx.workspace, l1 = l1, tools = tools,
+        date = ctx.date,
+        ws = ctx.workspace,
+        l1 = l1,
+        tools = tools,
     )
 }
 
@@ -52,7 +59,10 @@ mod tests {
         };
         let p = build_system_prompt(&ctx);
         let lines = p.lines().count();
-        assert_eq!(lines, 6, "system prompt must be 6 lines, got {lines}\n---\n{p}");
+        assert_eq!(
+            lines, 6,
+            "system prompt must be 6 lines, got {lines}\n---\n{p}"
+        );
     }
 
     #[test]

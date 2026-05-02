@@ -23,9 +23,13 @@ pub struct SkillTreeNode {
 impl From<&Skill> for SkillTreeNode {
     fn from(s: &Skill) -> Self {
         Self {
-            id: s.id.clone(), name: s.name.clone(), kind: s.kind,
-            state: s.state, score: s.score,
-            triggers: s.triggers.clone(), parent: s.parent.clone(),
+            id: s.id.clone(),
+            name: s.name.clone(),
+            kind: s.kind,
+            state: s.state,
+            score: s.score,
+            triggers: s.triggers.clone(),
+            parent: s.parent.clone(),
             updated_at: s.updated_at,
         }
     }
@@ -38,26 +42,43 @@ pub struct SkillTree {
 }
 
 impl SkillTree {
-    pub fn empty() -> Self { Self { nodes: Vec::new(), updated_at: Utc::now() } }
+    pub fn empty() -> Self {
+        Self {
+            nodes: Vec::new(),
+            updated_at: Utc::now(),
+        }
+    }
 
     pub async fn rebuild_from_dir(skills_dir: impl AsRef<Path>) -> std::io::Result<Self> {
         let dir = skills_dir.as_ref();
         let mut nodes = Vec::new();
-        if !dir.exists() { return Ok(SkillTree::empty()); }
+        if !dir.exists() {
+            return Ok(SkillTree::empty());
+        }
         let mut entries = tokio::fs::read_dir(dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("yaml") { continue; }
+            if p.extension().and_then(|s| s.to_str()) != Some("yaml") {
+                continue;
+            }
             if let Ok(sk) = Skill::load_yaml(&p).await {
                 nodes.push(SkillTreeNode::from(&sk));
             }
         }
         nodes.sort_by(|a, b| {
-            order_state(b.state).cmp(&order_state(a.state))
-                .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal))
+            order_state(b.state)
+                .cmp(&order_state(a.state))
+                .then_with(|| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .then_with(|| a.name.cmp(&b.name))
         });
-        Ok(SkillTree { nodes, updated_at: Utc::now() })
+        Ok(SkillTree {
+            nodes,
+            updated_at: Utc::now(),
+        })
     }
 
     pub async fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
@@ -71,43 +92,65 @@ impl SkillTree {
 
     pub async fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let text = tokio::fs::read_to_string(path).await?;
-        serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        serde_json::from_str(&text)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<&SkillTreeNode> {
         let q = query.to_lowercase();
-        let mut hits: Vec<&SkillTreeNode> = self.nodes.iter()
+        let mut hits: Vec<&SkillTreeNode> = self
+            .nodes
+            .iter()
             .filter(|n| !matches!(n.state, SkillState::Archived))
-            .filter(|n| n.name.to_lowercase().contains(&q)
-                || n.id.to_lowercase().contains(&q)
-                || n.triggers.iter().any(|t| t.to_lowercase().contains(&q)))
+            .filter(|n| {
+                n.name.to_lowercase().contains(&q)
+                    || n.id.to_lowercase().contains(&q)
+                    || n.triggers.iter().any(|t| t.to_lowercase().contains(&q))
+            })
             .collect();
         hits.sort_by(|a, b| {
-            order_state(b.state).cmp(&order_state(a.state))
-                .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal))
+            order_state(b.state)
+                .cmp(&order_state(a.state))
+                .then_with(|| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
         hits.truncate(limit);
         hits
     }
 
     pub fn active(&self) -> Vec<&SkillTreeNode> {
-        self.nodes.iter().filter(|n| matches!(n.state, SkillState::Active)).collect()
+        self.nodes
+            .iter()
+            .filter(|n| matches!(n.state, SkillState::Active))
+            .collect()
     }
 
     pub fn render_tree(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("== skill tree ({} nodes, {} active) ==\n",
-            self.nodes.len(), self.active().len()));
-        let mut by_kind: std::collections::BTreeMap<String, Vec<&SkillTreeNode>> = Default::default();
+        out.push_str(&format!(
+            "== skill tree ({} nodes, {} active) ==\n",
+            self.nodes.len(),
+            self.active().len()
+        ));
+        let mut by_kind: std::collections::BTreeMap<String, Vec<&SkillTreeNode>> =
+            Default::default();
         for n in &self.nodes {
             by_kind.entry(format!("{:?}", n.kind)).or_default().push(n);
         }
         for (kind, items) in by_kind {
             out.push_str(&format!("\n[{kind}]\n"));
             for n in items {
-                out.push_str(&format!("  {:<24} {:<10} score={:.2} {} (triggers: {})\n",
-                    n.id, format!("{:?}", n.state).to_uppercase(),
-                    n.score, n.name, n.triggers.join(", ")));
+                out.push_str(&format!(
+                    "  {:<24} {:<10} score={:.2} {} (triggers: {})\n",
+                    n.id,
+                    format!("{:?}", n.state).to_uppercase(),
+                    n.score,
+                    n.name,
+                    n.triggers.join(", ")
+                ));
             }
         }
         out
@@ -136,7 +179,9 @@ mod tests {
     fn unique_dir(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
         let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         p.push(format!("evo-tree-{name}-{stamp}"));
         p
     }
@@ -151,14 +196,22 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_from_empty_dir_yields_empty_tree() {
-        let t = SkillTree::rebuild_from_dir(unique_dir("empty")).await.unwrap();
+        let t = SkillTree::rebuild_from_dir(unique_dir("empty"))
+            .await
+            .unwrap();
         assert!(t.nodes.is_empty());
     }
 
     #[tokio::test]
     async fn rebuild_picks_up_yaml_files() {
         let dir = unique_dir("pickup");
-        let s = mk_skill("s1", "diagnose ssh", 0.85, SkillState::Active, vec!["ssh", "diagnose"]);
+        let s = mk_skill(
+            "s1",
+            "diagnose ssh",
+            0.85,
+            SkillState::Active,
+            vec!["ssh", "diagnose"],
+        );
         s.save_yaml(&dir).await.unwrap();
         let t = SkillTree::rebuild_from_dir(&dir).await.unwrap();
         assert_eq!(t.nodes.len(), 1);
@@ -169,8 +222,20 @@ mod tests {
     async fn search_matches_trigger() {
         let dir = unique_dir("search");
         for sk in [
-            mk_skill("ssh-diag", "diagnose ssh", 0.85, SkillState::Active, vec!["ssh"]),
-            mk_skill("docker-diag", "docker logs", 0.7, SkillState::Active, vec!["docker"]),
+            mk_skill(
+                "ssh-diag",
+                "diagnose ssh",
+                0.85,
+                SkillState::Active,
+                vec!["ssh"],
+            ),
+            mk_skill(
+                "docker-diag",
+                "docker logs",
+                0.7,
+                SkillState::Active,
+                vec!["docker"],
+            ),
         ] {
             sk.save_yaml(&dir).await.unwrap();
         }

@@ -1,17 +1,56 @@
-# EvoClaw
+# 🦀 EvoClaw — Self-evolving Personal AI Assistant
 
-> **A pocket-sized, self-evolving AI agent runtime that runs entirely on your laptop, learns from every task, and never lets a credential touch the model API.** Written in Rust. ~6K LOC core. Two binaries. Zero telemetry.
+<p align="center">
+  <img src="./docs/image/EvoClaw.png" alt="EvoClaw — self-evolving personal AI assistant" width="700">
+</p>
 
-> **🌐 Website**: <https://develolin.github.io/EvoClawSite/>
-> **🖥️ Code**: <https://github.com/DevEloLin/evoclaw>
-> **📦 Version**: see [`./version`](./version) — kept in sync with `EvoClawSite/version`
-> **🇨🇳 中文文档**: [`docs/zh/README.md`](./docs/zh/README.md)
+<p align="center">
+  <b>LEARN. REMEMBER. EVOLVE.</b>
+</p>
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)]()
-[![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange)]()
-[![Tests](https://img.shields.io/badge/tests-153%2B%20passing-4c1)]()
-[![Local-first](https://img.shields.io/badge/data-stays_local-green)]()
-[![Secret-redacted](https://img.shields.io/badge/secrets-never_leave_machine-red)]()
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="MIT license"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.80%2B-orange?style=for-the-badge&logo=rust" alt="Rust 1.80+"></a>
+  <img src="https://img.shields.io/badge/tests-153%20passing-4c1?style=for-the-badge" alt="153 tests passing">
+  <img src="https://img.shields.io/badge/data-stays_local-green?style=for-the-badge" alt="local-first">
+  <img src="https://img.shields.io/badge/secrets-never_leave_machine-red?style=for-the-badge" alt="secret-redacted">
+</p>
+
+<p align="center">
+  <b>🌐 Website</b>: <a href="https://develolin.github.io/EvoClawSite/">develolin.github.io/EvoClawSite</a> ·
+  <b>📦 Version</b>: <a href="./version"><code>v0.1.9</code></a> ·
+  <b>🇨🇳 中文文档</b>: <a href="./docs/zh/README.md">docs/zh/README.md</a>
+</p>
+
+---
+
+**EvoClaw** is a *self-evolving personal AI assistant* you run on your own machine. It plans, runs tools, observes the results, and keeps going until the job is done — then quietly distills what it just learned into a **YAML Skill** on disk so the next similar task is shorter, cheaper, and sharper. Written in Rust as **one binary** (`evoclaw`, with the `evo` alias) plus an optional local HTTP daemon. ~8 K LOC core. Two binaries. Zero telemetry.
+
+The loop is short: *type a task → it plans, calls tools, observes, replans, finishes → it reflects → it writes a Skill.* Everything else — the cache fingerprints, the redaction barrier, the EWMA score, the JSONL replay, the ACP bridge, the MCP bridge, the secret vault — exists to make that loop **trustworthy enough that you'll let it run unsupervised on your real machine**.
+
+---
+
+## What sets EvoClaw apart
+
+A handful of design choices we made that we think matter:
+
+| Capability | EvoClaw delivers |
+|------------|------------------|
+| **Single static binary** | Rust 1.80+, ~8 K LOC core, zero runtime dependencies, sub-100 ms cold start |
+| **Self-evolving Skill Tree** | five-state EWMA lifecycle (Draft → Candidate → Active → Degraded → Deprecated); **Active** Skills auto-load into the next planner round |
+| **Secret-redaction barrier** | named **Vault** + pattern catch-all (`sk-*`, `ghp_*`, `AKIA…`, JWT, 32-char-plus high-entropy); idempotent scrub at **6 boundary points** in the runtime |
+| **Token economy** | five layered tricks (schema fingerprint, ephemeral cache, summary working memory, head+tail truncation, periodic compression); **long-task spend ≈ ⅓** of the naive cost; each trick unit-tested |
+| **ACP standard interop** | **7 upstream agents** ship in the catalog: Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, Aider, Qwen Code (阿里通义灵码) |
+| **MCP standard interop** | **7 servers** in the built-in catalog: filesystem, GitHub, fetch, time, Brave Search, Postgres, Slack — plus bring-your-own |
+| **Provider catalog** | **17 model vendors** in one wizard: 9 国内 (DeepSeek, Kimi, Qwen, Doubao, Zhipu GLM, Baidu Qianfan, MiniMax, StepFun, Tencent Hunyuan) + 8 国际 (OpenAI, Anthropic, Gemini, Copilot, Mistral, Groq, Together, Fireworks, OpenRouter) + 3 local (Ollama, vLLM, llama.cpp) + custom endpoint |
+| **Login → pick model** | wizard fetches `/v1/models` from your provider and lets you pick — or accept the catalog default with one keystroke |
+| **Append-only JSONL audit** | one log per task; `evoclaw replay <log>` rehydrates any session; `evoclaw doctor closure` walks every log and asserts the 13-row closure matrix |
+| **6-line system prompt cap** | enforced in CI by `scripts/check.sh`; every tool description capped at 80 chars |
+| **Permission ladder P0..P8** | totally ordered; default ceiling **P1**; channel senders hard-capped at **P4** regardless of config |
+| **Three-tier budget engine** | per-task hard stop, per-day soft warn + hard cap (4×), per-month hard cap; `doctor-of tokens` reports cache-hit rate |
+| **Standard CLI ergonomics** | run `evoclaw` with no subcommand → REPL with slash commands (`/agent /mcp /secret /skill /memory /tokens /closure /replay /doctor`) |
+| **Zero telemetry** | no analytics SDK, no remote pings, no "anonymous usage statistics" toggle hiding the real one |
+| **Local-first by default** | every byte of state lives under `~/.evoclaw/` on your machine — vault, agents/*.toml, mcp/*.toml, JSONL logs, learned Skills |
 
 ---
 
@@ -95,7 +134,7 @@ $ evoclaw
    ║      ███████╗██╗   ██╗ ██████╗  ██████╗██╗      █████╗ ██╗    ║
    ║      ██╔════╝██║   ██║██╔═══██╗██╔════╝██║     ██╔══██╗██║    ║
    ║                          ...                                  ║
-   ║             local-first · self-evolving · v0.1.6              ║
+   ║             local-first · self-evolving · v0.1.9              ║
    ╚═══════════════════════════════════════════════════════════════╝
 
    ┌─ context ─────────────────────────────────────────────────────┐
@@ -258,7 +297,7 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 7   — Multi-channel        | ⏳ v0.6 plan | future     | Telegram / Slack / Discord plugins, Local Dashboard, trust-FSM auto-promote, group-mention enforcement |
 | 8   — Deep hardening       | ⏳ v0.7 plan | future     | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
-Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.1.6.
+Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.1.9.
 
 ---
 
@@ -282,7 +321,7 @@ The version of this code is recorded in [`./version`](./version). The site repo 
 - `EvoClaw/version` (this repo)
 - `EvoClawSite/version`
 
-A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.1.6`**.
+A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.1.9`**.
 
 ---
 
