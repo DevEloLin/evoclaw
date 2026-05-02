@@ -1,0 +1,318 @@
+# EvoClaw — 文档（中文）
+
+> **小巧的、能自我进化的 AI Agent Runtime**：完全跑在你自己的笔记本上，每次任务后都会学到一点东西，密钥永远不会触达模型 API。Rust 写的。核心约 6K LOC。两个二进制。零遥测。
+
+> **🌐 官网**：<https://develolin.github.io/EvoClawSite/zh.html>
+> **🖥️ 代码**：<https://github.com/DevEloLin/evoclaw>
+> **📦 版本**：见 [`../../version`](../../version) — 与 `EvoClawSite/version` 严格同步
+> **🇬🇧 English README**: [`../../README.md`](../../README.md)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)]()
+[![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange)]()
+[![Tests](https://img.shields.io/badge/tests-153%2B%20passing-4c1)]()
+[![本地优先](https://img.shields.io/badge/data-stays_local-green)]()
+[![密钥隔离](https://img.shields.io/badge/secrets-never_leave_machine-red)]()
+
+---
+
+## 这是什么？
+
+EvoClaw 是**一个二进制** —— `evoclaw`（短别名 `evo`）—— 加一个可选的本地 HTTP 守护进程（`evo-gateway`）。
+
+你用自然语言描述要做的事。EvoClaw 规划、调用工具、观察结果、再规划，一直跑到任务完成。然后它会安静地对自己做一次复盘，把刚学到的东西**蒸馏成一份 YAML Skill** 写到磁盘。下次你再问类似的问题时，那份 Skill 就会被命中，整轮会更短、更便宜、更准。
+
+这就是核心循环。其他的一切 —— 缓存指纹、密钥隔离、EWMA 评分、JSONL 复盘、ACP 桥、MCP 桥、本地保险柜 —— 都是在让这个循环**值得你信任，敢让它在你真实的机器上无人值守地跑**。
+
+---
+
+## 架构总览
+
+![EvoClaw 架构](../image/architecture-zh1.png)
+
+> 七层泳道，自上而下：前端 → Gateway/向导 → Agent Loop → 能力面 → 路由与适配器 → 策略/成本/脱敏 → 持久化。每层内部横向铺开；跨层依赖永远只朝下。在线图：<https://develolin.github.io/EvoClawSite/architecture-zh.html>。
+
+每次任务结束都跑一次反思 + 蒸馏，让循环自动闭合：
+
+![EvoClaw 设计 — 任务生命周期与 Skill EWMA](../image/design.png)
+
+> Task FSM（RECEIVED → PLANNING → TOOL_EXECUTING → OBSERVING → REFLECTING → DISTILLING → COMPLETED → ARCHIVED）和 Skill FSM（Draft → Candidate → Active → Degraded → Deprecated）共同驱动自主进化。在线设计图：<https://develolin.github.io/EvoClawSite/design-zh.html>。
+
+---
+
+## EvoClaw 与众不同的三件事
+
+### 1. **它会学。** 不是"丢进向量库然后保佑"那种学，是结构化、可审计、可删除的学。
+
+每次任务结束后，EvoClaw 会主动多打一次模型 —— 这是**反思回合（reflection round）**，问的是：*用户当时到底想干什么？什么有效？什么没生效？哪些动作是可复用的？* 答案被写成一份 YAML Skill。Skill 走五态机：**Draft → Candidate → Active → Degraded → Deprecated**，由 EWMA 分数驱动。Active 状态的 skill 会被下次任务的 planner 自动加载；进入 Deprecated 的会归档但不会删 —— 审计轨迹比磁盘空间重要。
+
+任何 skill 你都可以单独看（`evoclaw skill show <id>`），可以 grep（`evoclaw memory search "..."`），可以重建整棵树（`evoclaw skill tree`）。没有一处是黑盒。没有一字节会发往别处。
+
+### 2. **密钥永远不会从本机泄漏到模型。**
+
+你和模型之间夹着**两层 redaction 屏障**：
+
+- **保险柜层。** 跑 `evoclaw secret add github_pat ghp_…`，原值落到 `~/.evoclaw/secrets/vault.json`（Unix chmod 600），从此但凡含有它的字符串在去往模型的路上都会被替换成 `${SECRET:github_pat}`。
+- **模式兜底层。** 即使你没注册过，常见凭据形状 —— `sk-*`、`sk-ant-*`、`ghp_*` 系列、`AKIA…`、JWT、以及任意 32 位以上的高熵串 —— 都会被识别并改写为 `[REDACTED:<kind>:<8 位指纹>]`，**在文本进入 prompt、JSONL 会话日志、记忆层之前**完成替换。
+
+两层都是**幂等**的。指纹用 SHA-256 前 8 位，同一密钥两次扫描得到同一指纹，便于跨日志串联但永远不暴露原值。**没有"先写明文，后续 GC 时再脱敏"的窗口** —— 替换发生在 runtime 边界，进门时就完成。
+
+### 3. **它很省钱 —— 是可量化的省。**
+
+朴素的 agent harness 跑长任务很容易花到 10 倍冤枉钱。EvoClaw 在 runtime 层叠了 5 个技巧，每一个都有单元测试压住：
+
+| 技巧 | 干什么 | Token 节省 |
+|------|--------|-----------|
+| 工具 schema 哈希指纹 | 工具表每 10 轮发完整版一次；中间的 9 轮只发 16 字节哈希 + "still active" 标记 | 25–40% prompt |
+| Ephemeral cache 标记 | system prompt 标 persistent，最近若干 assistant 轮标 ephemeral；模型 API 都缓存 | 60–70% 实际花费 |
+| `<summary>` working memory | 每条 assistant 回复结尾必带 30 字符 `<summary>…</summary>`；下轮把整条 assistant 消息替换成这条 summary | 80–90% 历史字节 |
+| 头+尾观测截断 | 工具输出对人仍可读，但中间被 `…` 替换后再回送给模型 | 50–70% 观测 token |
+| 周期性 tag-level 压缩 | 每 5 轮，把更早的 `<observation>` 块压成一行摘要 | 长任务 50–60% |
+
+5 个都已落地、有回归测试。`evoclaw doctor-of tokens` 可以看你过去 7 天的缓存命中率。
+
+---
+
+## 安装
+
+```bash
+git clone https://github.com/DevEloLin/evoclaw && cd evoclaw
+cargo build --workspace --release
+./target/release/evoclaw            # 首次启动会跑交互式向导
+```
+
+完整说明：[`installation.md`](./installation.md) · English: [`../installation.md`](../installation.md)
+
+---
+
+## 快速上手
+
+直接敲 **`evoclaw`** —— 不带子命令 —— 进入交互式 shell：
+
+```
+$ evoclaw
+
+   ╔═══════════════════════════════════════════════════════════════╗
+   ║      ███████╗██╗   ██╗ ██████╗  ██████╗██╗      █████╗ ██╗    ║
+   ║      ██╔════╝██║   ██║██╔═══██╗██╔════╝██║     ██╔══██╗██║    ║
+   ║                          ...                                  ║
+   ║             local-first · self-evolving · v0.1.5              ║
+   ╚═══════════════════════════════════════════════════════════════╝
+
+   ┌─ context ─────────────────────────────────────────────────────┐
+   │  home    : ~/.evoclaw                                         │
+   │  provider: deepseek    (https://api.deepseek.com/v1)          │
+   │  model   : deepseek-chat                                      │
+   │  api key : ok · secrets file: ~/.evoclaw/secrets/deepseek.key │
+   │  vault   : 2 entries · redactor active                        │
+   │  skills  : 8 learned                                          │
+   └───────────────────────────────────────────────────────────────┘
+
+   Type a task in plain language to run the agent.
+   /help for slash commands  ·  /exit or Ctrl-D to quit.
+
+evoclaw> 排查为什么我连生产机的 SSH 偶尔卡住
+→ running…  log: ~/.evoclaw/logs/task-...jsonl
+=== final (4 turns, 6.2s) ===
+...
+```
+
+完整教程：[`getting-started.md`](./getting-started.md) · English: [`../getting-started.md`](../getting-started.md)
+
+---
+
+## 密钥隔离屏障
+
+```bash
+# 注册一个密钥 —— 原值永不离开本机
+$ evoclaw secret add github_pat ghp_abc123…
+✓ stored 'github_pat' (kind=github_pat, fingerprint=b4824fbd) at …/vault.json
+  the model will never see the raw value — only ${SECRET:github_pat}
+
+# 列出条目 —— 只显示元信息，永远不打印原值
+$ evoclaw secret list
+NAME                     KIND           FINGER     CREATED
+github_pat               github_pat     b4824fbd   2026-05-02 17:52
+
+# 用样本字符串验证
+$ evoclaw secret test "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.fakesigvalue"
+output : Authorization: Bearer [REDACTED:jwt:9d25a2da]
+hits   : 1 substitution(s)
+```
+
+保险柜文件结构（`~/.evoclaw/secrets/vault.json`，Unix chmod 600）：
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "github_pat",
+      "value": "ghp_actual_value_only_on_disk",
+      "kind": "github_pat",
+      "fingerprint": "b4824fbd",
+      "created_at": "2026-05-02T17:52:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## 内置工具（上限 10，已交付 7）
+
+| # | 名字 | 权限 | 干什么 |
+|---|------|------|--------|
+| 1 | `read_file` | P0 | 按行号读文件；agent 必须先读后写。 |
+| 2 | `write_file` | P1 | workspace 内写入（不会跑出 `~/.evoclaw/workspace/`）。 |
+| 3 | `patch_file` | P1 | 唯一替换某段子串。匹配数 ≠ 1 直接拒绝。 |
+| 4 | `list_dir` | P0 | 列目录；自动跳过 `node_modules / .git / target / .venv / dist / build / __pycache__`。 |
+| 5 | `run_shell` | P2 | `sh -c`，默认 30 秒超时，输出截到 8K。 |
+| 6 | `web_fetch` | P3 | 仅 HTTPS。Cookie 在响应进 LLM 上下文前剥除。 |
+| 7 | `ask_user` | P0 | 参数歧义或动作高危时**必须**调用。 |
+
+权限阶梯 **P0**（只读）→ **P8**（生产环境）。默认上限 P1；通过远程渠道进入的消息硬封顶 P4，无论 config 怎么设。
+
+**想要更多工具？** 不要加第 8 个内置 —— **接 MCP 服务器**。
+
+---
+
+## 标准互通：ACP + MCP
+
+### ACP — Agent Client Protocol（把循环交出去）
+
+想让上游 coding CLI 来跑 agent loop？在 `~/.evoclaw/config.toml` 设 `provider = "acp:claude"`（或 `acp:codex` / `acp:cursor` / `acp:copilot`）。EvoClaw 会把上游 CLI 拉成子进程、用 JSON-RPC 把你的 prompt 喂过去、回收最终文本。**上游 CLI 自己处理认证 —— EvoClaw 永远不接触它的凭据。**
+
+```bash
+evoclaw agent catalog          # 看四个内置 agent profile
+evoclaw agent add claude       # 落盘 ~/.evoclaw/agents/claude.toml
+evoclaw agent test claude      # spawn `claude --acp` + ACP initialize 握手
+```
+
+完整指南：[`agents.md`](./agents.md) · English: [`../agents.md`](../agents.md)
+
+### MCP — Model Context Protocol（自带工具进来）
+
+跑任意一个标准 Anthropic MCP 服务器，它的工具就会出现在 EvoClaw 的注册表里，命名 `mcp__<server>__<tool>`。鉴权 env 在 `add` 时落盘，模型完全看不见。
+
+```bash
+export GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxx
+evoclaw mcp add github
+evoclaw mcp test github        # spawn + initialize + tools/list
+```
+
+完整指南：[`mcp.md`](./mcp.md) · English: [`../mcp.md`](../mcp.md)
+
+---
+
+## 文件系统约定
+
+```
+~/.evoclaw/
+├── config.toml                        # provider / model / 预算 / 安全
+├── workspace/                         # 工具沙箱；默认 cwd
+├── logs/{task_id}.jsonl               # 一任务一份 append-only 日志
+├── skills/{skill_id}.yaml             # 学会的 skill（Draft → Active → Deprecated）
+├── skills/index.json                  # skill tree 索引
+├── memory/{L0,L1,L2,L3,L4,L5}.jsonl   # 6 层记忆流
+├── secrets/<provider>.key             # 每 provider 一个 API key, chmod 600
+├── secrets/vault.json                 # 命名密钥保险柜，chmod 600
+├── agents/<id>.toml                   # ACP agent profile
+├── mcp/<id>.toml                      # MCP server profile
+├── plugins/                           # 预留
+├── cache/                             # 临时
+└── cost.jsonl                         # 每轮 cost event（input / cached / output / usd）
+```
+
+JSONL 记录用 `kind: "task" | "turn" | "end"` 标类型。schema 稳定，可放心写解析器。
+
+---
+
+## 文档地图
+
+| 主题 | 中文 | English |
+|------|------|---------|
+| 安装 | [`installation.md`](./installation.md) | [`../installation.md`](../installation.md) |
+| 快速上手 | [`getting-started.md`](./getting-started.md) | [`../getting-started.md`](../getting-started.md) |
+| 使用参考 | [`usage.md`](./usage.md) | [`../usage.md`](../usage.md) |
+| 外部 ACP 代理 | [`agents.md`](./agents.md) | [`../agents.md`](../agents.md) |
+| MCP 服务器 | [`mcp.md`](./mcp.md) | [`../mcp.md`](../mcp.md) |
+| 架构总览 | [`architecture.md`](./architecture.md) | [`../architecture.md`](../architecture.md) |
+| 贡献指南 | [`contributing.md`](./contributing.md) | [`../contributing.md`](../contributing.md) |
+
+在线图：[架构（中文）](https://develolin.github.io/EvoClawSite/architecture-zh.html) · [English](https://develolin.github.io/EvoClawSite/architecture-en.html) · [设计（中文）](https://develolin.github.io/EvoClawSite/design-zh.html) · [English](https://develolin.github.io/EvoClawSite/design-en.html)
+
+---
+
+## Roadmap
+
+| Phase | 状态 | 周期 | 目标 |
+|-------|------|------|------|
+| 1   — Skeleton              | ✓ 已交付      | Week 1–2   | onboard + run + 4 工具 + JSONL session |
+| 2   — 学习闭环              | ✓ 已交付      | Week 3–4   | 反思 + 蒸馏 + 7 工具 |
+| 3   — Token 经济学          | ✓ 已交付      | Week 5     | 5 招省 token + 预算引擎 |
+| 4   — Skill tree            | ✓ 已交付      | Week 6     | 树索引 + ACTIVE 状态 + trigger 检索 |
+| 4.5 — ACP + MCP catalog     | ✓ 已交付      | Week 7     | Zed-style ACP + Anthropic MCP；4 + 7 内置 profile |
+| 4.6 — 密钥隔离屏障          | ✓ 已交付      | Week 8     | Vault + Redactor + `secret` 子命令 |
+| 5   — 本地 Gateway 核心     | ✓ 已交付      | Week 8–9   | HTTP daemon + WebChat + bearer 鉴权 + session 隔离 |
+| 6   — Hardening (CI 门)     | ✓ 已交付      | Week 9     | doctor closure + mock-provider 集测 + LOC 守门 + `evo replay` + 文档同步 + GitHub Actions CI |
+| 7   — 多渠道接入            | ⏳ v0.6 计划 | 待定       | Telegram / Slack / Discord 插件、Local Dashboard、信任晋级 FSM、群聊 mention 强制 |
+| 8   — 深度加固              | ⏳ v0.7 计划 | 待定       | unshare 沙箱 + capability drop、CI OWASP 扫描、100 并发负载测试、性能基线 |
+
+Phase 7（多渠道）和 Phase 8（深度加固）显式标记为后续工作 —— Telegram / Slack 插件依赖外部服务 token，Local Dashboard 需要 Tauri 重壳，内核级 sandbox 与负载测试也不是个人开发者使用 runtime 的阻塞项。Phases 1–6 全部在 v0.1.5 中交付。
+
+---
+
+## 质量门
+
+```bash
+cargo build  --workspace
+cargo test   --workspace --all-targets        # 153+ 测试，全绿
+cargo clippy --workspace --all-targets -- -D warnings
+./scripts/check.sh                            # LOC 预算 + prompt 预算 + 工具数
+```
+
+任一不绿则视为代码"未交付状态"，请先修复或回滚。
+
+---
+
+## 版本
+
+代码版本记录在 [`../../version`](../../version)。**站点 repo 与代码 repo 的 version 文件必须严格一致**：
+
+- `EvoClaw/version` (本仓库)
+- `EvoClawSite/version`
+
+任一处升版必须同步升另一处。当前两边都读作 **`v0.1.5`**。
+
+---
+
+## 它不是
+
+- **不是 SaaS 平台。** 所有状态留在你机器上。没有遥测端点。
+- **不是上游 coding CLI 的替代。** 想用它们时通过 ACP 接入即可 —— 它们保留全部功能，你保留 redaction 屏障与本地日志。
+- **不是聊天聚合器。** 渠道在 v0.6 路线图上，但 EvoClaw 的核心是**自主进化 runtime**，不是消息路由。
+- **不是向量数据库式的"第二大脑"。** 记忆是有意做的纯文本 + grep。我们量过。
+
+---
+
+## 贡献
+
+欢迎 PR。先读 [`contributing.md`](./contributing.md)。七条金律：
+
+1. 守住 LOC 预算（`./scripts/check.sh`）。
+2. system prompt 永远 6 行。
+3. **内置**工具数 ≤ 10。MCP 桥接的工具不计入。
+4. 测试全绿。
+5. clippy `-D warnings` 全绿。
+6. 没有充分理由不加新依赖。
+7. **没有 silent failure，没有任何路径能让原始密钥到达模型。**
+
+---
+
+## License
+
+MIT. 见仓库根的 [`LICENSE`](../../LICENSE)。
+
+---
+
+> **一句话总结：** *本地优先的 agent runtime，每次任务都在学，工作过程在 append-only 日志里可以证明，你输入的密钥永远不会到模型。*

@@ -1,0 +1,53 @@
+# EvoClaw — CI quality gates.
+#
+# Runs on every push to main and on every pull request. The four gates that
+# must stay green (per the seven golden rules in docs/contributing.md):
+#
+#   1. cargo build  --workspace
+#   2. cargo test   --workspace --all-targets        (153+ tests)
+#   3. cargo clippy --workspace --all-targets -- -D warnings
+#   4. ./scripts/check.sh                            (LOC budget, system prompt
+#                                                     line count, tool count,
+#                                                     doc sync)
+#
+# If any gate fails the PR cannot merge.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check workspace
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check format
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Check build
+        run: cargo check --workspace

@@ -19,7 +19,7 @@ edition      = "2021"
 rust-version = "1.80"
 license      = "MIT"
 authors      = ["evoclaw contributors"]
-repository   = "https://github.com/wei-li/evoclaw"
+repository   = "https://github.com/DevEloLin/evoclaw"
 
 [workspace.dependencies]
 # core deps
