@@ -1,0 +1,19 @@
+/target/
+**/*.rs.bk
+*.swp
+.DS_Store
+
+# transient evoclaw test data
+/.evoclaw-test/
+
+# editor / OS junk
+.idea/
+.vscode/
+.claude/
+
+# do NOT ignore:
+# - Cargo.lock (binary; locked deps)
+# - prd/ specs
+# - tmp/ reference projects (user-managed)
+tmp/
+prd/

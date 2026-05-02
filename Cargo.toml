@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/evo-cli",
+    "crates/evo-core",
+    "crates/evo-tools",
+    "crates/evo-providers",
+    "crates/evo-policy",
+    "crates/evo-mock-provider",
+    "crates-ext/evo-gateway",
+    "crates-ext/evo-stdio-rpc",
+    "crates-ext/evo-acp-client",
+    "crates-ext/evo-mcp-client",
+]
+
+[workspace.package]
+version      = "0.0.1"
+edition      = "2021"
+rust-version = "1.80"
+license      = "MIT"
+authors      = ["evoclaw contributors"]
+repository   = "https://github.com/wei-li/evoclaw"
+
+[workspace.dependencies]
+# core deps
+tokio          = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "fs", "process", "time", "sync"] }
+async-trait    = "0.1"
+futures        = "0.3"
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+toml           = "0.8"
+eyre           = "0.6"
+thiserror      = "2"
+
+# CLI / IO / config
+clap           = { version = "4", features = ["derive"] }
+directories    = "5"
+chrono         = { version = "0.4", features = ["serde"] }
+tracing        = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# providers
+reqwest        = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
+sha2           = "0.10"
+hex            = "0.4"
+eventsource-stream = "0.2"
+
+# gateway
+hyper          = { version = "1", features = ["server", "http1"] }
+hyper-util     = { version = "0.1", features = ["tokio", "server", "service"] }
+http-body-util = "0.1"
+bytes          = "1"
+
+# tools
+inventory      = "0.3"
+
+# internal
+evo-core       = { path = "crates/evo-core" }
+evo-tools      = { path = "crates/evo-tools" }
+evo-providers  = { path = "crates/evo-providers" }
+evo-policy     = { path = "crates/evo-policy" }
+evo-mock-provider = { path = "crates/evo-mock-provider" }
+evo-stdio-rpc     = { path = "crates-ext/evo-stdio-rpc" }
+evo-acp-client    = { path = "crates-ext/evo-acp-client" }
+evo-mcp-client    = { path = "crates-ext/evo-mcp-client" }
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+strip         = true
+opt-level     = 3
