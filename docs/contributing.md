@@ -148,6 +148,51 @@ We don't keep a long Rust style guide; instead:
 
 ---
 
+## Releasing & version bumps
+
+**Every meaningful change ships with a global version bump.** The version is
+recorded in **two `version` files** that must hold the **identical** value:
+
+- `EvoClaw/version` (this repo)
+- `EvoClawSite/version` (the site repo at <https://github.com/develolin/EvoClawSite>)
+
+A version bump must update **all** of the following at once:
+
+1. `EvoClaw/version` — single line, `vX.Y.Z\n`
+2. `EvoClawSite/version` — same value
+3. `EvoClaw/Cargo.toml` `[workspace.package].version` — `"X.Y.Z"` (no `v` prefix; SemVer)
+4. `EvoClaw/README.md` and `EvoClaw/docs/zh/README.md`:
+   - The banner-art line `local-first · self-evolving · vX.Y.Z`
+   - The "Versioning" section (`Both currently read **`vX.Y.Z`**`)
+   - The closing prose ("ships in vX.Y.Z")
+5. `EvoClawSite/index.html` and `EvoClawSite/zh.html`:
+   - The `softwareVersion` field in the JSON-LD `SoftwareApplication` block
+   - The Resources line (`Version: vX.Y.Z` / `版本：vX.Y.Z`)
+   - The FAQ JSON-LD answer about production readiness
+
+Use SemVer:
+
+| Bump | When |
+|------|------|
+| `+1` patch (`v0.1.5 → v0.1.6`) | Bug fix, doc rewrite, CI workflow change, license addition. |
+| `+1` minor (`v0.1.x → v0.2.0`) | New CLI subcommand, new built-in tool, new built-in provider/MCP catalog entry, schema-compatible additions. |
+| `+1` major (`v0.x.y → v1.0.0`) | Breaking change to `~/.evoclaw/` layout, JSONL record schema, public Rust API, or CLI flags. |
+
+Quick sanity check before opening the PR:
+
+```bash
+diff EvoClaw/version EvoClawSite/version && echo MATCH
+grep '^version' EvoClaw/Cargo.toml          # cargo SemVer (no v prefix)
+grep -rE 'v[0-9]+\.[0-9]+\.[0-9]+' EvoClaw/README.md EvoClaw/docs/zh/README.md \
+  EvoClawSite/index.html EvoClawSite/zh.html | grep -v "v0\.X\.Y" | sort -u
+```
+
+The two `version` files must agree on the same semantic value. CI will not
+catch a missed bump (it is a process rule), so run the sanity block above
+before opening the PR.
+
+---
+
 ## Reporting issues
 
 Open a GitHub issue with:
