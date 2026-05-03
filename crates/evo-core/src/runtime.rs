@@ -15,7 +15,9 @@ use crate::session::{
 use crate::skill::Skill;
 use crate::summary::SummaryParser;
 use chrono::Utc;
-use evo_policy::{estimate_usd, BudgetCheck, CostEngine, CostEvent, Redactor};
+use evo_policy::{
+    estimate_usd, is_fully_redacted, BudgetCheck, CostEngine, CostEvent, RedactionMode, Redactor,
+};
 use evo_providers::{
     ChatRequest, Message, Provider, ProviderError, StreamEvent, ToolCall, ToolFingerprint,
     ToolPayload, ToolResult,
@@ -78,7 +80,14 @@ pub enum RuntimeError {
 pub struct RunOutcome {
     pub task_id: String,
     pub turns: u64,
+    /// Strict (log-mode) scrubbed final text. Safe for on-disk artefacts —
+    /// JSONL, audit, memory. Generic high-entropy strings are masked here.
     pub final_text: String,
+    /// UI-mode scrubbed final text (`prd/plan/ask.md`). Vault and
+    /// known-prefix credentials are masked, but generic high-entropy
+    /// fallback is suppressed so identifiers / paths / prose render
+    /// cleanly on the user's terminal. CLI renderers should prefer this.
+    pub final_text_ui: String,
     pub completed: bool,
     /// Token usage rolled up across every turn that reported a `Usage`
     /// stream event. Defaults to zero for providers that don't report it
@@ -164,6 +173,9 @@ pub struct ConversationRuntime<P: Provider + ?Sized> {
     /// Secret-redaction barrier (PRD §13.4). When `Some`, every user_input,
     /// tool arg and tool result is scrubbed before reaching the model.
     redactor: Option<Redactor>,
+    /// Optional channel for forwarding streaming deltas to a UI renderer.
+    /// Each message is the raw (pre-scrub) assistant text chunk.
+    delta_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl<P: Provider + ?Sized> ConversationRuntime<P> {
@@ -191,7 +203,19 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             skills_dir: None,
             distill_via_model: true,
             redactor: None,
+            delta_tx: None,
         }
+    }
+
+    /// Attach a streaming-delta channel. Every assistant text chunk produced
+    /// during `run()` is forwarded to this sender before buffering internally.
+    /// Used by the interactive UI renderer (`prd/plan/ui.md` §3 / §6).
+    pub fn with_delta_sender(
+        mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Self {
+        self.delta_tx = Some(tx);
+        self
     }
 
     pub fn with_cost_engine(mut self, cost: Arc<CostEngine>) -> Self {
@@ -230,12 +254,52 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         self
     }
 
+    /// Strict (log-mode) scrub. Use for anything that hits disk: JSONL,
+    /// audit, debug. Equivalent to `redact_for_log`.
     fn scrub(&self, text: &str) -> String {
+        self.scrub_with(text, RedactionMode::Log)
+    }
+
+    /// Conservative (model-mode) scrub. Use for outbound provider /
+    /// ACP / API requests. Suppresses the generic high-entropy fallback
+    /// so that ordinary user input (CJK prose, file paths, shell
+    /// commands) reaches the upstream agent verbatim. See
+    /// `prd/plan/acp.md`.
+    fn scrub_for_model(&self, text: &str) -> String {
+        self.scrub_with(text, RedactionMode::Model)
+    }
+
+    fn scrub_with(&self, text: &str, mode: RedactionMode) -> String {
         if let Some(r) = &self.redactor {
-            let (out, _hits) = r.scrub(text);
+            let (out, _hits) = r.scrub_with(text, mode);
             return out;
         }
         text.to_string()
+    }
+
+    /// Mode-aware variant of `scrub_value` for outbound JSON arguments
+    /// going to the upstream model / provider. Walks the JSON tree the
+    /// same way as `scrub_value` but uses model-mode rules on every
+    /// string leaf.
+    fn scrub_value_for_model(&self, v: &serde_json::Value) -> serde_json::Value {
+        if self.redactor.is_none() {
+            return v.clone();
+        }
+        match v {
+            serde_json::Value::String(s) => serde_json::Value::String(self.scrub_for_model(s)),
+            serde_json::Value::Array(items) => serde_json::Value::Array(
+                items
+                    .iter()
+                    .map(|x| self.scrub_value_for_model(x))
+                    .collect(),
+            ),
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.iter()
+                    .map(|(k, val)| (k.clone(), self.scrub_value_for_model(val)))
+                    .collect(),
+            ),
+            _ => v.clone(),
+        }
     }
 
     fn scrub_value(&self, v: &serde_json::Value) -> serde_json::Value {
@@ -257,10 +321,47 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
     }
 
     pub async fn run(&mut self, user_input: &str) -> Result<RunOutcome, RuntimeError> {
-        // PRD §13.4 — first thing we do with user_input is scrub it.
-        // Anything past this point (history, JSONL, memory, distillation) sees
-        // only placeholders, never the raw secret.
+        // PRD §13.4 + acp.md — split scrubbing into two channels:
+        //
+        //   user_input_safe_log   strict scrub for on-disk artefacts
+        //                         (JSONL TaskRecord, memory, summaries).
+        //                         Generic high-entropy strings are still
+        //                         masked here because the disk is a colder
+        //                         security boundary than the live model
+        //                         request.
+        //
+        //   user_input_safe_model conservative scrub for outbound
+        //                         provider / ACP requests. Vault, PEM, and
+        //                         known-prefix credential patterns still
+        //                         fire; the high-entropy fallback does
+        //                         not. This is what acp.md mandates so
+        //                         normal user prose (CJK, paths, shell
+        //                         commands) reaches the upstream agent
+        //                         verbatim.
         let user_input_safe = self.scrub(user_input);
+        let user_input_safe_model = self.scrub_for_model(user_input);
+
+        // Hard guard: if even the conservative scrub erased the entire
+        // payload (e.g. the user pasted a single bare token), fail
+        // locally instead of sending an unintelligible `[REDACTED:...]`
+        // marker upstream — that is exactly the symptom acp.md was filed
+        // to fix.
+        if is_fully_redacted(&user_input_safe_model) {
+            return Err(RuntimeError::Provider(evo_providers::ProviderError::Other(
+                "Request was fully redacted before sending. This is likely an EvoClaw \
+                     redaction bug. Run with EVOCLAW_DEBUG_PROVIDER=1 to inspect sanitized \
+                     payload metadata."
+                    .into(),
+            )));
+        }
+
+        emit_provider_debug(
+            self.config.provider_id.as_deref(),
+            user_input,
+            &user_input_safe,
+            &user_input_safe_model,
+        );
+
         let task_id = format!("task-{}", Utc::now().format("%Y%m%dT%H%M%S%.3f"));
         self.session
             .append(&SessionRecord::Task(TaskRecord {
@@ -269,7 +370,10 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 source: "cli".into(),
                 model: self.config.model.clone(),
                 provider: self.config.provider_id.clone(),
-                acp_agent: self.config.provider_id.as_ref()
+                acp_agent: self
+                    .config
+                    .provider_id
+                    .as_ref()
                     .filter(|p| p.starts_with("acp:"))
                     .map(|p| p.strip_prefix("acp:").unwrap_or(p).to_string()),
                 mcp_servers: self.config.mcp_servers.clone(),
@@ -290,7 +394,10 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
 
         let system_msg = Message::system(build_system_prompt(&self.prompt_ctx));
         let mut history: Vec<Message> = vec![system_msg];
-        let mut next_user_payload = self.compose_initial_user_msg(&user_input_safe);
+        // Model-mode user input: outbound to provider / ACP. Vault and
+        // known-prefix patterns are still redacted; generic high-entropy
+        // is not. See acp.md.
+        let mut next_user_payload = self.compose_initial_user_msg(&user_input_safe_model);
         let mut completed = false;
         let mut final_text = String::new();
         let mut last_assistant_text_safe = String::new();
@@ -356,7 +463,13 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 let mut stream = self.provider.stream(req).await?;
                 while let Some(event) = stream.next().await {
                     match event? {
-                        StreamEvent::Delta(t) => assistant_text.push_str(&t),
+                        StreamEvent::Delta(t) => {
+                            // Forward to the UI renderer if a delta channel is attached.
+                            if let Some(tx) = &self.delta_tx {
+                                let _ = tx.send(t.clone());
+                            }
+                            assistant_text.push_str(&t);
+                        }
                         StreamEvent::ToolCallStart(tc) => tool_calls.push(tc),
                         StreamEvent::ToolCallFinish => {}
                         StreamEvent::Usage(u) => usage = Some(u),
@@ -390,22 +503,26 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 }
             }
 
-            // Scrub assistant text in case the model echoed a registered secret
-            // (it shouldn't, but treat the boundary as untrusted).
+            // Two scrubs of the assistant turn:
+            //   * `_safe`        — strict (logs, summaries, JSONL).
+            //   * `_safe_model`  — conservative (the message we re-feed
+            //                      to the model on the next turn through
+            //                      the `history` buffer).
             let assistant_text_safe = self.scrub(&assistant_text);
+            let assistant_text_safe_model = self.scrub_for_model(&assistant_text);
             last_assistant_text_safe = assistant_text_safe.clone();
-            let safe_calls: Vec<ToolCall> = tool_calls
+            let safe_calls_for_model: Vec<ToolCall> = tool_calls
                 .iter()
                 .map(|c| ToolCall {
                     id: c.id.clone(),
                     name: c.name.clone(),
-                    arguments: self.scrub_value(&c.arguments),
+                    arguments: self.scrub_value_for_model(&c.arguments),
                 })
                 .collect();
             history.push(Message {
                 role: evo_providers::Role::Assistant,
-                content: assistant_text_safe.clone(),
-                tool_calls: safe_calls,
+                content: assistant_text_safe_model,
+                tool_calls: safe_calls_for_model,
                 tool_results: Vec::new(),
                 cache_control: evo_providers::CacheKind::None,
             });
@@ -426,31 +543,33 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                     .await
                 {
                     Ok(out) => {
-                        let safe_out = self.scrub(&out);
+                        let safe_out_log = self.scrub(&out);
+                        let safe_out_model = self.scrub_for_model(&out);
                         recorded_calls.push(RecordedToolCall {
                             name: call.name.clone(),
                             args: safe_args.clone(),
-                            result_truncated: safe_out.clone(),
+                            result_truncated: safe_out_log,
                             is_error: false,
                         });
                         tool_results.push(ToolResult {
                             call_id: call.id.clone(),
-                            content: safe_out,
+                            content: safe_out_model,
                             is_error: false,
                         });
                     }
                     Err(e) => {
                         tool_error_count = tool_error_count.saturating_add(1);
-                        let err = self.scrub(&e.to_string());
+                        let err_log = self.scrub(&e.to_string());
+                        let err_model = self.scrub_for_model(&e.to_string());
                         recorded_calls.push(RecordedToolCall {
                             name: call.name.clone(),
                             args: safe_args,
-                            result_truncated: err.clone(),
+                            result_truncated: err_log,
                             is_error: true,
                         });
                         tool_results.push(ToolResult {
                             call_id: call.id.clone(),
-                            content: err,
+                            content: err_model,
                             is_error: true,
                         });
                     }
@@ -517,7 +636,10 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             self.reflection_round(
                 &task_id,
                 &final_text,
-                &user_input_safe,
+                // Reflection re-prompts the model, so it must use the
+                // conservatively-redacted user input — same rule as the
+                // initial provider request.
+                &user_input_safe_model,
                 completed,
                 tool_error_count,
             )
@@ -545,10 +667,16 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         if !completed {
             return Err(RuntimeError::MaxTurns(self.config.max_turns));
         }
+        // ask.md — produce a UI-mode scrubbed twin of `final_text`. The CLI
+        // renderer prefers this so generic high-entropy false positives
+        // (paths with unusual segments, identifiers, prose) don't show up
+        // as `[REDACTED:high_entropy:...]` in the answer block.
+        let final_text_ui = self.scrub_with(&final_text, RedactionMode::Ui);
         Ok(RunOutcome {
             task_id,
             turns: turn + 1,
             final_text,
+            final_text_ui,
             completed,
             usage: total_usage,
         })
@@ -614,11 +742,22 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             Err(_) => return None,
         };
 
-        // Memory L3 write (PRD §33).
+        // Memory L3 write (PRD §33). The body lands on disk, so re-scrub
+        // with the strict (log) mode in case the caller handed us the
+        // model-mode version (which keeps generic high-entropy strings
+        // intact).
         if let Some(mem) = self.memory.clone() {
+            let user_input_log = self.scrub(user_input);
+            let summary_log = self.scrub(&refl.summary);
+            let goal_log = self.scrub(&refl.user_real_goal);
+            let failures_log: Vec<String> = refl
+                .failure_patterns
+                .iter()
+                .map(|f| self.scrub(f))
+                .collect();
             let body = format!(
-                "task={task_id}\nuser_input={user_input}\nsuccess={}\nsummary={}\ngoal={}\nfailures={}",
-                refl.success, refl.summary, refl.user_real_goal, refl.failure_patterns.join("; ")
+                "task={task_id}\nuser_input={user_input_log}\nsuccess={}\nsummary={summary_log}\ngoal={goal_log}\nfailures={}",
+                refl.success, failures_log.join("; ")
             );
             let mut record =
                 MemoryRecord::new(MemoryLayer::L3, body, "reflection", refl.confidence);
@@ -777,6 +916,93 @@ impl Drop for SessionEndGuard {
     }
 }
 
+/// Provider-payload debug instrumentation (acp.md).
+///
+/// When the user opts in via `EVOCLAW_DEBUG_PROVIDER=1` (any truthy value:
+/// `1`, `true`, `yes`, case-insensitive), this prints metadata about the
+/// outbound model request to stderr. **Never prints raw user input or raw
+/// secrets** — only:
+///   * the provider id
+///   * char-counts for raw / log-mode / model-mode versions
+///   * the redaction count (model-mode minus log-mode pass-throughs)
+///   * the source channel (`raw_user_input` if no scrub touched it,
+///     `sanitized_for_model` otherwise)
+///   * a short head-tail preview of the model-mode version, with all
+///     internal `[REDACTED:...]` markers preserved (markers are safe;
+///     real secret values were already removed before this point)
+///   * a stable 8-char SHA-256 fingerprint of the raw input, for
+///     correlation across log lines without exposing the value
+///
+/// The helper is intentionally a free function (no `&self`) so it can be
+/// called before any redactor work happens, and it is gated by the env
+/// var so a user must explicitly opt in.
+fn emit_provider_debug(
+    provider_id: Option<&str>,
+    raw_user_input: &str,
+    sanitized_for_log: &str,
+    sanitized_for_model: &str,
+) {
+    if !provider_debug_enabled() {
+        return;
+    }
+    let raw_chars = raw_user_input.chars().count();
+    let log_chars = sanitized_for_log.chars().count();
+    let model_chars = sanitized_for_model.chars().count();
+    let redaction_count = sanitized_for_model.matches("[REDACTED:").count()
+        + sanitized_for_model.matches("${SECRET:").count();
+    let source = if sanitized_for_model == raw_user_input {
+        "raw_user_input"
+    } else {
+        "sanitized_for_model"
+    };
+    let preview = preview_for_debug(sanitized_for_model);
+    let fp = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(raw_user_input.as_bytes());
+        let d = h.finalize();
+        hex::encode(&d[..4])
+    };
+    eprintln!("== Provider Payload Debug ==");
+    eprintln!("provider: {}", provider_id.unwrap_or("<none>"));
+    eprintln!("raw_user_input_len: {raw_chars}");
+    eprintln!("sanitized_for_log_len: {log_chars}");
+    eprintln!("sanitized_for_model_len: {model_chars}");
+    eprintln!("redaction_count: {redaction_count}");
+    eprintln!("model_request_source: {source}");
+    eprintln!("model_request_preview: {preview}");
+    eprintln!("raw_user_input_fingerprint: {fp}");
+    eprintln!("============================");
+}
+
+fn provider_debug_enabled() -> bool {
+    matches!(
+        std::env::var("EVOCLAW_DEBUG_PROVIDER")
+            .ok()
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+/// Compact head/tail preview that never crosses a UTF-8 char boundary.
+/// Caps the visible body at 160 chars total so noisy console output
+/// doesn't drown the user.
+fn preview_for_debug(text: &str) -> String {
+    const CAP: usize = 160;
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= CAP {
+        return text.to_string();
+    }
+    let head: String = chars.iter().take(CAP / 2).collect();
+    let tail: String = chars
+        .iter()
+        .skip(chars.len().saturating_sub(CAP / 2))
+        .collect();
+    format!("{head} … {tail}")
+}
+
 fn append_synthetic_end(path: &Path) -> std::io::Result<()> {
     use std::io::Write;
     let synthetic = SessionRecord::End(EndRecord {
@@ -837,6 +1063,188 @@ mod tests {
         let out = rt.run("hi").await.unwrap();
         assert!(out.completed);
         assert!(out.final_text.contains("hello world"));
+    }
+
+    // ── acp.md regression — provider receives un-redacted user prompt ────
+    //
+    // These tests pin the contract from `prd/plan/acp.md`: ordinary user
+    // input must reach the provider verbatim (vault + known-prefix
+    // credential patterns aside), and a fully-redacted prompt must be
+    // refused locally rather than dispatched upstream.
+
+    /// A minimal `Provider` that records the latest user message of every
+    /// inbound `ChatRequest` so tests can inspect what would have been sent
+    /// to a real upstream agent.
+    struct RecordingProvider {
+        last_user_message: Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    impl RecordingProvider {
+        fn new() -> (Arc<Self>, Arc<std::sync::Mutex<Option<String>>>) {
+            let slot = Arc::new(std::sync::Mutex::new(None));
+            (
+                Arc::new(Self {
+                    last_user_message: slot.clone(),
+                }),
+                slot,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl evo_providers::Provider for RecordingProvider {
+        async fn stream(
+            &self,
+            req: evo_providers::ChatRequest,
+        ) -> Result<
+            futures::stream::BoxStream<
+                'static,
+                Result<evo_providers::StreamEvent, evo_providers::ProviderError>,
+            >,
+            evo_providers::ProviderError,
+        > {
+            let last = req
+                .messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, evo_providers::Role::User))
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+            *self.last_user_message.lock().unwrap() = Some(last);
+            use evo_providers::{StreamEvent, Usage};
+            use futures::StreamExt;
+            let events: Vec<Result<StreamEvent, evo_providers::ProviderError>> = vec![
+                Ok(StreamEvent::Delta(
+                    "<summary>done</summary> ack".to_string(),
+                )),
+                Ok(StreamEvent::ToolCallFinish),
+                Ok(StreamEvent::Usage(Usage::default())),
+                Ok(StreamEvent::Done),
+            ];
+            Ok(futures::stream::iter(events).boxed())
+        }
+    }
+
+    /// Run a single user turn against `RecordingProvider` with the given
+    /// vault contents (always `Some(Redactor)`) and return the captured
+    /// outbound user payload. Asserting on `<user_input> ... </user_input>`
+    /// content confirms what the upstream agent actually sees.
+    async fn run_capture_outbound(input: &str, vault: evo_policy::Vault) -> String {
+        let (provider, slot) = RecordingProvider::new();
+        let registry = Arc::new(ToolRegistry::with_builtins());
+        let session = Session::open(unique_log()).await.unwrap();
+        let redactor = evo_policy::Redactor::from_vault(&vault);
+        let mut rt = ConversationRuntime::new(
+            provider,
+            registry,
+            session,
+            ToolContext::default(),
+            RuntimeConfig::default(),
+        )
+        .with_redactor(redactor);
+        rt.run(input).await.unwrap();
+        let captured = slot.lock().unwrap().clone();
+        captured.expect("provider not called")
+    }
+
+    #[tokio::test]
+    async fn cjk_question_reaches_provider_verbatim() {
+        let s = "没有自适应终端大小，横线分割的文本框，没有被两个横线包起来";
+        let outbound = run_capture_outbound(s, evo_policy::Vault::default()).await;
+        assert!(outbound.contains(s), "missing user text in: {outbound}");
+        assert!(
+            !outbound.contains("[REDACTED:high_entropy"),
+            "high_entropy false positive: {outbound}"
+        );
+    }
+
+    #[tokio::test]
+    async fn english_account_question_reaches_provider_verbatim() {
+        let s = "如何确定当前是哪个账户";
+        let outbound = run_capture_outbound(s, evo_policy::Vault::default()).await;
+        assert!(outbound.contains(s));
+        assert!(!outbound.contains("[REDACTED:"));
+    }
+
+    #[tokio::test]
+    async fn mixed_language_input_reaches_provider_verbatim() {
+        let s = "中文 English emoji 🚀 mixed input should wrap correctly.";
+        let outbound = run_capture_outbound(s, evo_policy::Vault::default()).await;
+        assert!(outbound.contains(s));
+        assert!(!outbound.contains("[REDACTED:"));
+    }
+
+    #[tokio::test]
+    async fn workspace_path_reaches_provider_verbatim() {
+        let s = "/Users/wei.li/devops/gptcli/agent/EvoClaw";
+        let outbound = run_capture_outbound(s, evo_policy::Vault::default()).await;
+        assert!(outbound.contains(s));
+    }
+
+    #[tokio::test]
+    async fn shell_command_reaches_provider_verbatim() {
+        let s = "cargo clippy --workspace --all-targets -- -D warnings";
+        let outbound = run_capture_outbound(s, evo_policy::Vault::default()).await;
+        assert!(outbound.contains(s));
+        assert!(!outbound.contains("[REDACTED:"));
+    }
+
+    #[tokio::test]
+    async fn openai_key_is_redacted_but_surrounding_prose_survives() {
+        let s = "我的 API key 是 sk-1234567890abcdefghijklmnopqrstuvwxyz，帮我检查配置";
+        let outbound = run_capture_outbound(s, evo_policy::Vault::default()).await;
+        assert!(
+            !outbound.contains("sk-1234567890abcdefghijklmnopqrstuvwxyz"),
+            "raw key leaked: {outbound}"
+        );
+        assert!(outbound.contains("[REDACTED:openai_key:"));
+        assert!(outbound.contains("我的 API key 是"));
+        assert!(outbound.contains("，帮我检查配置"));
+    }
+
+    #[tokio::test]
+    async fn vault_substitution_still_runs_on_outbound_path() {
+        let mut v = evo_policy::Vault::default();
+        v.upsert("gh_token", "ghp_1234567890abcdefghijklmnopqrstuvwxyz");
+        let s = "deploy with ghp_1234567890abcdefghijklmnopqrstuvwxyz please";
+        let outbound = run_capture_outbound(s, v).await;
+        assert!(outbound.contains("${SECRET:gh_token}"));
+        assert!(!outbound.contains("ghp_1234567890abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[tokio::test]
+    async fn fully_redacted_prompt_is_refused_locally() {
+        // A bare OpenAI key as the entire prompt — every byte should be
+        // rewritten into a `[REDACTED:openai_key:...]` marker, leaving
+        // nothing for the upstream agent. The runtime must refuse rather
+        // than dispatch.
+        let (provider, slot) = RecordingProvider::new();
+        let registry = Arc::new(ToolRegistry::with_builtins());
+        let session = Session::open(unique_log()).await.unwrap();
+        let redactor = evo_policy::Redactor::from_vault(&evo_policy::Vault::default());
+        let mut rt = ConversationRuntime::new(
+            provider,
+            registry,
+            session,
+            ToolContext::default(),
+            RuntimeConfig::default(),
+        )
+        .with_redactor(redactor);
+        let err = rt
+            .run("sk-1234567890abcdefghijklmnopqrstuvwxyz")
+            .await
+            .expect_err("must refuse fully-redacted prompt");
+        match err {
+            RuntimeError::Provider(evo_providers::ProviderError::Other(msg)) => {
+                assert!(msg.contains("fully redacted"));
+                assert!(msg.contains("EVOCLAW_DEBUG_PROVIDER"));
+            }
+            other => panic!("expected Provider(Other(..)), got {other:?}"),
+        }
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "provider must not be invoked"
+        );
     }
 
     #[tokio::test]

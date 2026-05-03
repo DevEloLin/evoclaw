@@ -2,9 +2,10 @@
 
 pub mod mcp_tools;
 pub mod onboard;
+pub mod tui;
+pub mod ui;
 
 use clap::{Parser, Subcommand};
-use onboard::ProviderChoice;
 use directories::BaseDirs;
 use evo_core::channel::ChannelAdapter;
 use evo_core::{ConversationRuntime, Memory, MemoryLayer, Session, Skill, SkillTree};
@@ -15,14 +16,11 @@ use evo_providers::{
 };
 use evo_tools::{ToolContext, ToolRegistry};
 use eyre::{Result, WrapErr};
-use rustyline::completion::{Completer, Pair};
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
-use rustyline::{Context, Helper};
+use onboard::ProviderChoice;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -280,10 +278,9 @@ fn workspace_dir() -> Result<PathBuf> {
     Ok(evoclaw_dir()?.join("workspace"))
 }
 /// Resolution order, evaluated once per process (first call wins):
-///   1. env `EVO_LOG_DIR`           — operator override
-///   2. config.toml `[logs] dir`    — user override
-///   3. platform default            — `/tmp/evoclaw` on Unix,
-///                                    `%TEMP%\evoclaw` on Windows
+///   1. env `EVO_LOG_DIR`        — operator override
+///   2. config.toml `[logs] dir` — user override
+///   3. platform default         — `/tmp/evoclaw` on Unix, `%TEMP%\evoclaw` on Windows
 ///
 /// Initialised by `init_logs_dir(...)` from the entry point. Calling
 /// `logs_dir()` before initialisation falls through to the platform
@@ -438,92 +435,12 @@ pub async fn entry() -> Result<()> {
 // Interactive REPL
 // ---------------------------------------------------------------------------
 
-/// Slash command completer for rustyline.
-/// Provides auto-completion and hints for all slash commands and their subcommands.
-#[derive(Default)]
-struct SlashCompleter {
-    commands: Vec<&'static str>,
-}
-
-impl SlashCompleter {
-    fn new() -> Self {
-        Self {
-            commands: vec![
-                // Main commands
-                "/help", "/login", "/logout", "/exit", "/quit", "/q",
-                "/clear", "/doctor", "/tokens", "/usage", "/closure", "/replay",
-                "/status",
-                // Commands with subcommands
-                "/agent", "/agent list", "/agent catalog", "/agent add", "/agent remove", "/agent test",
-                "/mcp", "/mcp list", "/mcp catalog", "/mcp add", "/mcp remove", "/mcp test",
-                "/secret", "/secret list", "/secret add", "/secret remove", "/secret test",
-                "/channel", "/channel list", "/channel run",
-                "/skill", "/skill list", "/skill tree", "/skill show",
-                "/memory", "/memory search",
-                "/model", "/model list", "/model set",
-                "/config", "/config show", "/config set", "/config reset",
-            ],
-        }
-    }
-}
-
-impl Completer for SlashCompleter {
-    type Candidate = Pair;
-
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &Context<'_>,
-    ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        let line_lower = line[..pos].to_lowercase();
-
-        // Only complete if line starts with /
-        if !line_lower.starts_with('/') {
-            return Ok((pos, vec![]));
-        }
-
-        let matches: Vec<Pair> = self
-            .commands
-            .iter()
-            .filter(|cmd| cmd.to_lowercase().starts_with(&line_lower))
-            .map(|cmd| Pair {
-                display: cmd.to_string(),
-                replacement: cmd.to_string(),
-            })
-            .collect();
-
-        Ok((0, matches))
-    }
-}
-
-impl Hinter for SlashCompleter {
-    type Hint = String;
-
-    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        let line_lower = line[..pos].to_lowercase();
-
-        // Only hint if line starts with /
-        if !line_lower.starts_with('/') {
-            return None;
-        }
-
-        // Find first matching command
-        self.commands
-            .iter()
-            .find(|cmd| cmd.to_lowercase().starts_with(&line_lower) && cmd.len() > pos)
-            .map(|cmd| cmd[pos..].to_string())
-    }
-}
-
-impl Highlighter for SlashCompleter {}
-impl Validator for SlashCompleter {}
-impl Helper for SlashCompleter {}
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 async fn interactive() -> Result<()> {
     let theme = Theme::detect();
+
+    // ── First-run onboarding ───────────────────────────────────────────────
     if !config_path()?.exists() {
         println!();
         println!(
@@ -532,15 +449,15 @@ async fn interactive() -> Result<()> {
             reset = theme.reset(),
         );
         println!();
-        println!("  Authentication options (you'll pick after choosing a provider):");
+        println!("  Authentication options:");
         println!(
-            "    {ok}1){reset}  API key             — {dim}preferred · simplest · works for every vendor{reset}",
+            "    {ok}1){reset}  API key             — {dim}simplest · works for every vendor{reset}",
             ok = theme.ok(),
             dim = theme.dim(),
             reset = theme.reset(),
         );
         println!(
-            "    {ok}2){reset}  Browser sign-in     — {dim}paste session token from your browser{reset}",
+            "    {ok}2){reset}  Browser sign-in     — {dim}paste session token from browser{reset}",
             ok = theme.ok(),
             dim = theme.dim(),
             reset = theme.reset(),
@@ -549,20 +466,38 @@ async fn interactive() -> Result<()> {
         run_provider_wizard().await?;
         println!();
     }
+
     let mut cfg = load_config().await?;
     ensure_layout().await?;
-    print_banner(&cfg).await;
 
-    // Build the provider once for the whole shell session. ACP-backed
-    // providers can take ~5-10 s to spawn (npx pull + JSON-RPC handshake);
-    // doing that on every `evoclaw>` turn was the dominant cost users hit.
-    // The (provider, is_acp) pair is rebuilt on `SlashOutcome::Reload` so
-    // `/login` and `/agent add` switch the live backend mid-session.
+    let mut registry = evo_tools::ToolRegistry::with_builtins();
+    let mcp_count = mcp_tools::install_all(&mut registry).await;
+    let tool_count = registry.names().len();
+
+    // ── Fresh-terminal effect ─────────────────────────────────────────────
+    // Clear visible screen + scrollback + reset cursor.  This is the same
+    // effect as running the OS `clear` command, giving the user a brand-new
+    // terminal window every time they launch the CLI.
+    //
+    // ESC[H        — cursor home
+    // ESC[2J       — clear visible screen
+    // ESC[3J       — clear scrollback buffer (xterm extension)
+    {
+        use std::io::Write as _;
+        let mut out = std::io::stdout();
+        let _ = out.write_all(b"\x1b[H\x1b[2J\x1b[3J");
+        let _ = out.flush();
+    }
+
+    // Print banner BEFORE enabling raw mode (banner uses println!).
+    print_banner(&cfg, mcp_count, tool_count).await;
+
+    // Build the provider once for the entire shell session.
     let (mut provider, mut is_acp) = match build_provider(&cfg).await {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!(
-                "{err}[error]{reset} failed to start provider: {e:#}",
+                "{err}error{reset} failed to start provider: {e:#}",
                 err = theme.err(),
                 reset = theme.reset(),
             );
@@ -570,230 +505,400 @@ async fn interactive() -> Result<()> {
         }
     };
 
-    // One log file per shell window. Every `evoclaw>` turn appends Task /
-    // Turn / End records to this same JSONL. Default location is
-    // `/tmp/evoclaw/session-*.jsonl` on Unix and `%TEMP%\evoclaw\…` on
-    // Windows — overridable via env `EVO_LOG_DIR` or config `[logs] dir`.
     let session_log = session_log_path()?;
-    println!(
-        "{frame}→{reset} session log: {dim}{}{reset}",
-        session_log.display(),
-        frame = theme.frame(),
-        dim = theme.dim(),
-        reset = theme.reset(),
-    );
+    let history_file = history_path()?;
 
-    // Build the rustyline editor with slash command auto-completion.
-    // Arrow keys, history (Ctrl-P / Ctrl-N), reverse-search (Ctrl-R),
-    // Tab completion, and command hints all come courtesy of rustyline.
-    // Vim-style keybindings: Ctrl+A (start), Ctrl+E (end), Ctrl+K (kill-end),
-    // Ctrl+U (kill-start), Ctrl+W (kill-word) are enabled by default in Emacs mode.
-    // History persists across sessions in `<logs_dir>/history.txt`.
-    let config = rustyline::Config::builder()
-        .edit_mode(rustyline::EditMode::Emacs)  // Emacs mode includes vim-style Ctrl bindings
-        .auto_add_history(true)
-        .build();
-    let helper = SlashCompleter::new();
-    let mut editor = rustyline::Editor::with_config(config)
-        .map_err(|e| eyre::eyre!("init readline: {e}"))?;
-    editor.set_helper(Some(helper));
-    let history = history_path()?;
-    if let Some(parent) = history.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    if history.exists() {
-        let _ = editor.load_history(&history);
-    }
-    // Load MCP servers and track count for status display
-    let mut mcp_count = 0;
-    let mut registry = evo_tools::ToolRegistry::with_builtins();
-    match mcp_tools::install_all(&mut registry).await {
-        n if n > 0 => {
-            mcp_count = n;
-            println!(
-                "{ok}✓{reset} MCP: {n} server(s) attached, registry has {} tools",
-                registry.names().len(),
-                ok = theme.ok(),
-                reset = theme.reset(),
-            );
-        }
-        _ => {}
-    }
+    // ── Enable raw mode ────────────────────────────────────────────────────
+    crossterm::terminal::enable_raw_mode()
+        .wrap_err("failed to enable raw terminal mode")?;
 
-    let prompt = format!(
-        "{frame}❯{reset} ",
-        frame = theme.frame(),
-        reset = theme.reset(),
-    );
+    // Ensure raw mode is disabled on all exit paths.
+    let _raw_guard = RawModeGuard;
 
-    // Track consecutive Ctrl+C presses for exit
-    let mut ctrl_c_count = 0;
-    // Track active skill (None for now, can be enhanced later)
-    let active_skill: Option<String> = None;
+    // ── Event channel ──────────────────────────────────────────────────────
+    let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<ui::UiEvent>(512);
 
-    loop {
-        // Display chat box top border before each prompt
-        // Recalculate width each time for terminal resize support
-        print!("{}", TerminalUI::chat_box_top(&theme));
-        std::io::stdout().flush().ok();
+    // ── Initial UI state + renderer ────────────────────────────────────────
+    let mut state = ui::UiState::new();
+    let mut renderer = ui::UiRenderer::new(theme);
 
-        // rustyline is sync; bounce to a blocking thread so we don't stall
-        // the tokio scheduler while waiting on user input.
-        let line_res: Result<String, rustyline::error::ReadlineError> = {
-            let prompt = prompt.clone();
-            // The editor is owned here; we need to move it through the
-            // blocking call and get it back.
-            let (resp, ed) =
-                tokio::task::spawn_blocking(move || (editor.readline(&prompt), editor))
-                    .await
-                    .map_err(|e| eyre::eyre!("readline join: {e}"))?;
-            editor = ed;
-            resp
-        };
-        let line = match line_res {
-            Ok(l) => l,
-            Err(rustyline::error::ReadlineError::Interrupted) => {
-                // Ctrl-C: First press shows hint, second press exits
-                ctrl_c_count += 1;
-                if ctrl_c_count >= 2 {
-                    println!();
-                    println!(
-                        "{frame}bye.{reset}",
-                        frame = theme.frame(),
-                        reset = theme.reset()
-                    );
-                    let _ = editor.save_history(&history);
-                    return Ok(());
-                } else {
-                    println!(
-                        "{dim}(Ctrl-C again to exit, or Ctrl-D){reset}",
-                        dim = theme.dim(),
-                        reset = theme.reset()
-                    );
-                    continue;
-                }
+    // Initial bottom zone draw.
+    renderer.redraw_bottom(&state);
+
+    // ── Spawn raw-mode input task ──────────────────────────────────────────
+    let input_pause = Arc::new(AtomicBool::new(false));
+    let input_tx = ui_tx.clone();
+    let hist_file = history_file.clone();
+    let pause_for_task = Arc::clone(&input_pause);
+    tokio::task::spawn_blocking(move || {
+        ui::run_input_task_sync(input_tx, hist_file, pause_for_task);
+    });
+
+    // ── Status-tick timer (updates elapsed display every 500 ms) ──────────
+    let tick_tx = ui_tx.clone();
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_millis(500));
+        loop {
+            interval.tick().await;
+            if tick_tx.send(ui::UiEvent::StatusTick).await.is_err() {
+                break;
             }
-            Err(rustyline::error::ReadlineError::Eof) => {
-                // Ctrl-D: clean exit.
+        }
+    });
+
+    // ── Task queue (serial execution model per PRD §5) ─────────────────────
+    let mut task_queue: std::collections::VecDeque<(String, String)> = Default::default();
+    let mut task_running = false;
+
+    // ── Main event loop ────────────────────────────────────────────────────
+    loop {
+        let Some(event) = ui_rx.recv().await else {
+            break;
+        };
+
+        match &event {
+            // ── Shutdown ───────────────────────────────────────────────────
+            ui::UiEvent::Shutdown => {
+                // Erase the bottom zone (input box + shortcuts) so the
+                // terminal is left in a clean state — no leftover UI frames.
+                renderer.clear_bottom();
+                drop(_raw_guard);
+                crossterm::terminal::disable_raw_mode().ok();
+                use std::io::Write as _;
+                print!("\r\n");
+                let _ = std::io::stdout().flush();
                 println!(
                     "{frame}bye.{reset}",
                     frame = theme.frame(),
                     reset = theme.reset()
                 );
-                let _ = editor.save_history(&history);
                 return Ok(());
             }
-            Err(e) => {
-                eprintln!(
-                    "{err}[error]{reset} readline: {e}",
-                    err = theme.err(),
-                    reset = theme.reset(),
-                );
+
+            // ── User submitted input ───────────────────────────────────────
+            ui::UiEvent::InputSubmitted { task_id, content, timestamp } => {
+                let task_id = task_id.clone();
+                let content = content.clone();
+                let timestamp = timestamp.clone();
+
+                // ── Slash command: instant, bypasses task queue ────────────
+                if let Some(rest) = content.strip_prefix('/') {
+                    // Pause the input task so it does not compete with stdin
+                    // reads inside commands like /login and /onboard.
+                    // 80 ms is enough for the task's 50 ms poll to time out
+                    // and notice the flag before we hand stdin to the wizard.
+                    input_pause.store(true, Ordering::SeqCst);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
+
+                    // Clear the bottom zone (handles cursor-offset correctly),
+                    // disable raw mode, run command, re-enable, reset renderer.
+                    renderer.clear_bottom();
+                    crossterm::terminal::disable_raw_mode().ok();
+
+                    let slash_result = handle_slash(rest).await;
+
+                    crossterm::terminal::enable_raw_mode().ok();
+                    renderer.reset_bottom();
+
+                    // Hand stdin back to the input task.
+                    input_pause.store(false, Ordering::SeqCst);
+
+                    match slash_result? {
+                        SlashOutcome::Exit => {
+                            // bottom zone was already cleared above; just exit.
+                            drop(_raw_guard);
+                            crossterm::terminal::disable_raw_mode().ok();
+                            println!(
+                                "{frame}bye.{reset}",
+                                frame = theme.frame(),
+                                reset = theme.reset()
+                            );
+                            return Ok(());
+                        }
+                        SlashOutcome::Reload => {
+                            cfg = load_config().await?;
+                            match build_provider(&cfg).await {
+                                Ok((p, acp)) => {
+                                    provider = p;
+                                    is_acp = acp;
+                                    crossterm::terminal::disable_raw_mode().ok();
+                                    let prov_id = cfg
+                                        .model
+                                        .provider
+                                        .clone()
+                                        .unwrap_or_else(|| "(unknown)".into());
+                                    println!(
+                                        "{ok}✓{reset} switched to {bold}{prov_id}{reset}",
+                                        ok = theme.ok(),
+                                        bold = theme.bold(),
+                                        reset = theme.reset(),
+                                    );
+                                    crossterm::terminal::enable_raw_mode().ok();
+                                }
+                                Err(e) => {
+                                    crossterm::terminal::disable_raw_mode().ok();
+                                    eprintln!(
+                                        "{err}error{reset} failed to switch provider: {e:#}",
+                                        err = theme.err(),
+                                        reset = theme.reset(),
+                                    );
+                                    crossterm::terminal::enable_raw_mode().ok();
+                                }
+                            }
+                        }
+                        SlashOutcome::Continue => {}
+                    }
+
+                    // Clear input, redraw bottom.
+                    state.apply(&ui::UiEvent::InputChanged {
+                        content: String::new(),
+                        cursor_char: 0,
+                    });
+                    renderer.redraw_bottom(&state);
+                    continue;
+                }
+
+                // ── Regular task ───────────────────────────────────────────
+                let queued = task_running;
+                state.apply(&ui::UiEvent::UserMessageAdded {
+                    task_id: task_id.clone(),
+                    content: content.clone(),
+                    timestamp: timestamp.clone(),
+                    queued,
+                });
+                // Clear submitted input.
+                state.apply(&ui::UiEvent::InputChanged {
+                    content: String::new(),
+                    cursor_char: 0,
+                });
+
+                if queued {
+                    task_queue.push_back((task_id.clone(), content.clone()));
+                    let queued_count = task_queue.len();
+                    state.apply(&ui::UiEvent::TaskQueued {
+                        task_id: task_id.clone(),
+                        queued_count,
+                    });
+                    renderer.render(&state);
+                } else {
+                    task_running = true;
+                    spawn_task(
+                        task_id.clone(),
+                        content.clone(),
+                        provider.clone(),
+                        is_acp,
+                        cfg.clone(),
+                        session_log.clone(),
+                        ui_tx.clone(),
+                    );
+                    renderer.render(&state);
+                }
                 continue;
             }
-        };
-        // Reset Ctrl+C counter on successful input
-        ctrl_c_count = 0;
 
-        // Display chat box bottom border and status after input
-        let model_name = &cfg.model.default;
-        let provider_id = cfg
-            .model
-            .provider
-            .as_deref()
-            .unwrap_or("unknown");
-        let acp_status = if is_acp {
-            Some(provider_id)
-        } else {
-            None
-        };
-
-        println!(
-            "{}",
-            TerminalUI::chat_box_bottom(
-                &theme,
-                model_name,
-                provider_id,
-                acp_status,
-                mcp_count,
-                active_skill.as_deref(),
-            )
-        );
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Add to history (in-memory now, persisted on Drop / save_history).
-        let _ = editor.add_history_entry(trimmed);
-        // Persist history every line so a `kill -9` doesn't lose it.
-        let _ = editor.save_history(&history);
-        if let Some(rest) = trimmed.strip_prefix('/') {
-            match handle_slash(rest).await? {
-                SlashOutcome::Exit => {
-                    println!(
-                        "{frame}bye.{reset}",
-                        frame = theme.frame(),
-                        reset = theme.reset()
+            // ── Task finished: start next queued task if any ───────────────
+            ui::UiEvent::AssistantDone { .. } => {
+                task_running = false;
+                if let Some((next_id, next_content)) = task_queue.pop_front() {
+                    task_running = true;
+                    let queued_count = task_queue.len();
+                    // Update queued count in the user blocks.
+                    state.task.queued_count = queued_count;
+                    spawn_task(
+                        next_id,
+                        next_content,
+                        provider.clone(),
+                        is_acp,
+                        cfg.clone(),
+                        session_log.clone(),
+                        ui_tx.clone(),
                     );
-                    let _ = editor.save_history(&history);
-                    return Ok(());
                 }
-                SlashOutcome::Reload => {
-                    // /login or /agent add wrote new config — pick it up
-                    // and rebuild the provider so the next turn uses the
-                    // freshly-selected vendor.
-                    cfg = load_config().await?;
-                    match build_provider(&cfg).await {
-                        Ok((p, acp)) => {
-                            provider = p;
-                            is_acp = acp;
-                            let prov_id = cfg
-                                .model
-                                .provider
-                                .clone()
-                                .unwrap_or_else(|| "(unknown)".into());
-                            println!(
-                                "{ok}✓{reset} switched to provider {bold}{prov_id}{reset} {dim}({})",
-                                cfg.model.default,
-                                ok = theme.ok(),
-                                bold = theme.bold(),
-                                dim = theme.dim(),
-                                reset = theme.reset(),
-                            );
-                            print!("{}", theme.reset());
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "{err}[error]{reset} failed to switch provider: {e:#}",
-                                err = theme.err(),
-                                reset = theme.reset(),
-                            );
-                        }
-                    }
-                }
-                SlashOutcome::Continue => {}
             }
-            continue;
+
+            // ── StatusTick: only redraw when a task is active ──────────────
+            ui::UiEvent::StatusTick => {
+                if state.apply(&event) {
+                    renderer.redraw_bottom(&state);
+                }
+                continue;
+            }
+
+            _ => {}
         }
-        if let Err(e) =
-            run_task_with_provider(trimmed, provider.clone(), is_acp, &cfg, &session_log, theme)
-                .await
-        {
-            eprintln!(
-                "{err}[error]{reset} {e:#}",
-                err = theme.err(),
-                reset = theme.reset(),
-            );
+
+        if state.apply(&event) {
+            renderer.render(&state);
         }
+    }
+
+    Ok(())
+}
+
+/// RAII guard that re-enables raw mode on drop (safety net for panics).
+struct RawModeGuard;
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        crossterm::terminal::disable_raw_mode().ok();
     }
 }
 
-/// Inner width of the ASCII-art logo box (63 `═` chars between corners).
-/// The context box is sized dynamically; see `TerminalUI::context_box_width`.
-const BOX_INNER_W: usize = 63;
+/// Spawn a task that runs the AI provider and forwards streaming deltas and
+/// completion as `UiEvent`s.  The task runs on the tokio thread pool; the
+/// caller's event loop is never blocked.
+fn spawn_task(
+    task_id: String,
+    content: String,
+    provider: Arc<dyn Provider>,
+    is_acp: bool,
+    cfg: Config,
+    session_log: PathBuf,
+    ui_tx: tokio::sync::mpsc::Sender<ui::UiEvent>,
+) {
+    let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+    let provider_label = cfg
+        .model
+        .provider
+        .clone()
+        .unwrap_or_else(|| "default".into());
 
-async fn print_banner(cfg: &Config) {
+    // Announce task start immediately (PRD §2: user message → task panel).
+    let _ = ui_tx.try_send(ui::UiEvent::AssistantStarted {
+        task_id: task_id.clone(),
+        provider: provider_label.clone(),
+        timestamp: ts,
+    });
+
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+
+        // Create a delta forwarding channel.
+        let (delta_raw_tx, mut delta_raw_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+        let fwd_task_id = task_id.clone();
+        let fwd_tx = ui_tx.clone();
+        tokio::spawn(async move {
+            while let Some(delta) = delta_raw_rx.recv().await {
+                let _ = fwd_tx
+                    .send(ui::UiEvent::AssistantDelta {
+                        task_id: fwd_task_id.clone(),
+                        delta,
+                    })
+                    .await;
+            }
+        });
+
+        let result = run_task_interactive(
+            &content,
+            provider,
+            is_acp,
+            &cfg,
+            &session_log,
+            delta_raw_tx,
+        )
+        .await;
+
+        let elapsed = started.elapsed().as_secs_f32();
+
+        match result {
+            Ok((usage_summary, model)) => {
+                let _ = ui_tx
+                    .send(ui::UiEvent::AssistantDone {
+                        task_id,
+                        usage_summary,
+                        elapsed_secs: elapsed,
+                        model,
+                        provider: provider_label,
+                    })
+                    .await;
+            }
+            Err(e) => {
+                let _ = ui_tx
+                    .send(ui::UiEvent::Error {
+                        message: format!("{e:#}"),
+                    })
+                    .await;
+                let _ = ui_tx
+                    .send(ui::UiEvent::AssistantDone {
+                        task_id,
+                        usage_summary: "error".into(),
+                        elapsed_secs: elapsed,
+                        model: cfg.model.default.clone(),
+                        provider: provider_label,
+                    })
+                    .await;
+            }
+        }
+    });
+}
+
+/// Runs the AI provider for a single task and returns `(usage_summary, model)`.
+/// All output goes through the `delta_tx` channel; nothing is printed to stdout.
+async fn run_task_interactive(
+    input: &str,
+    provider: Arc<dyn Provider>,
+    is_acp: bool,
+    cfg: &Config,
+    log_path: &Path,
+    delta_tx: tokio::sync::mpsc::UnboundedSender<String>,
+) -> Result<(String, String)> {
+    ensure_layout().await?;
+    let mut registry = ToolRegistry::with_builtins();
+    mcp_tools::install_all(&mut registry).await;
+    let registry = Arc::new(registry);
+    let session = Session::open(log_path).await?;
+    let tool_ctx = ToolContext {
+        workspace: workspace_dir()?,
+        allow_user_prompt: true,
+        ..Default::default()
+    };
+    let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
+    let memory = Memory::at(memory_dir()?);
+    let vault = Vault::load(&vault_path()?).await.wrap_err_with(|| {
+        format!(
+            "read vault at {}",
+            vault_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        )
+    })?;
+    let redactor = Redactor::from_vault(&vault);
+
+    let mut runtime = ConversationRuntime::new(
+        provider,
+        registry,
+        session,
+        tool_ctx,
+        evo_core::runtime::RuntimeConfig {
+            model: cfg.model.default.clone(),
+            reflection_enabled: !is_acp,
+            provider_id: cfg.model.provider.clone(),
+            mcp_servers: get_active_mcp_servers().await.unwrap_or_default(),
+            ..Default::default()
+        },
+    )
+    .with_cost_engine(cost_engine)
+    .with_memory(memory)
+    .with_skills_dir(skills_dir()?)
+    .with_redactor(redactor)
+    .with_delta_sender(delta_tx);
+
+    let outcome = runtime.run(input).await?;
+    let usage = &outcome.usage;
+    let usage_summary = if usage.turns_with_usage == 0 {
+        "unavailable".to_string()
+    } else {
+        format!(
+            "{}↑ {}↓ {}cached",
+            usage.input_tokens, usage.output_tokens, usage.cached_tokens,
+        )
+    };
+    Ok((usage_summary, cfg.model.default.clone()))
+}
+
+async fn print_banner(cfg: &Config, mcp_servers: usize, tool_count: usize) {
+    let theme = Theme::detect();
     let provider_id = cfg
         .model
         .provider
@@ -848,100 +953,60 @@ async fn print_banner(cfg: &Config) {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let home_disp = display_home(&home);
-
-    let color = use_color();
-    let cyan_b = if color { "\x1b[1;36m" } else { "" };
-    let green = if color { "\x1b[32m" } else { "" };
-    let red = if color { "\x1b[31m" } else { "" };
-    let dim = if color { "\x1b[2m" } else { "" };
-    let bold = if color { "\x1b[1m" } else { "" };
-    let reset = if color { "\x1b[0m" } else { "" };
-
-    let tagline = format!("local-first · self-evolving · v{VERSION}");
-    println!();
-    println!("{cyan_b}   ╔═══════════════════════════════════════════════════════════════╗{reset}");
-    println!("{cyan_b}   ║                                                               ║{reset}");
-    println!("{cyan_b}   ║      ███████╗██╗   ██╗ ██████╗  ██████╗██╗      █████╗ ██╗    ║{reset}");
-    println!("{cyan_b}   ║      ██╔════╝██║   ██║██╔═══██╗██╔════╝██║     ██╔══██╗██║    ║{reset}");
-    println!("{cyan_b}   ║      █████╗  ██║   ██║██║   ██║██║     ██║     ███████║██║    ║{reset}");
-    println!("{cyan_b}   ║      ██╔══╝  ╚██╗ ██╔╝██║   ██║██║     ██║     ██╔══██║██║    ║{reset}");
-    println!("{cyan_b}   ║      ███████╗ ╚████╔╝ ╚██████╔╝╚██████╗███████╗██║  ██║██║    ║{reset}");
-    println!("{cyan_b}   ║      ╚══════╝  ╚═══╝   ╚═════╝  ╚═════╝╚══════╝╚═╝  ╚═╝╚═╝    ║{reset}");
-    println!("{cyan_b}   ║                                                               ║{reset}");
-    println!(
-        "{cyan_b}   ║{reset}{}{cyan_b}║{reset}",
-        center_pad(&format!("{dim}{tagline}{reset}"), BOX_INNER_W)
-    );
-    println!("{cyan_b}   ╚═══════════════════════════════════════════════════════════════╝{reset}");
-    println!();
-    // Context box adapts to terminal width: min 63 inner, max 120.
-    let box_inner_w = TerminalUI::context_box_width();
-    let box_value_w = box_inner_w.saturating_sub(12);
-    // "─ context " = 10 visible chars; remaining fill
-    let hdr_fill = "─".repeat(box_inner_w.saturating_sub(10));
-    println!("{bold}   ┌─ context {hdr_fill}┐{reset}");
-    print_row(bold, dim, reset, "home    ", &truncate_to(&home_disp, box_value_w), box_value_w);
-    let prov_value = if is_acp {
-        format!("{:<14} {dim}(external ACP agent){reset}", provider_id)
-    } else if cfg.model.base_url.is_empty() {
-        provider_id.clone()
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let model_label = if is_acp {
+        provider_id.as_str()
     } else {
-        format!("{:<10} {dim}({}){reset}", provider_id, cfg.model.base_url)
+        cfg.model.default.as_str()
     };
-    print_row(bold, dim, reset, "provider", &prov_value, box_value_w);
-    let model_value = if is_acp {
-        "(remote agent loop)".into()
+    let auth_state = if key_ok {
+        key_status
     } else {
-        truncate_to(&cfg.model.default, box_value_w)
+        format!("needs auth · {key_status}")
     };
-    print_row(bold, dim, reset, "model   ", &model_value, box_value_w);
-    let key_color = if key_ok { green } else { red };
-    let key_value = format!("{key_color}{key_status}{reset}");
-    let auth_label = if is_acp {
-        "auth    "
-    } else {
-        match auth_method {
-            AuthMethod::Browser => "browser ",
-            AuthMethod::Acp => "auth    ",
-            AuthMethod::ApiKey => "api key ",
-        }
-    };
-    print_row(bold, dim, reset, auth_label, &key_value, box_value_w);
-    print_row(bold, dim, reset, "account ", &truncate_to(&account_status, box_value_w), box_value_w);
-    let vault_value = if vault_count > 0 {
+    let vault_state = if vault_count > 0 {
         format!(
-            "{green}{vault_count} entr{}{reset} {dim}· redactor active{reset}",
-            if vault_count == 1 { "y" } else { "ies" }
+            "{vault_count} secret{} · redactor active",
+            if vault_count == 1 { "" } else { "s" }
         )
     } else {
-        format!("{dim}empty · pattern fallback only{reset}")
+        "empty · pattern fallback active".to_string()
     };
-    print_row(bold, dim, reset, "vault   ", &vault_value, box_value_w);
-    print_row(bold, dim, reset, "skills  ", &format!("{skill_count} learned"), box_value_w);
-    let ftr_fill = "─".repeat(box_inner_w);
-    println!("{bold}   └{ftr_fill}┘{reset}");
-    println!();
-    println!("   {bold}Type a task in plain language to run the agent.{reset}");
-    println!("   {dim}/help for slash commands  ·  Tab for auto-complete  ·  /exit or Ctrl-D to quit.{reset}");
-}
+    let mcp_line = if mcp_servers > 0 {
+        format!("mcp: {mcp_servers} server(s) · {tool_count} tools")
+    } else {
+        "mcp: none attached".to_string()
+    };
 
-/// Render one `│ label : value ...│` row, padding to the given box_value_w.
-fn print_row(bold: &str, dim: &str, reset: &str, label: &str, value: &str, box_value_w: usize) {
-    let visible = strip_ansi(value).chars().count();
-    let pad = box_value_w.saturating_sub(visible);
-    let padding: String = " ".repeat(pad);
-    println!("{bold}   │{reset}  {dim}{label}:{reset} {value}{padding}{bold}│{reset}",);
-}
-
-fn center_pad(s: &str, width: usize) -> String {
-    let visible = strip_ansi(s).chars().count();
-    if visible >= width {
-        return s.to_string();
-    }
-    let total = width - visible;
-    let left = total / 2;
-    let right = total - left;
-    format!("{}{s}{}", " ".repeat(left), " ".repeat(right))
+    print!(
+        "{}",
+        TerminalUI::render_top_status_bar(
+            &theme,
+            &format!("evoclaw v{VERSION}"),
+            &provider_id,
+            model_label,
+            &home_disp,
+            &timestamp,
+        )
+    );
+    print!(
+        "{}",
+        TerminalUI::panel(
+            &theme,
+            "evoclaw",
+            &[
+                format!("auth: {auth_state}"),
+                format!("account: {}", truncate_to(&account_status, 54)),
+                format!("vault: {vault_state}"),
+                format!("skills: {skill_count} learned  ·  {mcp_line}"),
+                format!(
+                    "{dim}Type a question or /help for commands · Ctrl-D to exit{reset}",
+                    dim = theme.dim(),
+                    reset = theme.reset(),
+                ),
+            ],
+        )
+    );
 }
 
 fn use_color() -> bool {
@@ -959,7 +1024,7 @@ fn use_color() -> bool {
 /// Provides soft, professional colors that are easy on the eyes while maintaining
 /// a high-tech feel. All colors are centralized and never hardcoded.
 #[derive(Debug, Clone, Copy)]
-struct Theme {
+pub(crate) struct Theme {
     enabled: bool,
 }
 
@@ -967,27 +1032,27 @@ struct Theme {
 /// Using 256-color palette for richer, more professional appearance
 mod colors {
     // Primary colors - soft teal/cyan for tech aesthetic
-    pub const PRIMARY: &str = "\x1b[38;5;51m";      // Soft cyan
+    pub const PRIMARY: &str = "\x1b[38;5;51m"; // Soft cyan
 
     // Status colors - soft and professional
-    pub const SUCCESS: &str = "\x1b[38;5;120m";     // Soft green
-    pub const ERROR: &str = "\x1b[38;5;204m";       // Soft red
-    pub const WARNING: &str = "\x1b[38;5;222m";     // Amber/orange
-    pub const INFO: &str = "\x1b[38;5;117m";        // Soft blue
+    pub const SUCCESS: &str = "\x1b[38;5;120m"; // Soft green
+    pub const ERROR: &str = "\x1b[38;5;204m"; // Soft red
+    pub const WARNING: &str = "\x1b[38;5;222m"; // Amber/orange
+    pub const INFO: &str = "\x1b[38;5;117m"; // Soft blue
 
     // Accent colors
-    pub const ACCENT: &str = "\x1b[38;5;141m";      // Soft purple
-    pub const HIGHLIGHT: &str = "\x1b[38;5;228m";   // Soft yellow
+    pub const ACCENT: &str = "\x1b[38;5;141m"; // Soft purple
+    pub const HIGHLIGHT: &str = "\x1b[38;5;228m"; // Soft yellow
 
     // Text styles
-    pub const DIM: &str = "\x1b[38;5;240m";         // Gray for secondary info
-    pub const BOLD: &str = "\x1b[1m";               // Bold
-    pub const RESET: &str = "\x1b[0m";              // Reset all
+    pub const DIM: &str = "\x1b[38;5;240m"; // Gray for secondary info
+    pub const BOLD: &str = "\x1b[1m"; // Bold
+    pub const RESET: &str = "\x1b[0m"; // Reset all
 
     // Semantic colors for different use cases
-    pub const LABEL: &str = "\x1b[38;5;249m";       // Light gray for labels
-    pub const VALUE: &str = "\x1b[38;5;253m";       // Bright white for values
-    pub const BORDER: &str = "\x1b[38;5;240m";      // Gray for borders
+    pub const LABEL: &str = "\x1b[38;5;249m"; // Light gray for labels
+    pub const VALUE: &str = "\x1b[38;5;253m"; // Bright white for values
+    pub const BORDER: &str = "\x1b[38;5;240m"; // Gray for borders
 }
 
 impl Theme {
@@ -1124,137 +1189,398 @@ impl DisplayTemplate {
 struct TerminalUI;
 
 impl TerminalUI {
-    /// Get current terminal width via OS ioctl, with env-var and hard fallback.
-    /// Re-evaluated every call so terminal resize is reflected immediately.
+    /// Terminal column count via crossterm, re-read on every call for resize.
     fn width() -> usize {
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            #[repr(C)]
-            struct Winsize { ws_row: u16, ws_col: u16, ws_xpixel: u16, ws_ypixel: u16 }
-            let mut ws = Winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
-            let fd = std::io::stdout().as_raw_fd();
-            // SAFETY: fd is valid stdout, Winsize matches kernel ABI.
-            if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
-                return (ws.ws_col as usize).clamp(60, 220);
+        tui::terminal_width()
+    }
+
+    fn render_top_status_bar(
+        theme: &Theme,
+        runtime: &str,
+        provider: &str,
+        model: &str,
+        workspace: &str,
+        timestamp: &str,
+    ) -> String {
+        let w = Self::block_width();
+        let inner_w = w.saturating_sub(4);
+        let left = truncate_to(&format!("{runtime}  •  {provider}  •  {model}"), inner_w);
+        let timestamp_w = tui::display_width(timestamp);
+        let workspace_line = truncate_to(
+            &format!("workspace: {workspace}"),
+            inner_w.saturating_sub(timestamp_w + 2),
+        );
+        let gap = inner_w
+            .saturating_sub(tui::display_width(&workspace_line))
+            .saturating_sub(timestamp_w);
+        let line1 = format!(
+            "{primary}{left}{r}",
+            primary = theme.frame(),
+            r = theme.reset()
+        );
+        let line2 = format!(
+            "{dim}{workspace_line}{}{timestamp}{r}",
+            " ".repeat(gap),
+            dim = theme.dim(),
+            r = theme.reset()
+        );
+        let row = |content: &str| {
+            let pad = inner_w.saturating_sub(tui::display_width_ansi(content));
+            format!(
+                "{b}│{r} {content}{} {b}│{r}\n",
+                " ".repeat(pad),
+                b = theme.border(),
+                r = theme.reset(),
+            )
+        };
+        format!(
+            "\n{b}╭{}╮{r}\n{}{}{b}╰{}╯{r}\n",
+            "─".repeat(w.saturating_sub(2)),
+            row(&line1),
+            row(&line2),
+            "─".repeat(w.saturating_sub(2)),
+            b = theme.border(),
+            r = theme.reset(),
+        )
+    }
+
+    fn panel(theme: &Theme, title: &str, lines: &[String]) -> String {
+        let w = Self::block_width();
+        let inner_w = w.saturating_sub(4);
+        let header = format!("─ {title} ");
+        let fill = "─".repeat(w.saturating_sub(2 + tui::display_width(&header)));
+        let mut out = String::new();
+        out.push('\n');
+        out.push_str(&format!(
+            "{b}╭{header}{fill}╮{r}\n",
+            b = theme.border(),
+            r = theme.reset(),
+        ));
+        for raw in lines {
+            let rendered = raw.as_str();
+            let visible = tui::strip_ansi(rendered);
+            let wrapped = if tui::display_width(&visible) <= inner_w {
+                vec![visible]
+            } else {
+                tui::wrap_text(&visible, inner_w)
+            };
+            for line in wrapped {
+                let pad = inner_w.saturating_sub(tui::display_width(&line));
+                out.push_str(&format!(
+                    "{b}│{r} {line}{pad} {b}│{r}\n",
+                    b = theme.border(),
+                    r = theme.reset(),
+                    pad = " ".repeat(pad),
+                ));
             }
         }
-        std::env::var("COLUMNS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(80)
-            .clamp(60, 220)
+        out.push_str(&format!(
+            "{b}╰{}╯{r}\n",
+            "─".repeat(w.saturating_sub(2)),
+            b = theme.border(),
+            r = theme.reset(),
+        ));
+        out
     }
 
-    /// Width for the context/banner box: fills terminal minus indent/borders,
-    /// clamped to [63, 120] so the ASCII logo always fits and lines stay readable.
-    fn context_box_width() -> usize {
-        Self::width().saturating_sub(5).clamp(63, 120)
+    fn render_markdown(theme: &Theme, text: &str) -> String {
+        let mut out = Vec::new();
+        let mut in_code_block = false;
+        let mut code_lang = String::new();
+        let block_inner_w = Self::block_width().saturating_sub(4);
+
+        for raw_line in text.lines() {
+            let line = raw_line.trim_end();
+            let trimmed = line.trim();
+
+            if let Some(rest) = trimmed.strip_prefix("```") {
+                if in_code_block {
+                    let closing_fill = "─".repeat(block_inner_w.saturating_sub(3).min(46));
+                    out.push(format!(
+                        "{border}  └{line}{}{reset}",
+                        closing_fill,
+                        border = theme.border(),
+                        line = theme.dim(),
+                        reset = theme.reset(),
+                    ));
+                    in_code_block = false;
+                    code_lang.clear();
+                } else {
+                    code_lang = rest.trim().to_string();
+                    let label = if code_lang.is_empty() {
+                        "code".to_string()
+                    } else {
+                        format!("code: {}", code_lang)
+                    };
+                    let label_w = tui::display_width(&label);
+                    let opening_fill =
+                        "─".repeat(block_inner_w.saturating_sub(6 + label_w).min(46));
+                    out.push(format!(
+                        "{border}  ┌─ {accent}{label}{reset} {border}{}{reset}",
+                        opening_fill,
+                        border = theme.border(),
+                        accent = theme.accent(),
+                        reset = theme.reset(),
+                    ));
+                    in_code_block = true;
+                }
+                continue;
+            }
+
+            if in_code_block {
+                out.push(format!(
+                    "{border}  │ {reset}{value}{line}{reset}",
+                    border = theme.border(),
+                    value = theme.value(),
+                    line = line,
+                    reset = theme.reset(),
+                ));
+                continue;
+            }
+
+            if trimmed.is_empty() {
+                out.push(String::new());
+                continue;
+            }
+
+            if let Some((level, content)) = parse_heading(trimmed) {
+                let color = match level {
+                    1 => theme.frame(),
+                    2 => theme.info(),
+                    _ => theme.highlight(),
+                };
+                out.push(format!(
+                    "{color}{bold}{content}{reset}",
+                    color = color,
+                    bold = theme.bold(),
+                    content = render_inline_markdown(theme, content),
+                    reset = theme.reset(),
+                ));
+                continue;
+            }
+
+            if is_horizontal_rule(trimmed) {
+                out.push(format!(
+                    "{border}{}{reset}",
+                    "─".repeat(Self::width().saturating_sub(4).min(72)),
+                    border = theme.border(),
+                    reset = theme.reset(),
+                ));
+                continue;
+            }
+
+            if let Some(content) = trimmed.strip_prefix("> ") {
+                out.push(format!(
+                    "{dim}│{reset} {}",
+                    render_inline_markdown(theme, content),
+                    dim = theme.dim(),
+                    reset = theme.reset(),
+                ));
+                continue;
+            }
+
+            if let Some(content) = parse_unordered_list_item(trimmed) {
+                out.push(format!(
+                    "{accent}•{reset} {}",
+                    render_inline_markdown(theme, content),
+                    accent = theme.accent(),
+                    reset = theme.reset(),
+                ));
+                continue;
+            }
+
+            if let Some((n, content)) = parse_ordered_list_item(trimmed) {
+                out.push(format!(
+                    "{accent}{n}.{reset} {}",
+                    render_inline_markdown(theme, content),
+                    accent = theme.accent(),
+                    reset = theme.reset(),
+                ));
+                continue;
+            }
+
+            out.push(render_inline_markdown(theme, line));
+        }
+
+        if in_code_block {
+            let closing_fill = "─".repeat(block_inner_w.saturating_sub(3).min(46));
+            out.push(format!(
+                "{border}  └{line}{}{reset}",
+                closing_fill,
+                border = theme.border(),
+                line = theme.dim(),
+                reset = theme.reset(),
+            ));
+        }
+
+        out.join("\n")
     }
 
-    /// Format status information below the input prompt
-    /// Shows: model, account, ACP/MCP status, active skill
-    fn format_status(
+    /// Width for the answer / status / usage boxes. Uses the full terminal
+    /// minus a small padding budget so two trailing/leading "│ " columns
+    /// fit even on narrow terminals. Clamped to [60, 120] so very wide
+    /// monitors don't produce illegible 200-column lines and very narrow
+    /// shells don't break layout.
+    fn block_width() -> usize {
+        tui::terminal_size().0.clamp(60, 120)
+    }
+
+    /// Render the post-task dashboard: conversation card, task state, usage.
+    fn render_answer_block(
         theme: &Theme,
+        body: &str,
+        turns: u64,
+        elapsed_secs: f32,
         model: &str,
         provider: &str,
-        acp_status: Option<&str>,
-        mcp_count: usize,
-        active_skill: Option<&str>,
+        usage_summary: &str,
     ) -> String {
-        let mut parts = Vec::new();
+        let mut conversation = vec![format!(
+            "{}EvoClaw ({provider}){}    {elapsed_secs:.1}s · {turns} turn{}",
+            theme.ok(),
+            theme.reset(),
+            if turns == 1 { "" } else { "s" },
+        )];
+        let rendered = Self::render_markdown(theme, body);
+        for line in rendered.split('\n') {
+            conversation.push(line.to_string());
+        }
 
-        // Model info
-        parts.push(format!(
-            "{label}model:{reset} {value}{model}{reset}",
-            label = theme.dim(),
-            reset = theme.reset(),
-            value = theme.frame(),
-            model = model
+        let mut out = Self::panel(theme, "会话历史区", &conversation);
+        out.push_str(&Self::panel(
+            theme,
+            "任务状态区",
+            &[
+                format!("任务: task-complete ({provider})"),
+                "状态: 已完成".to_string(),
+                format!("已用时: {elapsed_secs:.1}s"),
+            ],
         ));
-
-        // Provider/Account info
-        parts.push(format!(
-            "{label}provider:{reset} {value}{provider}{reset}",
-            label = theme.dim(),
-            reset = theme.reset(),
-            value = theme.info(),
-            provider = provider
+        out.push_str(&Self::panel(
+            theme,
+            "使用信息区",
+            &[
+                format!("model: {model}"),
+                format!("provider: {provider}"),
+                format!("usage: {usage_summary}"),
+                "30d 总计: 查看 /usage 获取完整汇总".to_string(),
+            ],
         ));
+        out
+    }
+}
 
-        // ACP status if present
-        if let Some(acp) = acp_status {
-            parts.push(format!(
-                "{label}acp:{reset} {value}{acp}{reset}",
-                label = theme.dim(),
-                reset = theme.reset(),
-                value = theme.accent(),
-                acp = acp
-            ));
+fn parse_heading(s: &str) -> Option<(usize, &str)> {
+    let hashes = s.chars().take_while(|&c| c == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let rest = s[hashes..].trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    Some((hashes, rest))
+}
+
+fn is_horizontal_rule(s: &str) -> bool {
+    if s.len() < 3 {
+        return false;
+    }
+    s.chars().all(|c| c == '-' || c == '*' || c == '_')
+}
+
+fn parse_unordered_list_item(s: &str) -> Option<&str> {
+    ["- ", "* ", "+ "]
+        .into_iter()
+        .find_map(|prefix| s.strip_prefix(prefix))
+}
+
+fn parse_ordered_list_item(s: &str) -> Option<(&str, &str)> {
+    let dot = s.find(". ")?;
+    if dot == 0 || !s[..dot].chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((&s[..dot], &s[dot + 2..]))
+}
+
+fn render_inline_markdown(theme: &Theme, text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    let mut in_code = false;
+    let mut in_bold = false;
+
+    while let Some(ch) = chars.next() {
+        if ch == '`' {
+            if in_code {
+                out.push_str(theme.reset());
+            } else {
+                out.push_str(theme.highlight());
+            }
+            in_code = !in_code;
+            continue;
         }
 
-        // MCP servers count
-        if mcp_count > 0 {
-            parts.push(format!(
-                "{label}mcp:{reset} {value}{count} server{s}{reset}",
-                label = theme.dim(),
-                reset = theme.reset(),
-                value = theme.ok(),
-                count = mcp_count,
-                s = if mcp_count == 1 { "" } else { "s" }
-            ));
+        if !in_code && ch == '*' && matches!(chars.peek(), Some('*')) {
+            let _ = chars.next();
+            if in_bold {
+                out.push_str(theme.reset());
+            } else {
+                out.push_str(theme.bold());
+            }
+            in_bold = !in_bold;
+            continue;
         }
 
-        // Active skill if any
-        if let Some(skill) = active_skill {
-            parts.push(format!(
-                "{label}skill:{reset} {value}{skill}{reset}",
-                label = theme.dim(),
-                reset = theme.reset(),
-                value = theme.highlight(),
-                skill = skill
-            ));
+        if !in_code && ch == '[' {
+            let mut label = String::new();
+            let mut saw_close = false;
+            while let Some(&next) = chars.peek() {
+                chars.next();
+                if next == ']' {
+                    saw_close = true;
+                    break;
+                }
+                label.push(next);
+            }
+            if saw_close && matches!(chars.peek(), Some('(')) {
+                let _ = chars.next();
+                let mut url = String::new();
+                let mut closed = false;
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next == ')' {
+                        closed = true;
+                        break;
+                    }
+                    url.push(next);
+                }
+                if closed {
+                    out.push_str(theme.info());
+                    out.push_str(&label);
+                    out.push_str(theme.reset());
+                    out.push_str(theme.dim());
+                    out.push_str(" (");
+                    out.push_str(&url);
+                    out.push(')');
+                    out.push_str(theme.reset());
+                    continue;
+                }
+            }
+            out.push('[');
+            out.push_str(&label);
+            if saw_close {
+                out.push(']');
+            }
+            continue;
         }
 
-        // Join with separator and pad
-        let status_line = parts.join(&format!(" {dim}│{reset} ", dim = theme.dim(), reset = theme.reset()));
-        format!("  {}", status_line)
+        out.push(ch);
     }
 
-    /// Top border of the chat input box, adapts to terminal width:
-    ///   ╭──────────────────────────────────────────────────╮
-    fn chat_box_top(theme: &Theme) -> String {
-        let w = Self::width();
-        let inner = "─".repeat(w.saturating_sub(2));
-        format!(
-            "\n{b}╭{inner}╮{r}\n",
-            b = theme.border(), inner = inner, r = theme.reset()
-        )
+    if in_code || in_bold {
+        out.push_str(theme.reset());
     }
-
-    /// Bottom border with status embedded, adapts to terminal width:
-    ///   ╰─ model: gpt-4o │ provider: openai ────────────────╯
-    fn chat_box_bottom(
-        theme: &Theme,
-        model: &str,
-        provider: &str,
-        acp_status: Option<&str>,
-        mcp_count: usize,
-        active_skill: Option<&str>,
-    ) -> String {
-        let w = Self::width();
-        let status = Self::format_status(theme, model, provider, acp_status, mcp_count, active_skill);
-        let status = status.trim_start().to_string();
-        let status_vis = strip_ansi(&status).chars().count();
-        // Layout: ╰─ {status} {fill}╯  →  3 + status_vis + 1 + fill + 1 = w
-        let fixed = 3 + status_vis + 2; // "╰─ " + status + " ╯"
-        let fill = "─".repeat(w.saturating_sub(fixed));
-        format!(
-            "{b}╰─ {r}{status}{b} {fill}╯{r}\n",
-            b = theme.border(), r = theme.reset(),
-            status = status, fill = fill,
-        )
-    }
+    out
 }
 
 /// REPL history file. Persisted across sessions so arrow-up resurfaces
@@ -1270,61 +1596,74 @@ fn history_path() -> Result<PathBuf> {
 struct Spinner {
     handle: Option<std::thread::JoinHandle<()>>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    phase: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
 impl Spinner {
+    /// In-place spinner anchored with crossterm `SavePosition` /
+    /// `RestorePosition`. Even if a stray `println!` from the runtime
+    /// or a tool sneaks between two frames, the next frame still
+    /// rewrites the **same** anchor line instead of cascading down.
     fn start(theme: Theme, label: &str) -> Self {
+        use crossterm::cursor::{RestorePosition, SavePosition};
+        use crossterm::terminal::{Clear, ClearType};
+        use std::io::Write as _;
+
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_clone = stop.clone();
-        let phase = std::sync::Arc::new(std::sync::Mutex::new(label.to_string()));
-        let phase_clone = phase.clone();
         let warn = theme.warn().to_string();
         let dim = theme.dim().to_string();
         let reset = theme.reset().to_string();
+        let label = label.to_string();
+
+        // Reserve an anchor row before saving cursor position. We
+        // print a newline (advances cursor + scrolls if at bottom),
+        // move back up onto that fresh row, then `SavePosition`. If
+        // we just `SavePosition` at the bottom of the scroll region
+        // a later `RestorePosition` would target an already-scrolled-
+        // away line.
+        let mut stderr = std::io::stderr();
+        let _ = crossterm::execute!(stderr, crossterm::style::Print("\n"));
+        let _ = crossterm::execute!(stderr, crossterm::cursor::MoveUp(1));
+        let _ = crossterm::execute!(stderr, SavePosition);
+        let _ = stderr.flush();
+
         let handle = std::thread::spawn(move || {
-            let frames: [&str; 10] = [
-                "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-            ];
+            let frames: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
             let started = std::time::Instant::now();
             let mut idx = 0usize;
             while !stop_clone.load(std::sync::atomic::Ordering::SeqCst) {
                 let elapsed = started.elapsed().as_secs_f32();
-                let current_phase = phase_clone.lock().unwrap().clone();
-                eprint!(
-                    "\r{warn}{}{reset} {current_phase} {dim}({:.1}s){reset}    ",
-                    frames[idx % frames.len()],
-                    elapsed,
+                let mut err = std::io::stderr();
+                let _ = crossterm::execute!(
+                    err,
+                    RestorePosition,
+                    Clear(ClearType::CurrentLine),
+                    crossterm::style::Print(format!(
+                        "{warn}{}{reset} {label} {dim}({:.1}s){reset}",
+                        frames[idx % frames.len()],
+                        elapsed,
+                    )),
                 );
-                use std::io::Write as _;
-                std::io::stderr().flush().ok();
+                let _ = err.flush();
                 idx = idx.wrapping_add(1);
                 std::thread::sleep(std::time::Duration::from_millis(80));
             }
-            // Erase the spinner line so the caller's print starts clean.
-            eprint!("\r\x1b[2K");
-            use std::io::Write as _;
-            std::io::stderr().flush().ok();
+            // Drop path: clear the anchor line and leave the cursor
+            // sitting on it so the next caller starts fresh.
+            let mut err = std::io::stderr();
+            let _ = crossterm::execute!(err, RestorePosition, Clear(ClearType::CurrentLine));
+            let _ = err.flush();
         });
         Self {
             handle: Some(handle),
             stop,
-            phase,
-        }
-    }
-
-    /// Update the spinner's displayed phase/message
-    fn update_phase(&self, new_phase: &str) {
-        if let Ok(mut phase) = self.phase.lock() {
-            *phase = new_phase.to_string();
         }
     }
 }
 
 impl Drop for Spinner {
     fn drop(&mut self) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -1341,30 +1680,21 @@ fn display_home(p: &str) -> String {
 }
 
 fn truncate_to(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
+    if tui::display_width(s) <= n {
         return s.to_string();
     }
-    let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
-    out.push('…');
-    out
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_esc = false;
-    for c in s.chars() {
-        if in_esc {
-            if c == 'm' {
-                in_esc = false;
-            }
-            continue;
+    let mut out = String::new();
+    let mut used = 0usize;
+    let limit = n.saturating_sub(1);
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw > limit {
+            break;
         }
-        if c == '\x1b' {
-            in_esc = true;
-            continue;
-        }
-        out.push(c);
+        out.push(ch);
+        used += cw;
     }
+    out.push('…');
     out
 }
 
@@ -1671,8 +2001,9 @@ async fn run_provider_wizard() -> Result<()> {
         AuthMethod::Acp => {
             // User selected ACP agent for this provider. Configure the corresponding
             // ACP agent automatically.
-            let agent_id = onboard::provider_to_acp_agent(&choice.id)
-                .ok_or_else(|| eyre::eyre!("No ACP agent available for provider '{}'", choice.id))?;
+            let agent_id = onboard::provider_to_acp_agent(&choice.id).ok_or_else(|| {
+                eyre::eyre!("No ACP agent available for provider '{}'", choice.id)
+            })?;
 
             // Find the agent profile from catalog
             let agent_profile = evo_acp_client::find_agent(agent_id)
@@ -1687,7 +2018,11 @@ async fn run_provider_wizard() -> Result<()> {
             println!();
             println!("  ✓ saved ACP agent profile -> {}", agent_path.display());
             println!("    Agent: {}", agent_profile.name);
-            println!("    Command: {} {}", agent_config.command, agent_config.args.join(" "));
+            println!(
+                "    Command: {} {}",
+                agent_config.command,
+                agent_config.args.join(" ")
+            );
             println!("    Install: {}", agent_profile.install_hint);
             println!("    Auth: {}", agent_profile.auth_hint);
 
@@ -1718,10 +2053,17 @@ async fn run_provider_wizard() -> Result<()> {
                     println!("  ✗ Connection test FAILED: {}", e);
                     println!();
                     println!("  Troubleshooting:");
-                    println!("    1. Check if the agent is installed: {}", agent_profile.install_hint);
+                    println!(
+                        "    1. Check if the agent is installed: {}",
+                        agent_profile.install_hint
+                    );
                     println!("    2. Verify authentication: {}", agent_profile.auth_hint);
                     println!("    3. Try running the command manually:");
-                    println!("       {} {}", agent_config.command, agent_config.args.join(" "));
+                    println!(
+                        "       {} {}",
+                        agent_config.command,
+                        agent_config.args.join(" ")
+                    );
                     println!();
                     println!("  Configuration saved but connection failed.");
                     println!("  Run `evoclaw doctor` to diagnose or retry with `evoclaw login`.");
@@ -1743,10 +2085,7 @@ async fn test_acp_connection(agent_config: &evo_acp_client::AgentConfig) -> Resu
     let client = evo_acp_client::AcpClient::new();
 
     // Step 1: Try to spawn with a 30-second timeout
-    let spawn_result = timeout(
-        Duration::from_secs(30),
-        client.spawn(agent_config)
-    ).await;
+    let spawn_result = timeout(Duration::from_secs(30), client.spawn(agent_config)).await;
 
     match spawn_result {
         Ok(Ok(())) => {
@@ -1766,8 +2105,9 @@ async fn test_acp_connection(agent_config: &evo_acp_client::AgentConfig) -> Resu
     // Step 2: Try initialize handshake with a 30-second timeout
     let init_result = timeout(
         Duration::from_secs(30),
-        client.initialize("evoclaw-test", env!("CARGO_PKG_VERSION"))
-    ).await;
+        client.initialize("evoclaw-test", env!("CARGO_PKG_VERSION")),
+    )
+    .await;
 
     match init_result {
         Ok(Ok(result)) => {
@@ -1833,15 +2173,17 @@ async fn doctor() -> Result<()> {
                 );
             }
             Err(e) => {
-                println!(
-                    "acp      : MISSING — {e:#}\nrun `evoclaw agent add {agent_id}`"
-                );
+                println!("acp      : MISSING — {e:#}\nrun `evoclaw agent add {agent_id}`");
             }
         }
         return Ok(());
     }
     let auth_method = cfg.auth.parsed();
-    println!("auth     : {} ({})", auth_method.label(), auth_method.as_str());
+    println!(
+        "auth     : {} ({})",
+        auth_method.label(),
+        auth_method.as_str()
+    );
     match auth_method {
         AuthMethod::Browser => match onboard::load_browser_profile(&provider_id).await {
             Ok(p) => println!(
@@ -1856,7 +2198,7 @@ async fn doctor() -> Result<()> {
         AuthMethod::Acp => {
             // Config shows ACP but it's actually handled via acp: provider prefix
             println!("acp      : configured (auth handled by external agent)")
-        },
+        }
         AuthMethod::ApiKey => match onboard::resolve_api_key(&provider_id).await {
             Ok((_k, src)) => println!("api_key  : OK ({})", src.describe()),
             Err(e) => println!("api_key  : MISSING — {e:#}\nrun `evoclaw login`"),
@@ -1996,65 +2338,55 @@ async fn run_task_with_provider(
     .with_skills_dir(skills_dir()?)
     .with_redactor(redactor);
     let started = std::time::Instant::now();
-    println!(
-        "{frame}→{reset} running… {dim}log: {}{reset}",
-        log_path.display(),
-        frame = theme.frame(),
-        dim = theme.dim(),
-        reset = theme.reset(),
-    );
-    // Enhanced spinner with progress updates. Dropped automatically at
-    // function exit which clears the line so the answer prints clean.
-    let spinner = Spinner::start(theme, "initializing…");
-
-    // Show progress during execution
-    spinner.update_phase("connecting to provider…");
-    std::thread::sleep(std::time::Duration::from_millis(100)); // brief pause for visibility
-
-    spinner.update_phase("processing request…");
+    // Single in-place spinner (`\r`-redraw, cleared on Drop). Persistent
+    // metadata moves into the dashboard panels printed after completion.
+    let spinner = Spinner::start(theme, "processing…");
     let outcome = runtime.run(input).await?;
     drop(spinner);
     let elapsed = started.elapsed();
     let usage = &outcome.usage;
+    // ACP-backed providers don't surface per-turn `Usage` events because the
+    // upstream agent owns its own metering, so the dashboard shows
+    // "unavailable".
     let usage_summary = if usage.turns_with_usage == 0 {
-        // ACP backends don't surface per-turn `Usage` events — the
-        // upstream agent does its own metering.
-        format!(
-            "{dim}tokens reported by upstream agent{reset}",
-            dim = theme.dim(),
-            reset = theme.reset(),
-        )
+        "unavailable".to_string()
     } else {
         format!(
-            "{dim}{}↑ in · {}↓ out · {} cached ({:.0}% hit){reset}",
+            "{}↑ in · {}↓ out · {} cached ({:.0}% hit)",
             usage.input_tokens,
             usage.output_tokens,
             usage.cached_tokens,
             usage.cache_hit_rate() * 100.0,
-            dim = theme.dim(),
-            reset = theme.reset(),
         )
     };
-    println!(
-        "\n{frame}╭─{reset} {bold}answer{reset} {dim}· {} turn{} · {:.1}s{reset}",
-        outcome.turns,
-        if outcome.turns == 1 { "" } else { "s" },
-        elapsed.as_secs_f32(),
-        frame = theme.frame(),
-        bold = theme.bold(),
-        dim = theme.dim(),
-        reset = theme.reset(),
-    );
-    println!(
-        "{ok}{}{reset}",
-        outcome.final_text,
-        ok = theme.ok(),
-        reset = theme.reset(),
-    );
-    println!(
-        "{frame}╰─{reset} {usage_summary}",
-        frame = theme.frame(),
-        reset = theme.reset(),
+    let model_label = cfg.model.default.as_str();
+    let provider_label = cfg
+        .model
+        .provider
+        .as_deref()
+        .unwrap_or("(default)")
+        .to_string();
+
+    // Prefer `final_text_ui` over `final_text`: the UI-mode scrub still hides
+    // real keys (sk-, ghp_, JWT, PEM, vault entries) but lets ordinary
+    // identifiers, paths, and CJK prose render as the user wrote them. Falling
+    // back to `final_text` keeps older runtimes safe.
+    let body = if outcome.final_text_ui.is_empty() {
+        &outcome.final_text
+    } else {
+        &outcome.final_text_ui
+    };
+    print!(
+        "{}",
+        TerminalUI::render_answer_block(
+            &theme,
+            body,
+            outcome.turns,
+            elapsed.as_secs_f32(),
+            model_label,
+            &provider_label,
+            &usage_summary,
+        )
     );
     Ok(())
 }
@@ -2363,11 +2695,19 @@ async fn doctor_closure() -> Result<()> {
 }
 
 async fn doctor_tokens() -> Result<()> {
+    let theme = Theme::detect();
     let path = cost_log_path()?;
     let engine = CostEngine::at(&path, BudgetCfg::default());
     let events = engine.read_events().await?;
     if events.is_empty() {
-        println!("(no cost events recorded yet)");
+        print!(
+            "{}",
+            TerminalUI::panel(
+                &theme,
+                "使用信息区",
+                &["no cost events recorded yet".to_string()]
+            )
+        );
         return Ok(());
     }
     let now = chrono::Utc::now();
@@ -2398,28 +2738,26 @@ async fn doctor_tokens() -> Result<()> {
             c as f64 / t as f64
         }
     };
-    println!("== evoclaw doctor tokens ==");
-    println!("path: {}", path.display());
-    println!();
-    println!("{:<14} {:>12} {:>12}", "metric", "7d", "30d");
-    println!("{:<14} {:>12} {:>12}", "events", s7.4, s30.4);
-    println!("{:<14} {:>12} {:>12}", "input_tokens", s7.0, s30.0);
-    println!("{:<14} {:>12} {:>12}", "cached_tokens", s7.1, s30.1);
-    println!("{:<14} {:>12} {:>12}", "output_tokens", s7.2, s30.2);
-    println!(
-        "{:<14} {:>11.2}% {:>11.2}%",
-        "cache_hit",
-        hr(s7.1, s7.0) * 100.0,
-        hr(s30.1, s30.0) * 100.0
-    );
-    println!("{:<14} {:>11.4}$ {:>11.4}$", "usd_total", s7.3, s30.3);
-    println!();
-    println!(
-        "budget: per_task ≤ ${:.2}, per_day ≤ ${:.2} (soft) / ${:.2} (hard), per_month ≤ ${:.0}",
-        engine.cfg().per_task_usd,
-        engine.cfg().per_day_soft_usd,
-        engine.cfg().per_day_hard_usd,
-        engine.cfg().per_month_usd
+    print!(
+        "{}",
+        TerminalUI::panel(
+            &theme,
+            "使用信息区",
+            &[
+                format!("path: {}", path.display()),
+                format!("7d  events={} input_tokens={} output_tokens={}", s7.4, s7.0, s7.2),
+                format!("7d  cached_tokens={} cache_hit={:.2}% usd_total=${:.4}", s7.1, hr(s7.1, s7.0) * 100.0, s7.3),
+                format!("30d events={} input_tokens={} output_tokens={}", s30.4, s30.0, s30.2),
+                format!("30d cached_tokens={} cache_hit={:.2}% usd_total=${:.4}", s30.1, hr(s30.1, s30.0) * 100.0, s30.3),
+                format!(
+                    "budget: per_task <= ${:.2}, per_day <= ${:.2} soft / ${:.2} hard, per_month <= ${:.0}",
+                    engine.cfg().per_task_usd,
+                    engine.cfg().per_day_soft_usd,
+                    engine.cfg().per_day_hard_usd,
+                    engine.cfg().per_month_usd
+                ),
+            ],
+        )
     );
     Ok(())
 }
@@ -2486,7 +2824,6 @@ async fn logout_cmd() -> Result<()> {
 }
 
 async fn usage_cmd() -> Result<()> {
-    // Alias for /tokens command
     doctor_tokens().await
 }
 
@@ -2569,54 +2906,48 @@ async fn config_set(key: &str, value: &str) -> Result<()> {
             cfg.model.base_url = value.to_string();
             true
         }
-        "budget.per_task_usd" | "budget.per_task" => {
-            match value.parse::<f64>() {
-                Ok(v) => {
-                    cfg.budget.per_task_usd = v;
-                    true
-                }
-                Err(_) => {
-                    println!(
-                        "{err}Invalid number: {value}{reset}",
-                        err = theme.err(),
-                        reset = theme.reset()
-                    );
-                    false
-                }
+        "budget.per_task_usd" | "budget.per_task" => match value.parse::<f64>() {
+            Ok(v) => {
+                cfg.budget.per_task_usd = v;
+                true
             }
-        }
-        "budget.per_day_usd" | "budget.per_day" => {
-            match value.parse::<f64>() {
-                Ok(v) => {
-                    cfg.budget.per_day_usd = v;
-                    true
-                }
-                Err(_) => {
-                    println!(
-                        "{err}Invalid number: {value}{reset}",
-                        err = theme.err(),
-                        reset = theme.reset()
-                    );
-                    false
-                }
+            Err(_) => {
+                println!(
+                    "{err}Invalid number: {value}{reset}",
+                    err = theme.err(),
+                    reset = theme.reset()
+                );
+                false
             }
-        }
-        "budget.per_month_usd" | "budget.per_month" => {
-            match value.parse::<f64>() {
-                Ok(v) => {
-                    cfg.budget.per_month_usd = v;
-                    true
-                }
-                Err(_) => {
-                    println!(
-                        "{err}Invalid number: {value}{reset}",
-                        err = theme.err(),
-                        reset = theme.reset()
-                    );
-                    false
-                }
+        },
+        "budget.per_day_usd" | "budget.per_day" => match value.parse::<f64>() {
+            Ok(v) => {
+                cfg.budget.per_day_usd = v;
+                true
             }
-        }
+            Err(_) => {
+                println!(
+                    "{err}Invalid number: {value}{reset}",
+                    err = theme.err(),
+                    reset = theme.reset()
+                );
+                false
+            }
+        },
+        "budget.per_month_usd" | "budget.per_month" => match value.parse::<f64>() {
+            Ok(v) => {
+                cfg.budget.per_month_usd = v;
+                true
+            }
+            Err(_) => {
+                println!(
+                    "{err}Invalid number: {value}{reset}",
+                    err = theme.err(),
+                    reset = theme.reset()
+                );
+                false
+            }
+        },
         "security.default_permission" | "default_permission" => {
             if ["ask", "allow", "deny"].contains(&value) {
                 cfg.security.default_permission = value.to_string();
@@ -2630,22 +2961,20 @@ async fn config_set(key: &str, value: &str) -> Result<()> {
                 false
             }
         }
-        "security.high_risk_intercept" | "high_risk_intercept" => {
-            match value.parse::<bool>() {
-                Ok(v) => {
-                    cfg.security.high_risk_intercept = v;
-                    true
-                }
-                Err(_) => {
-                    println!(
-                        "{err}Invalid boolean: {value}. Use: true or false{reset}",
-                        err = theme.err(),
-                        reset = theme.reset()
-                    );
-                    false
-                }
+        "security.high_risk_intercept" | "high_risk_intercept" => match value.parse::<bool>() {
+            Ok(v) => {
+                cfg.security.high_risk_intercept = v;
+                true
             }
-        }
+            Err(_) => {
+                println!(
+                    "{err}Invalid boolean: {value}. Use: true or false{reset}",
+                    err = theme.err(),
+                    reset = theme.reset()
+                );
+                false
+            }
+        },
         _ => {
             println!();
             println!(
@@ -2676,8 +3005,7 @@ async fn config_set(key: &str, value: &str) -> Result<()> {
 
     if updated {
         // Write back the config
-        let toml_str = toml::to_string_pretty(&cfg)
-            .wrap_err("serialize config")?;
+        let toml_str = toml::to_string_pretty(&cfg).wrap_err("serialize config")?;
         tokio::fs::write(&cfg_path, toml_str)
             .await
             .wrap_err("write config")?;
@@ -2720,7 +3048,11 @@ async fn config_reset() -> Result<()> {
             reset = theme.reset()
         );
     } else {
-        println!("{dim}(cancelled){reset}", dim = theme.dim(), reset = theme.reset());
+        println!(
+            "{dim}(cancelled){reset}",
+            dim = theme.dim(),
+            reset = theme.reset()
+        );
     }
 
     println!();
@@ -2730,65 +3062,28 @@ async fn config_reset() -> Result<()> {
 async fn status_cmd() -> Result<()> {
     let theme = Theme::detect();
     let cfg = load_config().await?;
-
-    // ═══════════════════════════════════════════════════════════
-    // Provider & Model Section
-    // ═══════════════════════════════════════════════════════════
-    println!("{}", DisplayTemplate::header(&theme, "Provider & Model"));
-
-    // Show active profile name
     let active_profile = get_active_profile_name()
         .await
         .unwrap_or_else(|_| "default".to_string());
-    println!("{}", DisplayTemplate::kv(&theme, "Active Profile", &active_profile));
-
     let provider_id = cfg.model.provider.as_deref().unwrap_or("unknown");
     let is_acp = provider_id.starts_with("acp:");
-
-    // Get provider details from catalog
     let (vendor_name, is_local) = if is_acp {
         let agent_name = provider_id.strip_prefix("acp:").unwrap_or(provider_id);
         (format!("External ACP Agent: {}", agent_name), false)
     } else {
         match onboard::find_provider(provider_id) {
             Some(profile) => (
-                format!("{} ({})", profile.name, if profile.local { "Local" } else { "Cloud" }),
-                profile.local
+                format!(
+                    "{} ({})",
+                    profile.name,
+                    if profile.local { "Local" } else { "Cloud" }
+                ),
+                profile.local,
             ),
             None => (format!("Custom: {}", provider_id), false),
         }
     };
-
-    println!("{}", DisplayTemplate::kv(&theme, "Vendor", &vendor_name));
-    println!("{}", DisplayTemplate::kv(&theme, "Provider ID", provider_id));
-
-    if !cfg.model.base_url.is_empty() {
-        println!(
-            "{}",
-            DisplayTemplate::kv_colored(&theme, "API Endpoint", &cfg.model.base_url, theme.info())
-        );
-    }
-
-    println!("{}", DisplayTemplate::kv(&theme, "Model", &cfg.model.default));
-
-    if is_local {
-        println!(
-            "{}",
-            DisplayTemplate::kv_colored(&theme, "Type", "Local Inference", theme.accent())
-        );
-    }
-
-    println!("{}", DisplayTemplate::footer(&theme));
-
-    // ═══════════════════════════════════════════════════════════
-    // Authentication Section
-    // ═══════════════════════════════════════════════════════════
-    println!("{}", DisplayTemplate::header(&theme, "Authentication"));
-
     let auth_method = cfg.auth.parsed();
-    println!("{}", DisplayTemplate::kv(&theme, "Method", auth_method.as_str()));
-
-    // Check auth status and get account info
     let (auth_ok, account_info) = match auth_method {
         AuthMethod::ApiKey => {
             let exists = onboard::secret_file(provider_id)
@@ -2804,7 +3099,9 @@ async fn status_cmd() -> Result<()> {
                 .unwrap_or(false);
             let account = if exists {
                 match onboard::load_browser_profile(provider_id).await {
-                    Ok(p) => p.account_label.unwrap_or_else(|| String::from("Unknown account")),
+                    Ok(p) => p
+                        .account_label
+                        .unwrap_or_else(|| String::from("Unknown account")),
                     Err(_) => String::from("Profile exists but cannot be read"),
                 }
             } else {
@@ -2814,78 +3111,91 @@ async fn status_cmd() -> Result<()> {
         }
         AuthMethod::Acp => (true, format!("Managed by external agent: {}", provider_id)),
     };
-
-    let status_text = if auth_ok { "Authenticated" } else { "Not Authenticated" };
-    let status_color = if auth_ok { theme.ok() } else { theme.err() };
-    println!(
-        "{}",
-        DisplayTemplate::kv_colored(&theme, "Status", status_text, status_color)
-    );
-
-    if matches!(auth_method, AuthMethod::Browser | AuthMethod::Acp) || !auth_ok {
-        println!("{}", DisplayTemplate::kv(&theme, "Account", &account_info));
-    }
-
-    println!("{}", DisplayTemplate::footer(&theme));
-
-    // ═══════════════════════════════════════════════════════════
-    // Session & Paths Section
-    // ═══════════════════════════════════════════════════════════
-    println!("{}", DisplayTemplate::header(&theme, "Session & Paths"));
-
-    if let Ok(session_log) = session_log_path() {
-        println!(
-            "{}",
-            DisplayTemplate::kv_colored(
-                &theme,
-                "Session Log",
-                &session_log.display().to_string(),
-                theme.dim()
-            )
-        );
-    }
-
-    if let Ok(cfg_path) = config_path() {
-        println!(
-            "{}",
-            DisplayTemplate::kv_colored(
-                &theme,
-                "Config",
-                &cfg_path.display().to_string(),
-                theme.dim()
-            )
-        );
-    }
-
-    if let Ok(ws) = workspace_dir() {
-        println!(
-            "{}",
-            DisplayTemplate::kv_colored(
-                &theme,
-                "Workspace",
-                &ws.display().to_string(),
-                theme.dim()
-            )
-        );
-    }
-
-    // Vault info
+    let status_text = if auth_ok {
+        "Authenticated"
+    } else {
+        "Not Authenticated"
+    };
+    let session_log = session_log_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(unavailable)".to_string());
+    let cfg_path = config_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(unavailable)".to_string());
+    let workspace = workspace_dir()
+        .map(|p| display_home(&p.display().to_string()))
+        .unwrap_or_else(|_| "(unavailable)".to_string());
     let vault_count = count_vault_entries().await;
-    println!(
+    let skill_count = count_skills().await.unwrap_or(0);
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    print!(
         "{}",
-        DisplayTemplate::kv(&theme, "Vault Entries", &format!("{} secrets", vault_count))
+        TerminalUI::render_top_status_bar(
+            &theme,
+            &format!("evoclaw v{VERSION}"),
+            provider_id,
+            &cfg.model.default,
+            &workspace,
+            &timestamp,
+        )
     );
-
-    // Skills info
-    if let Ok(skill_count) = count_skills().await {
-        println!(
-            "{}",
-            DisplayTemplate::kv(&theme, "Learned Skills", &format!("{} skills", skill_count))
-        );
-    }
-
-    println!("{}", DisplayTemplate::footer(&theme));
-    println!();
+    print!(
+        "{}",
+        TerminalUI::panel(
+            &theme,
+            "会话历史区",
+            &[
+                format!("active_profile: {active_profile}"),
+                format!("vendor: {vendor_name}"),
+                format!("provider: {provider_id}"),
+                format!("model: {}", cfg.model.default),
+                format!(
+                    "endpoint: {}",
+                    if cfg.model.base_url.is_empty() {
+                        "(not set)"
+                    } else {
+                        &cfg.model.base_url
+                    }
+                ),
+                format!("auth: {} · {status_text}", auth_method.as_str()),
+                format!("account: {account_info}"),
+            ],
+        )
+    );
+    print!(
+        "{}",
+        TerminalUI::panel(
+            &theme,
+            "任务状态区",
+            &[
+                "串行执行 — 当前任务完成后接受下一条输入".to_string(),
+                format!(
+                    "runtime type: {}",
+                    if is_local {
+                        "local inference"
+                    } else {
+                        "cloud/external"
+                    }
+                ),
+                format!("session log: {session_log}"),
+            ],
+        )
+    );
+    print!(
+        "{}",
+        TerminalUI::panel(
+            &theme,
+            "使用信息区",
+            &[
+                format!("config: {cfg_path}"),
+                format!("workspace: {workspace}"),
+                format!("vault: {vault_count} secrets"),
+                format!("skills: {skill_count} learned"),
+                "运行 /usage 查看 7d 和 30d token / cost 汇总".to_string(),
+            ],
+        )
+    );
 
     Ok(())
 }
@@ -2902,11 +3212,7 @@ async fn model_show() -> Result<()> {
     );
     println!();
 
-    let provider_id = cfg
-        .model
-        .provider
-        .as_deref()
-        .unwrap_or("(unknown)");
+    let provider_id = cfg.model.provider.as_deref().unwrap_or("(unknown)");
 
     println!(
         "{frame}Provider:{reset}     {bold}{}{reset}",
@@ -2968,11 +3274,7 @@ async fn model_list() -> Result<()> {
     );
     println!();
 
-    let provider_id = cfg
-        .model
-        .provider
-        .as_deref()
-        .unwrap_or("deepseek");
+    let provider_id = cfg.model.provider.as_deref().unwrap_or("deepseek");
 
     // Try to find the provider profile
     if let Some(profile) = onboard::find_provider(provider_id) {
@@ -3079,17 +3381,25 @@ async fn profile_list() -> Result<()> {
     let theme = Theme::detect();
     let profiles_path = profiles_dir()?;
 
-    println!("{}", DisplayTemplate::header(&theme, "Configuration Profiles"));
+    println!(
+        "{}",
+        DisplayTemplate::header(&theme, "Configuration Profiles")
+    );
 
     if !profiles_path.exists() {
-        println!("  {}", DisplayTemplate::kv(&theme, "Profiles", "None created yet"));
+        println!(
+            "  {}",
+            DisplayTemplate::kv(&theme, "Profiles", "None created yet")
+        );
         println!("{}", DisplayTemplate::footer(&theme));
         println!();
         println!("  Tip: Use '/profile add <name>' to create a new profile");
         return Ok(());
     }
 
-    let active = get_active_profile_name().await.unwrap_or_else(|_| "default".to_string());
+    let active = get_active_profile_name()
+        .await
+        .unwrap_or_else(|_| "default".to_string());
     let mut profiles = Vec::new();
 
     let mut entries = tokio::fs::read_dir(&profiles_path).await?;
@@ -3122,7 +3432,11 @@ async fn profile_list() -> Result<()> {
         } else {
             name.clone()
         };
-        println!("  {}{}", DisplayTemplate::kv_colored(&theme, &display_name, &desc, theme.dim()), marker);
+        println!(
+            "  {}{}",
+            DisplayTemplate::kv_colored(&theme, &display_name, &desc, theme.dim()),
+            marker
+        );
     }
 
     println!("{}", DisplayTemplate::footer(&theme));
@@ -3140,8 +3454,11 @@ async fn profile_show(name: Option<&str>) -> Result<()> {
     let profile_path = get_profile_path(&profile_name).await?;
     if !profile_path.exists() {
         println!();
-        println!("{err}Profile '{profile_name}' not found{reset}",
-            err = theme.err(), reset = theme.reset());
+        println!(
+            "{err}Profile '{profile_name}' not found{reset}",
+            err = theme.err(),
+            reset = theme.reset()
+        );
         println!();
         return Ok(());
     }
@@ -3149,7 +3466,10 @@ async fn profile_show(name: Option<&str>) -> Result<()> {
     let cfg_str = tokio::fs::read_to_string(&profile_path).await?;
     let cfg: Config = toml::from_str(&cfg_str)?;
 
-    println!("{}", DisplayTemplate::header(&theme, &format!("Profile: {}", profile_name)));
+    println!(
+        "{}",
+        DisplayTemplate::header(&theme, &format!("Profile: {}", profile_name))
+    );
 
     if let Some(desc) = &cfg.meta.description {
         println!("  {}", DisplayTemplate::kv(&theme, "Description", desc));
@@ -3157,9 +3477,22 @@ async fn profile_show(name: Option<&str>) -> Result<()> {
 
     let provider_id = cfg.model.provider.as_deref().unwrap_or("(not set)");
     println!("  {}", DisplayTemplate::kv(&theme, "Provider", provider_id));
-    println!("  {}", DisplayTemplate::kv(&theme, "Model", &cfg.model.default));
-    println!("  {}", DisplayTemplate::kv(&theme, "Auth Method", cfg.auth.parsed().as_str()));
-    println!("  {}", DisplayTemplate::kv(&theme, "Budget (task)", &format!("${:.2}", cfg.budget.per_task_usd)));
+    println!(
+        "  {}",
+        DisplayTemplate::kv(&theme, "Model", &cfg.model.default)
+    );
+    println!(
+        "  {}",
+        DisplayTemplate::kv(&theme, "Auth Method", cfg.auth.parsed().as_str())
+    );
+    println!(
+        "  {}",
+        DisplayTemplate::kv(
+            &theme,
+            "Budget (task)",
+            &format!("${:.2}", cfg.budget.per_task_usd)
+        )
+    );
 
     println!("{}", DisplayTemplate::footer(&theme));
     println!();
@@ -3172,8 +3505,11 @@ async fn profile_switch(name: &str) -> Result<()> {
 
     if !profile_path.exists() {
         println!();
-        println!("{err}Profile '{name}' not found{reset}",
-            err = theme.err(), reset = theme.reset());
+        println!(
+            "{err}Profile '{name}' not found{reset}",
+            err = theme.err(),
+            reset = theme.reset()
+        );
         println!();
         println!("Available profiles:");
         profile_list().await?;
@@ -3188,8 +3524,11 @@ async fn profile_switch(name: &str) -> Result<()> {
     tokio::fs::copy(&profile_path, &config_path).await?;
 
     println!();
-    println!("{ok}Switched to profile '{name}'{reset}",
-        ok = theme.ok(), reset = theme.reset());
+    println!(
+        "{ok}Switched to profile '{name}'{reset}",
+        ok = theme.ok(),
+        reset = theme.reset()
+    );
     println!();
     Ok(())
 }
@@ -3202,8 +3541,11 @@ async fn profile_add(name: &str, template: Option<&str>) -> Result<()> {
     let profile_path = get_profile_path(name).await?;
     if profile_path.exists() {
         println!();
-        println!("{warn}Profile '{name}' already exists{reset}",
-            warn = theme.warn(), reset = theme.reset());
+        println!(
+            "{warn}Profile '{name}' already exists{reset}",
+            warn = theme.warn(),
+            reset = theme.reset()
+        );
         println!();
         return Ok(());
     }
@@ -3224,10 +3566,17 @@ async fn profile_add(name: &str, template: Option<&str>) -> Result<()> {
     tokio::fs::write(&profile_path, toml_str).await?;
 
     println!();
-    println!("{ok}Created profile '{name}'{reset}",
-        ok = theme.ok(), reset = theme.reset());
-    println!("  Location: {dim}{}{reset}",
-        profile_path.display(), dim = theme.dim(), reset = theme.reset());
+    println!(
+        "{ok}Created profile '{name}'{reset}",
+        ok = theme.ok(),
+        reset = theme.reset()
+    );
+    println!(
+        "  Location: {dim}{}{reset}",
+        profile_path.display(),
+        dim = theme.dim(),
+        reset = theme.reset()
+    );
     println!();
     println!("  Use '/profile switch {name}' to activate it");
     println!();
@@ -3239,17 +3588,25 @@ async fn profile_remove(name: &str) -> Result<()> {
 
     if name == "default" {
         println!();
-        println!("{err}Cannot remove 'default' profile{reset}",
-            err = theme.err(), reset = theme.reset());
+        println!(
+            "{err}Cannot remove 'default' profile{reset}",
+            err = theme.err(),
+            reset = theme.reset()
+        );
         println!();
         return Ok(());
     }
 
-    let active = get_active_profile_name().await.unwrap_or_else(|_| "default".to_string());
+    let active = get_active_profile_name()
+        .await
+        .unwrap_or_else(|_| "default".to_string());
     if name == active {
         println!();
-        println!("{err}Cannot remove active profile{reset}",
-            err = theme.err(), reset = theme.reset());
+        println!(
+            "{err}Cannot remove active profile{reset}",
+            err = theme.err(),
+            reset = theme.reset()
+        );
         println!("  Switch to another profile first");
         println!();
         return Ok(());
@@ -3258,8 +3615,11 @@ async fn profile_remove(name: &str) -> Result<()> {
     let profile_path = get_profile_path(name).await?;
     if !profile_path.exists() {
         println!();
-        println!("{warn}Profile '{name}' not found{reset}",
-            warn = theme.warn(), reset = theme.reset());
+        println!(
+            "{warn}Profile '{name}' not found{reset}",
+            warn = theme.warn(),
+            reset = theme.reset()
+        );
         println!();
         return Ok(());
     }
@@ -3267,8 +3627,11 @@ async fn profile_remove(name: &str) -> Result<()> {
     tokio::fs::remove_file(&profile_path).await?;
 
     println!();
-    println!("{ok}Removed profile '{name}'{reset}",
-        ok = theme.ok(), reset = theme.reset());
+    println!(
+        "{ok}Removed profile '{name}'{reset}",
+        ok = theme.ok(),
+        reset = theme.reset()
+    );
     println!();
     Ok(())
 }
@@ -3283,8 +3646,11 @@ async fn profile_edit(name: Option<&str>) -> Result<()> {
     let profile_path = get_profile_path(&profile_name).await?;
     if !profile_path.exists() {
         println!();
-        println!("{err}Profile '{profile_name}' not found{reset}",
-            err = theme.err(), reset = theme.reset());
+        println!(
+            "{err}Profile '{profile_name}' not found{reset}",
+            err = theme.err(),
+            reset = theme.reset()
+        );
         println!();
         return Ok(());
     }
@@ -3292,16 +3658,22 @@ async fn profile_edit(name: Option<&str>) -> Result<()> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
 
     println!();
-    println!("{info}Opening profile in {editor}...{reset}",
-        info = theme.info(), reset = theme.reset());
+    println!(
+        "{info}Opening profile in {editor}...{reset}",
+        info = theme.info(),
+        reset = theme.reset()
+    );
 
     std::process::Command::new(&editor)
         .arg(&profile_path)
         .status()?;
 
     println!();
-    println!("{ok}Profile '{profile_name}' saved{reset}",
-        ok = theme.ok(), reset = theme.reset());
+    println!(
+        "{ok}Profile '{profile_name}' saved{reset}",
+        ok = theme.ok(),
+        reset = theme.reset()
+    );
     println!("  Use '/profile switch {profile_name}' to reload if this is not the active profile");
     println!();
     Ok(())
@@ -3312,8 +3684,16 @@ fn get_profile_template(template: &str) -> Result<Config> {
     let (provider, model, description) = match template {
         "deepseek" => ("deepseek", "deepseek-chat", "DeepSeek Chat configuration"),
         "openai" => ("openai", "gpt-4o", "OpenAI GPT-4o configuration"),
-        "claude" | "anthropic" => ("anthropic", "claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet configuration"),
-        "gemini" | "google" => ("google", "gemini-2.0-flash-exp", "Google Gemini configuration"),
+        "claude" | "anthropic" => (
+            "anthropic",
+            "claude-3-5-sonnet-20241022",
+            "Claude 3.5 Sonnet configuration",
+        ),
+        "gemini" | "google" => (
+            "google",
+            "gemini-2.0-flash-exp",
+            "Google Gemini configuration",
+        ),
         "ollama" => ("ollama", "llama3.2", "Ollama local model configuration"),
         _ => return Err(eyre::eyre!("Unknown template: {}", template)),
     };
@@ -3348,11 +3728,7 @@ async fn model_set(model_name: &str) -> Result<()> {
     let cfg_path = config_path()?;
     let mut cfg = load_config().await?;
 
-    let provider_id = cfg
-        .model
-        .provider
-        .as_deref()
-        .unwrap_or("deepseek");
+    let provider_id = cfg.model.provider.as_deref().unwrap_or("deepseek");
 
     // Validate the model exists for this provider
     let profile = match onboard::find_provider(provider_id) {
@@ -3372,8 +3748,7 @@ async fn model_set(model_name: &str) -> Result<()> {
             println!();
             // Allow setting any model for custom providers
             cfg.model.default = model_name.to_string();
-            let toml_str = toml::to_string_pretty(&cfg)
-                .wrap_err("serialize config")?;
+            let toml_str = toml::to_string_pretty(&cfg).wrap_err("serialize config")?;
             tokio::fs::write(&cfg_path, toml_str)
                 .await
                 .wrap_err("write config")?;
@@ -3412,8 +3787,7 @@ async fn model_set(model_name: &str) -> Result<()> {
     cfg.model.default = model_name.to_string();
 
     // Write back the config
-    let toml_str = toml::to_string_pretty(&cfg)
-        .wrap_err("serialize config")?;
+    let toml_str = toml::to_string_pretty(&cfg).wrap_err("serialize config")?;
     tokio::fs::write(&cfg_path, toml_str)
         .await
         .wrap_err("write config")?;
@@ -3966,14 +4340,14 @@ async fn channel_run_one_shot_text(input: &str) -> Result<String> {
     } else {
         match cfg.auth.parsed() {
             AuthMethod::Browser => {
-                let profile = onboard::load_browser_profile(&provider_id).await.wrap_err_with(
-                    || {
+                let profile = onboard::load_browser_profile(&provider_id)
+                    .await
+                    .wrap_err_with(|| {
                         format!(
                             "load browser profile for '{provider_id}'. \
                              Run `evoclaw login` and pick (2) Browser sign-in."
                         )
-                    },
-                )?;
+                    })?;
                 Arc::new(BrowserProvider::from_profile(&profile)) as Arc<dyn Provider>
             }
             AuthMethod::Acp => {
@@ -3985,14 +4359,11 @@ async fn channel_run_one_shot_text(input: &str) -> Result<String> {
             AuthMethod::ApiKey => {
                 let (api_key, _src) = onboard::resolve_api_key(&provider_id).await?;
                 match provider_id.as_str() {
-                    "anthropic" => Arc::new(AnthropicProvider::new(
-                        api_key,
-                        cfg.model.default.clone(),
-                    )) as Arc<dyn Provider>,
-                    "copilot" => Arc::new(CopilotProvider::new(
-                        api_key,
-                        cfg.model.default.clone(),
-                    )),
+                    "anthropic" => {
+                        Arc::new(AnthropicProvider::new(api_key, cfg.model.default.clone()))
+                            as Arc<dyn Provider>
+                    }
+                    "copilot" => Arc::new(CopilotProvider::new(api_key, cfg.model.default.clone())),
                     _ => Arc::new(OpenAiCompatProvider::new(
                         cfg.model.base_url.clone(),
                         api_key,
@@ -4052,123 +4423,189 @@ mod ui_tests {
     }
 
     #[test]
-    fn test_thin_separator() {
-        let theme = Theme::detect();
-        let separator = TerminalUI::thin_separator(&theme);
-
-        // Should contain box drawing characters
-        assert!(separator.contains("─"), "Separator should contain horizontal line character");
-
-        // Should not be empty
-        assert!(!separator.is_empty(), "Separator should not be empty");
+    fn test_banner_panel_shows_runtime_info() {
+        let theme = Theme { enabled: false };
+        let out = TerminalUI::panel(
+            &theme,
+            "evoclaw",
+            &[
+                "auth: ok · env".to_string(),
+                "account: not available for API key auth".to_string(),
+                "vault: empty · pattern fallback active".to_string(),
+                "skills: 0 learned  ·  mcp: none attached".to_string(),
+                "Type a question or /help for commands · Ctrl-D to exit".to_string(),
+            ],
+        );
+        assert!(out.contains("evoclaw"));
+        assert!(out.contains("auth: ok"));
+        assert!(out.contains("vault:"));
+        assert!(out.contains("skills:"));
+        assert!(out.contains("Ctrl-D to exit"));
+        assert!(out.contains('╭'));
+        assert!(out.contains('╯'));
     }
 
     #[test]
-    fn test_format_status() {
-        let theme = Theme::detect();
-
-        // Test basic status with model and provider
-        let status = TerminalUI::format_status(
-            &theme,
-            "gpt-4",
-            "openai",
-            None,
-            0,
-            None,
-        );
-        assert!(status.contains("gpt-4"), "Status should contain model name");
-        assert!(status.contains("openai"), "Status should contain provider name");
-
-        // Test with ACP
-        let status_with_acp = TerminalUI::format_status(
-            &theme,
-            "claude-3",
-            "anthropic",
-            Some("claude-desktop"),
-            0,
-            None,
-        );
-        assert!(status_with_acp.contains("claude-3"), "Status should contain model");
-        assert!(status_with_acp.contains("acp"), "Status should mention ACP");
-        assert!(status_with_acp.contains("claude-desktop"), "Status should contain ACP name");
-
-        // Test with MCP servers
-        let status_with_mcp = TerminalUI::format_status(
-            &theme,
-            "gpt-4",
-            "openai",
-            None,
-            3,
-            None,
-        );
-        assert!(status_with_mcp.contains("mcp"), "Status should mention MCP");
-        assert!(status_with_mcp.contains("3"), "Status should show MCP count");
-
-        // Test with active skill
-        let status_with_skill = TerminalUI::format_status(
-            &theme,
-            "gpt-4",
-            "openai",
-            None,
-            0,
-            Some("code-review"),
-        );
-        assert!(status_with_skill.contains("skill"), "Status should mention skill");
-        assert!(status_with_skill.contains("code-review"), "Status should show skill name");
-    }
-
-    #[test]
-    fn test_chat_box_top() {
-        let theme = Theme::detect();
-
-        let header = TerminalUI::chat_box_top(&theme);
-
-        // Should contain separator
-        assert!(header.contains("─"), "Should contain separator line");
-
-        // Should have newlines
-        assert!(header.contains('\n'), "Should be multi-line");
-
-        // Should start and end with newline for proper spacing
-        assert!(header.starts_with('\n'), "Should start with newline");
-        assert!(header.ends_with('\n'), "Should end with newline");
-    }
-
-    #[test]
-    fn test_chat_box_bottom() {
-        let theme = Theme::detect();
-
-        let footer = TerminalUI::chat_box_bottom(
-            &theme,
-            "gpt-4-turbo",
-            "openai",
-            Some("copilot"),
-            3,
-            Some("refactor"),
-        );
-
-        // Should contain separator
-        assert!(footer.contains("─"), "Should contain separator line");
-
-        // Should contain all status information
-        assert!(footer.contains("gpt-4-turbo"), "Should show model name");
-        assert!(footer.contains("openai"), "Should show provider");
-        assert!(footer.contains("copilot"), "Should show ACP status");
-        assert!(footer.contains("3"), "Should show MCP count");
-        assert!(footer.contains("refactor"), "Should show skill name");
-
-        // Should have multiple lines
-        assert!(footer.contains('\n'), "Should be multi-line");
-    }
-
-    #[test]
-    fn test_width_with_columns_env() {
-        // Test that COLUMNS environment variable is respected
-        std::env::set_var("COLUMNS", "120");
+    fn test_width_is_reasonable() {
         let width = TerminalUI::width();
-        assert_eq!(width, 120, "Should use COLUMNS env variable");
+        assert!(width >= 60);
+        assert!(width <= 220);
+    }
 
-        // Clean up
-        std::env::remove_var("COLUMNS");
+    #[test]
+    fn test_render_markdown_formats_basic_blocks() {
+        let theme = Theme { enabled: false };
+        let rendered = TerminalUI::render_markdown(
+            &theme,
+            "# Title\n\n- item\n1. step\n> quote\n\n```rust\nlet x = 1;\n```",
+        );
+        assert!(rendered.contains("Title"));
+        assert!(rendered.contains("• item"));
+        assert!(rendered.contains("1. step"));
+        assert!(rendered.contains("│ quote"));
+        assert!(rendered.contains("┌─ code: rust"));
+        assert!(rendered.contains("│ let x = 1;"));
+    }
+
+    #[test]
+    fn test_render_inline_markdown_formats_links_and_code() {
+        let theme = Theme { enabled: false };
+        let rendered =
+            render_inline_markdown(&theme, "See [docs](https://example.com) and `cargo test`");
+        assert!(rendered.contains("docs (https://example.com)"));
+        assert!(rendered.contains("cargo test"));
+        assert!(!rendered.contains('`'));
+    }
+
+    #[test]
+    fn test_render_answer_block_has_top_and_bottom_borders() {
+        let theme = Theme { enabled: false };
+        let body = "Hello world";
+        let out = TerminalUI::render_answer_block(
+            &theme,
+            body,
+            1,
+            12.4,
+            "acp:codex",
+            "acp:codex",
+            "unavailable",
+        );
+        assert!(out.contains("╭"), "missing top-left corner: {out}");
+        assert!(out.contains("╮"), "missing top-right corner: {out}");
+        assert!(out.contains("╰"), "missing bottom-left corner: {out}");
+        assert!(out.contains("╯"), "missing bottom-right corner: {out}");
+        assert!(out.contains("会话历史区"));
+        assert!(out.contains("EvoClaw (acp:codex)"));
+        assert!(out.contains("12.4s"));
+        assert!(out.contains("Hello world"));
+        assert!(out.contains("任务状态区"));
+        assert!(out.contains("使用信息区"));
+        assert!(out.contains("provider: acp:codex"));
+        assert!(out.contains("usage: unavailable"));
+    }
+
+    #[test]
+    fn test_render_answer_block_pluralises_turns() {
+        let theme = Theme { enabled: false };
+        let out = TerminalUI::render_answer_block(
+            &theme,
+            "x",
+            3,
+            5.0,
+            "gpt-4o-mini",
+            "openai",
+            "unavailable",
+        );
+        assert!(out.contains("3 turns"));
+    }
+
+    #[test]
+    fn test_render_top_status_bar_matches_dashboard_spec() {
+        let theme = Theme { enabled: false };
+        let out = TerminalUI::render_top_status_bar(
+            &theme,
+            "evoclaw v0.3.2",
+            "acp:codex",
+            "acp:codex",
+            "~/devops/gptcli/agent/EvoClaw",
+            "2026-05-03 17:22:48",
+        );
+        assert!(out.contains("evoclaw v0.3.2"));
+        assert!(out.contains("acp:codex"));
+        assert!(out.contains("workspace: ~/devops/gptcli/agent/EvoClaw"));
+        assert!(out.contains("2026-05-03 17:22:48"));
+        let visible_widths: Vec<usize> = out
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(tui::display_width_ansi)
+            .collect();
+        assert!(
+            visible_widths.windows(2).all(|pair| pair[0] == pair[1]),
+            "top status bar rows must align: {visible_widths:?}\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_render_answer_block_wraps_long_lines_within_box() {
+        let theme = Theme { enabled: false };
+        // Long English sentence intended to overflow the box width.
+        let body = "a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a \
+                    a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a \
+                    a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a";
+        let out = TerminalUI::render_answer_block(
+            &theme,
+            body,
+            1,
+            1.0,
+            "openai",
+            "openai",
+            "unavailable",
+        );
+        // The frame line containing the answer body should appear at
+        // least twice — once for the original line, once for at least
+        // one wrap continuation.
+        let body_lines = out
+            .lines()
+            .filter(|l| l.starts_with('│') && l.contains('a'))
+            .count();
+        assert!(
+            body_lines >= 2,
+            "expected wrap to produce 2+ body lines, got {body_lines}: {out}"
+        );
+    }
+
+    #[test]
+    fn test_render_answer_block_does_not_emit_high_entropy_marker_for_normal_input() {
+        // The renderer is given a typical assistant reply containing
+        // crate names and a path. None of it should be re-redacted by
+        // the renderer (it's a pass-through for prose).
+        let theme = Theme { enabled: false };
+        let body = "evo-cli / evo-core / evo-providers · \
+                    /Users/wei.li/devops/gptcli/agent/EvoClaw/crates/evo-cli/src/lib.rs:681";
+        let out = TerminalUI::render_answer_block(
+            &theme,
+            body,
+            1,
+            1.0,
+            "openai",
+            "openai",
+            "unavailable",
+        );
+        assert!(!out.contains("[REDACTED:"));
+    }
+
+    #[test]
+    fn test_truncate_to_respects_cjk_display_width() {
+        assert_eq!(truncate_to("你好世界", 6), "你好…");
+        assert_eq!(truncate_to("abc你好", 6), "abc你…");
+    }
+
+    #[test]
+    fn test_render_markdown_code_fence_handles_wide_language_labels() {
+        let theme = Theme { enabled: false };
+        let rendered = TerminalUI::render_markdown(&theme, "```中文语言标签\n内容\n```");
+        assert!(rendered.contains("┌─ code: 中文语言标签"));
+        assert!(rendered.contains("│ 内容"));
+        assert!(rendered.contains("└"));
     }
 }

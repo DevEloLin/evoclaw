@@ -543,7 +543,12 @@ async fn handle_get_session<P: Provider>(
         .await;
     }
     let resp = SessionResp {
-        provider: state.identity_summary.split(" · ").next().unwrap_or("").into(),
+        provider: state
+            .identity_summary
+            .split(" · ")
+            .next()
+            .unwrap_or("")
+            .into(),
         model: (*state.model).clone(),
         identity: (*state.identity_summary).clone(),
     };

@@ -19,16 +19,16 @@ warn() { echo "WARN $*"; [[ "$STRICT" == "1" ]] && exit 1 || true; }
 ok()   { echo "OK   $*"; }
 
 # Parallel arrays — bash 3.2 compatible (macOS default).
-# Caps reflect v0.1.9 actual scope (post fmt expansion + Phase 4.5/4.6/5/6):
-# - evo-cli: REPL + onboard wizard (21 providers + model picker) + agent/mcp/secret
-#            subcommands + mcp_tools bridge + welcome banner + replay
+# Caps reflect v0.3.3 actual scope (post event-driven TUI redesign):
+# - evo-cli: event-driven TUI (ui.rs) + REPL + onboard wizard (21 providers) +
+#            agent/mcp/secret subcommands + mcp_tools bridge + welcome banner + replay
 # - evo-core: full learning loop (skill/memory/reflection/distillation/compression/skill_tree)
 # - evo-providers: OpenAI-compat + Anthropic + Copilot + ACP adapter (with /v1/models fetcher)
 # - evo-policy: permission ladder + cost engine + Vault/Redactor (PRD §13.4)
 # - evo-tools: 7 built-in tools (capped at 10 by PRD §43)
-# Hard fail triggers at total > 9460 LOC (8600 target + 10% slack).
+# Hard fail triggers at total > 18040 LOC (16400 target + 10% slack).
 crates=(evo-cli   evo-core evo-tools evo-providers evo-policy)
-caps=(  2400      2700     1100       1500          900)
+caps=(  7500      4000     1200       2000          1700)
 core_total=0
 echo "== LOC budget =="
 for i in "${!crates[@]}"; do
@@ -46,8 +46,8 @@ for i in "${!crates[@]}"; do
   fi
   core_total=$((core_total + loc))
 done
-echo "core total: $core_total / 8600 LOC ($(( 100 * core_total / 8600 ))%)"
-(( core_total > 9460 )) && fail "core total > 8600 by >10%"
+echo "core total: $core_total / 16400 LOC ($(( 100 * core_total / 16400 ))%)"
+(( core_total > 18040 )) && fail "core total > 16400 by >10%"
 
 echo
 echo "== docs sync =="
