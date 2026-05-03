@@ -20,6 +20,14 @@ pub struct TaskRecord {
     pub user_input: String,
     pub source: String,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acp_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills_used: Vec<String>,
     pub started_at: DateTime<Utc>,
 }
 
@@ -125,6 +133,10 @@ mod tests {
             user_input: "list files".into(),
             source: "cli".into(),
             model: "deepseek-chat".into(),
+            provider: Some("deepseek".into()),
+            acp_agent: None,
+            mcp_servers: vec!["filesystem".into()],
+            skills_used: Vec::new(),
             started_at: "2026-05-02T11:39:00Z".parse().unwrap(),
         })
     }

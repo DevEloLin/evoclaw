@@ -83,6 +83,7 @@ pub struct GatewayState<P: Provider> {
     pub provider: Arc<P>,
     pub registry: Arc<ToolRegistry>,
     pub model: Arc<String>,
+    pub identity_summary: Arc<String>,
     pub redactor: Arc<Redactor>,
     pub bind_port: u16,
 }
@@ -94,6 +95,7 @@ impl<P: Provider> Clone for GatewayState<P> {
             provider: Arc::clone(&self.provider),
             registry: Arc::clone(&self.registry),
             model: Arc::clone(&self.model),
+            identity_summary: Arc::clone(&self.identity_summary),
             redactor: Arc::clone(&self.redactor),
             bind_port: self.bind_port,
         }
@@ -328,6 +330,13 @@ pub struct ChatResp {
     pub final_text: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SessionResp {
+    pub provider: String,
+    pub model: String,
+    pub identity: String,
+}
+
 pub async fn handle_chat<P: Provider>(
     provider: Arc<P>,
     registry: Arc<ToolRegistry>,
@@ -383,6 +392,7 @@ pub async fn serve<P: Provider + 'static>(
     provider: Arc<P>,
     registry: Arc<ToolRegistry>,
     model: String,
+    identity_summary: String,
 ) -> eyre::Result<()> {
     tokio::fs::create_dir_all(&cfg.workspace).await.ok();
     tokio::fs::create_dir_all(&cfg.logs_dir).await.ok();
@@ -404,6 +414,7 @@ pub async fn serve<P: Provider + 'static>(
         provider,
         registry,
         model: Arc::new(model),
+        identity_summary: Arc::new(identity_summary),
         redactor,
         bind_port,
     };
@@ -511,9 +522,33 @@ async fn route<P: Provider>(
             .await
         }
         ("GET", "/healthz") => write_response(stream, 200, "text/plain", b"ok").await,
+        ("GET", "/session") => handle_get_session(stream, req, state).await,
         ("POST", "/chat") => handle_post_chat(stream, req, state).await,
         _ => write_response(stream, 404, "text/plain", b"not found").await,
     }
+}
+
+async fn handle_get_session<P: Provider>(
+    stream: &mut TcpStream,
+    req: ParsedRequest,
+    state: &GatewayState<P>,
+) -> std::io::Result<()> {
+    if !auth_ok(&req, &state.cfg) {
+        return write_response(
+            stream,
+            401,
+            "application/json",
+            br#"{"error":"unauthorized"}"#,
+        )
+        .await;
+    }
+    let resp = SessionResp {
+        provider: state.identity_summary.split(" · ").next().unwrap_or("").into(),
+        model: (*state.model).clone(),
+        identity: (*state.identity_summary).clone(),
+    };
+    let json = serde_json::to_vec(&resp).unwrap_or_default();
+    write_response(stream, 200, "application/json", &json).await
 }
 
 async fn handle_post_chat<P: Provider>(

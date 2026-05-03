@@ -5,40 +5,211 @@
   <title>EvoClaw — WebChat</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { font-family: -apple-system, ui-sans-serif, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
-    .hint { color: #666; font-size: 0.85rem; }
-    .row { display: flex; gap: 0.5rem; margin: 0.75rem 0; }
-    input, textarea, button { font: inherit; padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid #ccc; }
-    input[type=text] { flex: 1; }
-    textarea { width: 100%; box-sizing: border-box; min-height: 5rem; font-family: ui-monospace, monospace; }
-    button { background: #2563eb; color: white; border: none; cursor: pointer; }
-    button:disabled { background: #999; }
-    pre { background: #f6f7f9; padding: 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; }
-    .meta { color: #888; font-size: 0.85rem; }
-    label { font-size: 0.85rem; color: #444; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem;
+      background: linear-gradient(135deg, #0f0c29 0%, #1a1346 50%, #24243e 100%);
+      color: #e4e4f0;
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+    .container {
+      background: rgba(30, 30, 50, 0.85);
+      border-radius: 16px;
+      padding: 2.5rem;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(12px);
+    }
+    h1 {
+      font-size: 2rem;
+      margin: 0 0 0.75rem 0;
+      font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.02em;
+    }
+    .hint {
+      color: #9ca3af;
+      font-size: 0.875rem;
+      margin-bottom: 2rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .hint code {
+      background: rgba(96, 165, 250, 0.15);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      color: #93c5fd;
+      font-family: ui-monospace, 'Fira Code', monospace;
+      font-size: 0.85rem;
+    }
+    .row {
+      display: flex;
+      gap: 0.75rem;
+      margin: 1rem 0;
+      align-items: center;
+    }
+    input, textarea, button {
+      font: inherit;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(30, 30, 50, 0.6);
+      color: #e4e4f0;
+      transition: all 0.2s ease;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: #60a5fa;
+      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
+    }
+    input[type=password] {
+      flex: 1;
+      font-family: ui-monospace, 'Fira Code', monospace;
+      letter-spacing: 0.05em;
+    }
+    textarea {
+      width: 100%;
+      min-height: 8rem;
+      font-family: ui-monospace, 'Fira Code', monospace;
+      font-size: 0.9rem;
+      resize: vertical;
+      line-height: 1.5;
+    }
+    textarea::placeholder {
+      color: #6b7280;
+    }
+    button {
+      background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      padding: 0.75rem 2rem;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+      transition: all 0.2s ease;
+    }
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    button:disabled {
+      background: linear-gradient(135deg, #4b5563 0%, #6b7280 100%);
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
+    pre {
+      background: rgba(17, 24, 39, 0.8);
+      padding: 1.25rem;
+      border-radius: 10px;
+      overflow-x: auto;
+      font-size: 0.875rem;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      line-height: 1.6;
+      font-family: ui-monospace, 'Fira Code', monospace;
+      color: #d1d5db;
+      box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+    .meta {
+      color: #9ca3af;
+      font-size: 0.85rem;
+      font-family: ui-monospace, 'Fira Code', monospace;
+    }
+    label {
+      font-size: 0.875rem;
+      color: #d1d5db;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      width: 100%;
+    }
+    #session {
+      margin: 1rem 0;
+      padding: 0.75rem 1rem;
+      background: rgba(17, 24, 39, 0.5);
+      border-radius: 8px;
+      font-size: 0.875rem;
+      color: #9ca3af;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .version {
+      display: inline-block;
+      background: rgba(96, 165, 250, 0.2);
+      padding: 0.15rem 0.5rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      color: #93c5fd;
+      font-weight: 600;
+      margin-left: 0.5rem;
+    }
   </style>
 </head>
 <body>
-  <h1>EvoClaw &mdash; WebChat v0.3.0</h1>
-  <div class="hint">Local Gateway &middot; POST /chat with <code>Authorization: Bearer &lt;token&gt;</code></div>
+  <div class="container">
+    <h1>EvoClaw <span class="version">v0.3.1</span></h1>
+    <div class="hint">Local Gateway &middot; POST /chat with <code>Authorization: Bearer &lt;token&gt;</code></div>
 
-  <div class="row">
-    <label>Token <input id="tok" type="password" autocomplete="off" placeholder="paste your gateway token" style="width: 16rem"></label>
+    <div class="row">
+      <label>
+        <span style="min-width: 70px;">Token</span>
+        <input id="tok" type="password" autocomplete="off" placeholder="paste your gateway token">
+      </label>
+    </div>
+    <div id="session">Current account: unavailable</div>
+
+    <textarea id="prompt" placeholder="Tell EvoClaw what to do..."></textarea>
+    <div class="row">
+      <button id="go">Send Message</button>
+      <span id="meta" class="meta"></span>
+    </div>
+
+    <pre id="out">(no response yet)</pre>
   </div>
-
-  <textarea id="prompt" placeholder="Tell EvoClaw what to do..."></textarea>
-  <div class="row"><button id="go">Send</button> <span id="meta" class="meta"></span></div>
-
-  <pre id="out">(no response yet)</pre>
 
   <script>
     const out = document.getElementById('out');
     const meta = document.getElementById('meta');
+    const session = document.getElementById('session');
+    const tok = document.getElementById('tok');
+
+    async function refreshSession() {
+      const token = tok.value.trim();
+      if (!token) {
+        session.textContent = 'Current account: unavailable';
+        return;
+      }
+      try {
+        const r = await fetch('/session', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!r.ok) {
+          session.textContent = 'Current account: unavailable';
+          return;
+        }
+        const data = await r.json();
+        session.textContent = 'Current account: ' + (data.identity || data.provider || 'unavailable');
+      } catch (_e) {
+        session.textContent = 'Current account: unavailable';
+      }
+    }
+
+    tok.addEventListener('change', refreshSession);
+    tok.addEventListener('blur', refreshSession);
     document.getElementById('go').addEventListener('click', async () => {
-      const token = document.getElementById('tok').value.trim();
+      const token = tok.value.trim();
       const input = document.getElementById('prompt').value.trim();
       if (!input) return;
+      await refreshSession();
       meta.textContent = 'sending...';
       out.textContent = '';
       try {
