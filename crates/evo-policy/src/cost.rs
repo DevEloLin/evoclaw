@@ -3,6 +3,8 @@
 use chrono::{DateTime, Datelike, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetLevel {
@@ -81,12 +83,15 @@ impl CostEngine {
         if let Some(parent) = self.log_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let mut existing = tokio::fs::read_to_string(&self.log_path)
-            .await
-            .unwrap_or_default();
-        existing.push_str(&serde_json::to_string(event)?);
-        existing.push('\n');
-        tokio::fs::write(&self.log_path, existing).await
+        let line = serde_json::to_string(event)? + "\n";
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)
+            .await?;
+        f.write_all(line.as_bytes()).await?;
+        f.flush().await?;
+        Ok(())
     }
 
     pub async fn check_for_task(&self, task_id: &str) -> std::io::Result<BudgetCheck> {
@@ -102,6 +107,9 @@ impl CostEngine {
         }
         if s.day_usd > self.cfg.per_day_soft_usd {
             return Ok(BudgetCheck::SoftWarn(BudgetLevel::Day));
+        }
+        if s.task_usd > self.cfg.per_task_usd * 0.8 {
+            return Ok(BudgetCheck::SoftWarn(BudgetLevel::Task));
         }
         Ok(BudgetCheck::Ok)
     }
@@ -142,12 +150,18 @@ impl CostEngine {
             Err(e) => return Err(e),
         };
         let mut out = Vec::new();
-        for line in text.lines() {
+        for (lineno, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(ev) = serde_json::from_str::<CostEvent>(line) {
-                out.push(ev);
+            match serde_json::from_str::<CostEvent>(line) {
+                Ok(ev) => out.push(ev),
+                Err(e) => tracing::warn!(
+                    file = %self.log_path.display(),
+                    lineno = lineno + 1,
+                    error = ?e,
+                    "skipping malformed cost.jsonl line"
+                ),
             }
         }
         Ok(out)

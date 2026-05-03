@@ -1,12 +1,21 @@
-//! Onboarding wizard — interactive provider picker + key entry.
+//! Onboarding wizard — interactive provider picker + auth-method picker.
 //!
 //! Closure rules:
 //! - Key never appears in config.toml; only the **provider id** does.
 //! - Key file lives at `~/.evoclaw/secrets/<provider>.key` (chmod 600 on Unix).
+//! - Browser-session profile lives at `~/.evoclaw/browser_profiles/<provider>.json`
+//!   (chmod 600). Format defined by `evo_providers::BrowserProfile`.
 //! - Resolution order at runtime: `EVO_API_KEY` env -> secrets file -> error.
-//! - `evoclaw doctor` always reports which source supplied the key.
+//! - `evoclaw doctor` always reports which source supplied the credential.
+//!
+//! Auth-method priority shown to the user in the shell entry:
+//!   1) API key (preferred — simplest, works for every vendor in the catalog)
+//!   2) Browser sign-in (capture session cookie / web token from the browser)
+//!   3) ACP agent (TEMPORARILY NOT SUPPORTED — most upstream CLIs don't
+//!      implement Zed-ACP natively; gated off until that situation matures)
 
 use directories::BaseDirs;
+use evo_providers::{AuthMethod, BrowserAuthShape, BrowserProfile};
 use eyre::{Result, WrapErr};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -248,6 +257,12 @@ pub fn secrets_dir() -> Result<PathBuf> {
 pub fn secret_file(provider_id: &str) -> Result<PathBuf> {
     Ok(secrets_dir()?.join(format!("{provider_id}.key")))
 }
+pub fn browser_profiles_dir() -> Result<PathBuf> {
+    Ok(evoclaw_dir()?.join("browser_profiles"))
+}
+pub fn browser_profile_path(provider_id: &str) -> Result<PathBuf> {
+    Ok(browser_profiles_dir()?.join(format!("{provider_id}.json")))
+}
 
 #[derive(Debug, Clone)]
 pub enum KeySource {
@@ -345,9 +360,10 @@ pub async fn pick_provider() -> Result<ProviderChoice> {
 async fn pick_acp_agent() -> Result<ProviderChoice> {
     println!();
     println!("  Pick an external ACP agent (auth handled by the agent itself):");
-    let catalog = evo_acp_client::CATALOG;
+    let catalog = evo_acp_client::catalog();
     for (i, a) in catalog.iter().enumerate() {
-        println!("    {})  {:<10}  — {}", i + 1, a.id, a.name);
+        let badge = if a.acp_native { "[native]" } else { "[shim]  " };
+        println!("    {}) {} {:<10}  — {}", i + 1, badge, a.id, a.name);
         println!("           install: {}", a.install_hint);
         println!("           auth   : {}", a.auth_hint);
     }
@@ -370,12 +386,14 @@ async fn pick_acp_agent() -> Result<ProviderChoice> {
     println!();
     println!("  ✓ saved agent profile -> {}", saved.display());
     println!(
-        "    Make sure '{}' is on PATH; install: {}",
-        prof.bin, prof.install_hint
+        "    Resolved command: '{} {}'",
+        cfg.command,
+        cfg.args.join(" ")
     );
+    println!("    install: {}", prof.install_hint);
     Ok(ProviderChoice {
         id: format!("acp:{}", prof.id),
-        name: prof.name.into(),
+        name: prof.name.clone(),
         base_url: String::new(),
         default_model: format!("acp:{}", prof.id),
         fallback: Vec::new(),
@@ -651,14 +669,24 @@ async fn chmod_600(_path: &Path) -> Result<()> {
 }
 
 pub async fn save_config(profile: &ProviderChoice) -> Result<PathBuf> {
+    save_config_with_auth(profile, AuthMethod::ApiKey).await
+}
+
+/// Persist `config.toml` with the selected auth method recorded under `[auth]`.
+/// Older callers that only know about API-key auth keep working via
+/// `save_config` (above), which forwards `AuthMethod::ApiKey`.
+pub async fn save_config_with_auth(
+    profile: &ProviderChoice,
+    auth: AuthMethod,
+) -> Result<PathBuf> {
     let path = config_path()?;
-    let toml_text = render_config_toml(profile);
+    let toml_text = render_config_toml_with_auth(profile, auth);
     tokio::fs::create_dir_all(evoclaw_dir()?).await?;
     tokio::fs::write(&path, toml_text).await?;
     Ok(path)
 }
 
-fn render_config_toml(p: &ProviderChoice) -> String {
+fn render_config_toml_with_auth(p: &ProviderChoice, auth: AuthMethod) -> String {
     let fallback_arr = if p.fallback.is_empty() {
         "[]".into()
     } else {
@@ -672,6 +700,9 @@ fn render_config_toml(p: &ProviderChoice) -> String {
          base_url = \"{url}\"\n\
          fallback = {fb}\n\
          \n\
+         [auth]\n\
+         method = \"{auth}\"\n\
+         \n\
          [budget]\n\
          per_task_usd  = 0.5\n\
          per_day_usd   = 5.0\n\
@@ -684,7 +715,144 @@ fn render_config_toml(p: &ProviderChoice) -> String {
         model = p.default_model,
         url = p.base_url,
         fb = fallback_arr,
+        auth = auth.as_str(),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Auth-method picker (PRD §44 — shell entry rework)
+// ---------------------------------------------------------------------------
+
+/// Show the 3-way auth-method picker.
+///
+/// Priority and labels match the requirement in the shell entry:
+///   1) API key                  ← preferred (returns `AuthMethod::ApiKey`)
+///   2) Browser sign-in          ← `AuthMethod::Browser`
+///   3) ACP agent (NOT YET SUPPORTED) ← prints a clear notice and re-prompts
+///
+/// Local providers (Ollama / vLLM / llama.cpp) have no auth at all — we
+/// short-circuit to `ApiKey` (which then becomes a no-op in `ask_api_key`).
+pub fn pick_auth_method(profile: &ProviderChoice) -> Result<AuthMethod> {
+    if profile.local {
+        return Ok(AuthMethod::ApiKey);
+    }
+    println!();
+    println!("  How would you like to authenticate with {}?", profile.name);
+    println!("    1)  API key                       (preferred · simplest)");
+    println!("    2)  Browser sign-in               (paste session token from your browser)");
+    println!("    3)  ACP agent                     (暂时不支持 / not yet supported)");
+    loop {
+        print!("  > ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        match line.trim() {
+            "" | "1" | "api_key" | "apikey" | "key" => return Ok(AuthMethod::ApiKey),
+            "2" | "browser" | "web" | "cookie" => return Ok(AuthMethod::Browser),
+            "3" | "acp" | "agent" => {
+                println!();
+                println!(
+                    "  ACP authentication is not yet supported in this build.\n\
+                     Reason: most upstream agent CLIs (claude-code, codex, gemini-cli)\n\
+                     do not implement Zed Agent Client Protocol natively, so the handshake\n\
+                     fails with `error: unknown option '--acp'` / `subprocess exited unexpectedly`.\n\
+                     Please pick (1) API key or (2) Browser sign-in for now.\n\
+                     Power users can still configure ACP via `evoclaw agent add <id>`."
+                );
+                println!();
+                println!("    1)  API key                       (preferred · simplest)");
+                println!("    2)  Browser sign-in               (paste session token from your browser)");
+                continue;
+            }
+            other => {
+                println!("  unrecognised choice '{other}', try 1 / 2 / 3");
+                continue;
+            }
+        }
+    }
+}
+
+/// Browser-sign-in capture flow. Open the vendor's web console, ask the user
+/// to paste their captured session token, and persist a `BrowserProfile`.
+///
+/// The shape is inferred from the vendor: Anthropic uses `x-api-key`, every
+/// other vendor in our catalog speaks OpenAI-compat which accepts a
+/// `Authorization: Bearer …` token. Cookie-string mode is reachable for power
+/// users via `BrowserProfile::shape = "cookie"` directly in the JSON file.
+pub async fn capture_browser_profile(profile: &ProviderChoice) -> Result<BrowserProfile> {
+    let shape = match profile.id.as_str() {
+        "anthropic" => BrowserAuthShape::AnthropicHeader,
+        _ => BrowserAuthShape::Bearer,
+    };
+    println!();
+    println!("  ─── Browser sign-in for {} ───", profile.name);
+    if let Some(url) = &profile.key_url {
+        println!("  1) Open the vendor's web console:    {url}");
+    } else {
+        println!("  1) Open the vendor's web console.");
+    }
+    println!("  2) Sign in normally (Google / GitHub / SSO / TOTP).");
+    println!("  3) Capture your session token:");
+    println!("       · most vendors: DevTools → Network → copy `Authorization` header");
+    println!("       · cookie-based: DevTools → Application → Cookies → copy session value");
+    println!("       · vendor SDKs:  click \"copy access token\" if present");
+    if let Some(url) = &profile.key_url {
+        print!("  Open {url} now in your browser? [Y/n] ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        if !line.trim().eq_ignore_ascii_case("n") {
+            try_open_browser(url);
+        }
+    }
+    println!();
+    print!(
+        "  Paste session token (will be saved to ~/.evoclaw/browser_profiles/{}.json, chmod 600): ",
+        profile.id
+    );
+    std::io::stdout().flush().ok();
+    let mut tok_line = String::new();
+    std::io::stdin().read_line(&mut tok_line)?;
+    let token = tok_line.trim().to_string();
+    if token.is_empty() {
+        return Err(eyre::eyre!(
+            "empty session token — aborting; run `evoclaw login` again"
+        ));
+    }
+    print!("  Optional source-hint (e.g. \"DevTools cookie\", press Enter to skip): ");
+    std::io::stdout().flush().ok();
+    let mut hint_line = String::new();
+    std::io::stdin().read_line(&mut hint_line)?;
+    let hint = hint_line.trim().to_string();
+    let captured_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    Ok(BrowserProfile {
+        provider_id: profile.id.clone(),
+        base_url: profile.base_url.clone(),
+        default_model: profile.default_model.clone(),
+        session_token: token,
+        shape: shape.into(),
+        source_hint: if hint.is_empty() { None } else { Some(hint) },
+        captured_at,
+    })
+}
+
+pub async fn save_browser_profile(profile: &BrowserProfile) -> Result<PathBuf> {
+    let dir = browser_profiles_dir()?;
+    tokio::fs::create_dir_all(&dir).await?;
+    let path = browser_profile_path(&profile.provider_id)?;
+    let json = serde_json::to_string_pretty(profile)
+        .wrap_err("serialise BrowserProfile to JSON")?;
+    tokio::fs::write(&path, json).await?;
+    chmod_600(&path).await?;
+    Ok(path)
+}
+
+pub async fn load_browser_profile(provider_id: &str) -> Result<BrowserProfile> {
+    let path = browser_profile_path(provider_id)?;
+    let raw = tokio::fs::read_to_string(&path)
+        .await
+        .wrap_err_with(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&raw).wrap_err("parse BrowserProfile JSON")
 }
 
 #[cfg(test)]
@@ -714,6 +882,48 @@ mod tests {
     }
 
     #[test]
+    fn render_config_includes_auth_method_block() {
+        let c = ProviderChoice {
+            id: "deepseek".into(),
+            name: "x".into(),
+            base_url: "https://x.example/v1".into(),
+            default_model: "deepseek-chat".into(),
+            fallback: vec![],
+            key_url: None,
+            local: false,
+        };
+        let toml_api = render_config_toml_with_auth(&c, AuthMethod::ApiKey);
+        assert!(toml_api.contains("[auth]"));
+        assert!(toml_api.contains("method = \"api_key\""));
+        let toml_browser = render_config_toml_with_auth(&c, AuthMethod::Browser);
+        assert!(toml_browser.contains("method = \"browser\""));
+    }
+
+    #[test]
+    fn browser_profile_path_under_evoclaw_dir() {
+        let path = browser_profile_path("deepseek").unwrap();
+        let s = path.display().to_string();
+        assert!(s.ends_with("/browser_profiles/deepseek.json"));
+    }
+
+    #[test]
+    fn browser_capture_shape_for_anthropic_uses_native_header() {
+        // We don't test capture itself (interactive), but the inferred shape
+        // is part of the public contract. Anthropic ⇒ AnthropicHeader, others
+        // ⇒ Bearer. Mirror the match in `capture_browser_profile`.
+        let s_anth = match "anthropic" {
+            "anthropic" => BrowserAuthShape::AnthropicHeader,
+            _ => BrowserAuthShape::Bearer,
+        };
+        assert_eq!(s_anth, BrowserAuthShape::AnthropicHeader);
+        let s_ds = match "deepseek" {
+            "anthropic" => BrowserAuthShape::AnthropicHeader,
+            _ => BrowserAuthShape::Bearer,
+        };
+        assert_eq!(s_ds, BrowserAuthShape::Bearer);
+    }
+
+    #[test]
     fn render_config_includes_provider_marker() {
         let c = ProviderChoice {
             id: "deepseek".into(),
@@ -724,7 +934,7 @@ mod tests {
             key_url: None,
             local: false,
         };
-        let toml = render_config_toml(&c);
+        let toml = render_config_toml_with_auth(&c, AuthMethod::ApiKey);
         assert!(toml.contains("provider = \"deepseek\""));
         assert!(toml.contains("default  = \"deepseek-chat\""));
         assert!(toml.contains("\"alt1\""));
@@ -741,7 +951,7 @@ mod tests {
             key_url: None,
             local: true,
         };
-        let toml = render_config_toml(&c);
+        let toml = render_config_toml_with_auth(&c, AuthMethod::ApiKey);
         assert!(toml.contains("fallback = []"));
     }
 

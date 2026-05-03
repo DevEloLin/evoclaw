@@ -1,0 +1,90 @@
+{
+  "$comment": "Default MCP server registry for EvoClaw. Embedded at compile time via include_str!. Users can override the entire catalog by writing ~/.evoclaw/mcp/registry.json or add/override single entries by dropping JSON files into ~/.evoclaw/mcp/registry.d/. Distribution kinds: 'npx' = `npx -y <package> <args>`; 'uvx' = `uvx <package> <args>` (Python via uv); 'command' = direct exec of <cmd> <args>; 'binary' = pure metadata.",
+  "version": "1.0",
+  "servers": [
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "Read/write files within configured roots",
+      "install_hint": "npx auto-fetches; needs Node ≥18",
+      "auth_env": [],
+      "distribution": {
+        "kind": "npx",
+        "package": "@modelcontextprotocol/server-filesystem",
+        "args": []
+      }
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Issues, PRs, repos, search via GitHub API",
+      "install_hint": "npx auto-fetches",
+      "auth_env": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+      "distribution": {
+        "kind": "npx",
+        "package": "@modelcontextprotocol/server-github",
+        "args": []
+      }
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch (web)",
+      "description": "Fetch & render web pages as markdown",
+      "install_hint": "pipx install uv; uvx auto-fetches",
+      "auth_env": [],
+      "distribution": {
+        "kind": "uvx",
+        "package": "mcp-server-fetch",
+        "args": []
+      }
+    },
+    {
+      "id": "time",
+      "name": "Time",
+      "description": "Timezone & current-time queries",
+      "install_hint": "uvx mcp-server-time",
+      "auth_env": [],
+      "distribution": {
+        "kind": "uvx",
+        "package": "mcp-server-time",
+        "args": []
+      }
+    },
+    {
+      "id": "brave-search",
+      "name": "Brave Search",
+      "description": "Web search via Brave API",
+      "install_hint": "free tier at brave.com/search/api",
+      "auth_env": ["BRAVE_API_KEY"],
+      "distribution": {
+        "kind": "npx",
+        "package": "@modelcontextprotocol/server-brave-search",
+        "args": []
+      }
+    },
+    {
+      "id": "postgres",
+      "name": "Postgres",
+      "description": "Read-only SQL queries",
+      "install_hint": "needs DATABASE_URL env",
+      "auth_env": ["DATABASE_URL"],
+      "distribution": {
+        "kind": "npx",
+        "package": "@modelcontextprotocol/server-postgres",
+        "args": []
+      }
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "Read messages, post to channels",
+      "install_hint": "needs SLACK_BOT_TOKEN + SLACK_TEAM_ID",
+      "auth_env": ["SLACK_BOT_TOKEN", "SLACK_TEAM_ID"],
+      "distribution": {
+        "kind": "npx",
+        "package": "@modelcontextprotocol/server-slack",
+        "args": []
+      }
+    }
+  ]
+}

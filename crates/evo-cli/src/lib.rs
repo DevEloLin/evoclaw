@@ -5,16 +5,18 @@ pub mod onboard;
 
 use clap::{Parser, Subcommand};
 use directories::BaseDirs;
+use evo_core::channel::ChannelAdapter;
 use evo_core::{ConversationRuntime, Memory, MemoryLayer, Session, Skill, SkillTree};
 use evo_policy::{default_vault_path, BudgetCfg, CostEngine, Redactor, Vault};
 use evo_providers::{
-    AcpProvider, AnthropicProvider, CopilotProvider, OpenAiCompatProvider, Provider,
+    AcpProvider, AnthropicProvider, AuthMethod, BrowserProvider, CopilotProvider,
+    OpenAiCompatProvider, Provider,
 };
 use evo_tools::{ToolContext, ToolRegistry};
 use eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -46,8 +48,10 @@ enum Cmd {
     Gateway {
         #[arg(long, default_value = "127.0.0.1:7878")]
         bind: String,
-        #[arg(long, default_value = "dev")]
-        token: String,
+        /// Bearer token for /chat. If omitted, reuse or generate a persistent
+        /// 32-hex-char random token at `~/.evoclaw/gateway/token` (mode 0600).
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Replay a JSONL session
     Replay { path: Option<PathBuf> },
@@ -68,6 +72,25 @@ enum Cmd {
     /// Local secret vault — values never reach the model (PRD §13.4)
     #[command(subcommand)]
     Secret(SecretCmd),
+    /// Multi-channel adapter scaffolding (Telegram / Slack / Discord, v0.6).
+    /// Use `evo channel list` to see registered adapters and
+    /// `evo channel run --kind local-pipe` to drive the stdin/stdout
+    /// reference adapter end-to-end. See docs/channels.md.
+    #[command(subcommand)]
+    Channel(ChannelCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum ChannelCmd {
+    /// List built-in adapters and any external `~/.evoclaw/channels/*.toml`.
+    List,
+    /// Run a single adapter, fan inbound messages through the agent loop,
+    /// and post replies back. Currently only `--kind local-pipe` ships
+    /// in-tree; Telegram/Slack/Discord transports land in v0.6.
+    Run {
+        #[arg(long)]
+        kind: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -153,8 +176,42 @@ fn vault_path() -> Result<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
     model: ModelCfg,
+    #[serde(default)]
+    auth: AuthCfg,
     budget: ConfigBudget,
     security: SecurityCfg,
+    /// Optional logging override. Older config.toml files without this
+    /// section keep working — `logs_dir()` falls back to the platform
+    /// temp dir (`/tmp/evoclaw` on Unix, `%TEMP%\\evoclaw` on Windows).
+    #[serde(default)]
+    logs: Option<LogsCfg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct LogsCfg {
+    /// Directory where session JSONL logs are written. Tilde (`~`) is
+    /// expanded against `$HOME`. Missing directories are created on demand.
+    #[serde(default)]
+    dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AuthCfg {
+    /// Selected auth method: `api_key` (default) | `browser` | `acp`.
+    /// Old config.toml files without an `[auth]` block decode to default ⇒
+    /// `api_key`, preserving backward compatibility with existing installs.
+    #[serde(default = "default_auth_method")]
+    method: String,
+}
+
+fn default_auth_method() -> String {
+    AuthMethod::ApiKey.as_str().to_string()
+}
+
+impl AuthCfg {
+    fn parsed(&self) -> AuthMethod {
+        AuthMethod::parse(&self.method).unwrap_or(AuthMethod::ApiKey)
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModelCfg {
@@ -198,14 +255,74 @@ fn config_path() -> Result<PathBuf> {
 fn workspace_dir() -> Result<PathBuf> {
     Ok(evoclaw_dir()?.join("workspace"))
 }
+/// Resolution order, evaluated once per process (first call wins):
+///   1. env `EVO_LOG_DIR`           — operator override
+///   2. config.toml `[logs] dir`    — user override
+///   3. platform default            — `/tmp/evoclaw` on Unix,
+///                                    `%TEMP%\evoclaw` on Windows
+///
+/// Initialised by `init_logs_dir(...)` from the entry point. Calling
+/// `logs_dir()` before initialisation falls through to the platform
+/// default — safe but ignores any `[logs]` block in config.toml.
+static LOGS_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+fn compute_logs_dir(cfg: Option<&Config>) -> PathBuf {
+    if let Ok(v) = std::env::var("EVO_LOG_DIR") {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            return expand_tilde(trimmed);
+        }
+    }
+    if let Some(c) = cfg {
+        if let Some(LogsCfg { dir: Some(d) }) = &c.logs {
+            let trimmed = d.trim();
+            if !trimmed.is_empty() {
+                return expand_tilde(trimmed);
+            }
+        }
+    }
+    if cfg!(windows) {
+        std::env::temp_dir().join("evoclaw")
+    } else {
+        PathBuf::from("/tmp/evoclaw")
+    }
+}
+
+fn expand_tilde(raw: &str) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Ok(h) = std::env::var("HOME") {
+            return PathBuf::from(h).join(rest);
+        }
+    }
+    PathBuf::from(raw)
+}
+
+fn init_logs_dir(cfg: Option<&Config>) {
+    let _ = LOGS_DIR.set(compute_logs_dir(cfg));
+}
+
 fn logs_dir() -> Result<PathBuf> {
-    Ok(evoclaw_dir()?.join("logs"))
+    Ok(LOGS_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| compute_logs_dir(None)))
+}
+
+/// One log file per shell session. Inside `interactive()` we compute this
+/// once on entry and pass it down to every `run_task_with_provider` call,
+/// so all `Task`/`Turn`/`End` records from the same window land in the
+/// same JSONL file (instead of one file per `evoclaw>` ask).
+fn session_log_path() -> Result<PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S");
+    Ok(logs_dir()?.join(format!("session-{stamp}.jsonl")))
 }
 
 async fn ensure_layout() -> Result<()> {
+    // Logs no longer live under `~/.evoclaw/`. The destination is decided
+    // by `logs_dir()` (env / config / platform default) and created on
+    // demand by `Session::open`, so we don't touch it here.
     for sub in [
         "workspace",
-        "logs",
         "skills",
         "browser_profiles",
         "secrets",
@@ -238,6 +355,10 @@ pub async fn entry() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         .init();
+    // Resolve the logs directory once before any subcommand can request it.
+    // If config.toml is missing (first run) we fall back to env + platform
+    // default — `/tmp/evoclaw` on Unix, `%TEMP%\\evoclaw` on Windows.
+    init_logs_dir(load_config().await.ok().as_ref());
     let cli = Cli::parse();
     match cli.cmd {
         None | Some(Cmd::Shell) => interactive().await,
@@ -275,7 +396,7 @@ pub async fn entry() -> Result<()> {
             DoctorCmd::Tokens => doctor_tokens().await,
             DoctorCmd::Closure => doctor_closure().await,
         },
-        Some(Cmd::Gateway { bind, token }) => gateway(&bind, &token).await,
+        Some(Cmd::Gateway { bind, token }) => gateway(&bind, token.as_deref()).await,
         Some(Cmd::Replay { path }) => replay(path).await,
         Some(Cmd::Skill(s)) => match s {
             SkillCmd::List => skill_list().await,
@@ -285,6 +406,7 @@ pub async fn entry() -> Result<()> {
         Some(Cmd::Memory(m)) => match m {
             MemoryCmd::Search { query, limit } => memory_search(&query, limit).await,
         },
+        Some(Cmd::Channel(c)) => channel_handler(c).await,
     }
 }
 
@@ -295,39 +417,199 @@ pub async fn entry() -> Result<()> {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 async fn interactive() -> Result<()> {
+    let theme = Theme::detect();
     if !config_path()?.exists() {
         println!();
-        println!("  Welcome to EvoClaw — let's get you set up.");
+        println!(
+            "  {bold}Welcome to EvoClaw{reset} — let's get you set up.",
+            bold = theme.bold(),
+            reset = theme.reset(),
+        );
+        println!();
+        println!("  Authentication options (you'll pick after choosing a provider):");
+        println!(
+            "    {ok}1){reset}  API key             — {dim}preferred · simplest · works for every vendor{reset}",
+            ok = theme.ok(),
+            dim = theme.dim(),
+            reset = theme.reset(),
+        );
+        println!(
+            "    {ok}2){reset}  Browser sign-in     — {dim}paste session token from your browser{reset}",
+            ok = theme.ok(),
+            dim = theme.dim(),
+            reset = theme.reset(),
+        );
+        println!(
+            "    {warn}3){reset}  ACP agent           — {warn}暂时不支持{reset} {dim}/ not yet supported{reset}",
+            warn = theme.warn(),
+            dim = theme.dim(),
+            reset = theme.reset(),
+        );
         ensure_layout().await?;
         run_provider_wizard().await?;
         println!();
     }
-    let cfg = load_config().await?;
+    let mut cfg = load_config().await?;
     ensure_layout().await?;
     print_banner(&cfg).await;
 
-    loop {
-        std::io::stdout().flush().ok();
-        print!("\nevoclaw> ");
-        std::io::stdout().flush().ok();
-        let mut line = String::new();
-        let n = std::io::stdin().read_line(&mut line)?;
-        if n == 0 {
-            println!("\nbye.");
-            return Ok(());
+    // Build the provider once for the whole shell session. ACP-backed
+    // providers can take ~5-10 s to spawn (npx pull + JSON-RPC handshake);
+    // doing that on every `evoclaw>` turn was the dominant cost users hit.
+    // The (provider, is_acp) pair is rebuilt on `SlashOutcome::Reload` so
+    // `/login` and `/agent add` switch the live backend mid-session.
+    let (mut provider, mut is_acp) = match build_provider(&cfg).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!(
+                "{err}[error]{reset} failed to start provider: {e:#}",
+                err = theme.err(),
+                reset = theme.reset(),
+            );
+            return Err(e);
         }
-        let line = line.trim();
-        if line.is_empty() {
+    };
+
+    // One log file per shell window. Every `evoclaw>` turn appends Task /
+    // Turn / End records to this same JSONL. Default location is
+    // `/tmp/evoclaw/session-*.jsonl` on Unix and `%TEMP%\evoclaw\…` on
+    // Windows — overridable via env `EVO_LOG_DIR` or config `[logs] dir`.
+    let session_log = session_log_path()?;
+    println!(
+        "{frame}→{reset} session log: {dim}{}{reset}",
+        session_log.display(),
+        frame = theme.frame(),
+        dim = theme.dim(),
+        reset = theme.reset(),
+    );
+
+    // Build the rustyline editor. Arrow keys, history (Ctrl-P / Ctrl-N),
+    // and reverse-search (Ctrl-R) come for free. History persists across
+    // sessions in `<logs_dir>/history.txt`.
+    let mut editor: rustyline::DefaultEditor = rustyline::DefaultEditor::new()
+        .map_err(|e| eyre::eyre!("init readline: {e}"))?;
+    let history = history_path()?;
+    if let Some(parent) = history.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if history.exists() {
+        let _ = editor.load_history(&history);
+    }
+    let prompt = format!(
+        "\n{frame}evoclaw>{reset} ",
+        frame = theme.frame(),
+        reset = theme.reset(),
+    );
+
+    loop {
+        // rustyline is sync; bounce to a blocking thread so we don't stall
+        // the tokio scheduler while waiting on user input.
+        let line_res: Result<String, rustyline::error::ReadlineError> = {
+            let prompt = prompt.clone();
+            // The editor is owned here; we need to move it through the
+            // blocking call and get it back.
+            let (resp, ed) =
+                tokio::task::spawn_blocking(move || (editor.readline(&prompt), editor))
+                    .await
+                    .map_err(|e| eyre::eyre!("readline join: {e}"))?;
+            editor = ed;
+            resp
+        };
+        let line = match line_res {
+            Ok(l) => l,
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                // Ctrl-C: cancel the current line, keep the shell open.
+                println!(
+                    "{dim}(Ctrl-C){reset}",
+                    dim = theme.dim(),
+                    reset = theme.reset()
+                );
+                continue;
+            }
+            Err(rustyline::error::ReadlineError::Eof) => {
+                // Ctrl-D: clean exit.
+                println!(
+                    "{frame}bye.{reset}",
+                    frame = theme.frame(),
+                    reset = theme.reset()
+                );
+                let _ = editor.save_history(&history);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!(
+                    "{err}[error]{reset} readline: {e}",
+                    err = theme.err(),
+                    reset = theme.reset(),
+                );
+                continue;
+            }
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        if let Some(rest) = line.strip_prefix('/') {
-            if handle_slash(rest).await? {
-                return Ok(());
+        // Add to history (in-memory now, persisted on Drop / save_history).
+        let _ = editor.add_history_entry(trimmed);
+        // Persist history every line so a `kill -9` doesn't lose it.
+        let _ = editor.save_history(&history);
+        if let Some(rest) = trimmed.strip_prefix('/') {
+            match handle_slash(rest).await? {
+                SlashOutcome::Exit => {
+                    println!(
+                        "{frame}bye.{reset}",
+                        frame = theme.frame(),
+                        reset = theme.reset()
+                    );
+                    let _ = editor.save_history(&history);
+                    return Ok(());
+                }
+                SlashOutcome::Reload => {
+                    // /login or /agent add wrote new config — pick it up
+                    // and rebuild the provider so the next turn uses the
+                    // freshly-selected vendor.
+                    cfg = load_config().await?;
+                    match build_provider(&cfg).await {
+                        Ok((p, acp)) => {
+                            provider = p;
+                            is_acp = acp;
+                            let prov_id = cfg
+                                .model
+                                .provider
+                                .clone()
+                                .unwrap_or_else(|| "(unknown)".into());
+                            println!(
+                                "{ok}✓{reset} switched to provider {bold}{prov_id}{reset} {dim}({})",
+                                cfg.model.default,
+                                ok = theme.ok(),
+                                bold = theme.bold(),
+                                dim = theme.dim(),
+                                reset = theme.reset(),
+                            );
+                            print!("{}", theme.reset());
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "{err}[error]{reset} failed to switch provider: {e:#}",
+                                err = theme.err(),
+                                reset = theme.reset(),
+                            );
+                        }
+                    }
+                }
+                SlashOutcome::Continue => {}
             }
             continue;
         }
-        if let Err(e) = run_one_shot(line).await {
-            eprintln!("[error] {e:#}");
+        if let Err(e) =
+            run_task_with_provider(trimmed, provider.clone(), is_acp, &cfg, &session_log, theme)
+                .await
+        {
+            eprintln!(
+                "{err}[error]{reset} {e:#}",
+                err = theme.err(),
+                reset = theme.reset(),
+            );
         }
     }
 }
@@ -346,12 +628,26 @@ async fn print_banner(cfg: &Config) {
         .clone()
         .unwrap_or_else(|| "deepseek".into());
     let is_acp = provider_id.starts_with("acp:");
+    let auth_method = cfg.auth.parsed();
     let (key_ok, key_status) = if is_acp {
         (true, "managed by external agent".into())
     } else {
-        match onboard::resolve_api_key(&provider_id).await {
-            Ok((_k, src)) => (true, format!("ok · {}", short_key_source(&src.describe()))),
-            Err(_) => (false, "MISSING — run /login".into()),
+        match auth_method {
+            AuthMethod::Browser => match onboard::load_browser_profile(&provider_id).await {
+                Ok(p) => (
+                    true,
+                    format!("browser · captured {}", short_iso_date(&p.captured_at)),
+                ),
+                Err(_) => (false, "MISSING browser profile — run /login".into()),
+            },
+            AuthMethod::Acp => (
+                false,
+                "ACP method selected but not yet supported — run /login".into(),
+            ),
+            AuthMethod::ApiKey => match onboard::resolve_api_key(&provider_id).await {
+                Ok((_k, src)) => (true, format!("ok · {}", short_key_source(&src.describe()))),
+                Err(_) => (false, "MISSING — run /login".into()),
+            },
         }
     };
     let skill_count = count_skills().await.unwrap_or(0);
@@ -410,7 +706,16 @@ async fn print_banner(cfg: &Config) {
     print_row(bold, dim, reset, "model   ", &model_value);
     let key_color = if key_ok { green } else { red };
     let key_value = format!("{key_color}{key_status}{reset}");
-    print_row(bold, dim, reset, "api key ", &key_value);
+    let auth_label = if is_acp {
+        "auth    "
+    } else {
+        match auth_method {
+            AuthMethod::Browser => "browser ",
+            AuthMethod::Acp => "auth    ",
+            AuthMethod::ApiKey => "api key ",
+        }
+    };
+    print_row(bold, dim, reset, auth_label, &key_value);
     let vault_value = if vault_count > 0 {
         format!(
             "{green}{vault_count} entr{}{reset} {dim}· redactor active{reset}",
@@ -464,6 +769,136 @@ fn use_color() -> bool {
     std::io::stdout().is_terminal()
 }
 
+/// Centralised colour palette so every TTY-facing surface has a consistent
+/// look. The interactive shell, banner, error prints, and spinner all read
+/// these — turning them into ANSI escapes only if `use_color()` says yes.
+#[derive(Debug, Clone, Copy)]
+struct Theme {
+    enabled: bool,
+}
+
+impl Theme {
+    fn detect() -> Self {
+        Self {
+            enabled: use_color(),
+        }
+    }
+    fn s(&self, code: &'static str) -> &'static str {
+        if self.enabled {
+            code
+        } else {
+            ""
+        }
+    }
+    fn reset(&self) -> &'static str {
+        self.s("\x1b[0m")
+    }
+    /// Bright cyan — used for the prompt, banner border, "→ session log:"
+    /// and other framing chrome.
+    fn frame(&self) -> &'static str {
+        self.s("\x1b[1;36m")
+    }
+    /// Bright green — used for success markers and the agent's reply text.
+    fn ok(&self) -> &'static str {
+        self.s("\x1b[1;32m")
+    }
+    /// Bright red — error messages.
+    fn err(&self) -> &'static str {
+        self.s("\x1b[1;31m")
+    }
+    /// Yellow — "thinking" spinner and warnings.
+    fn warn(&self) -> &'static str {
+        self.s("\x1b[33m")
+    }
+    /// Magenta — slash-command echo / system notices.
+    #[allow(dead_code)]
+    fn note(&self) -> &'static str {
+        self.s("\x1b[35m")
+    }
+    /// Dim — secondary metadata (model name, timing, file paths).
+    fn dim(&self) -> &'static str {
+        self.s("\x1b[2m")
+    }
+    /// Bold — labels and headings.
+    fn bold(&self) -> &'static str {
+        self.s("\x1b[1m")
+    }
+}
+
+/// REPL history file. Persisted across sessions so arrow-up resurfaces
+/// previous prompts. Lives in the same directory as the JSONL session
+/// logs (default `/tmp/evoclaw/history.txt`).
+fn history_path() -> Result<PathBuf> {
+    Ok(logs_dir()?.join("history.txt"))
+}
+
+/// Enhanced terminal spinner with dynamic phase updates. Spawned on a thread
+/// so the agent's `await` can run free; the `Drop` impl signals the thread
+/// to stop and erases the spinner line so the caller can print clean text after.
+struct Spinner {
+    handle: Option<std::thread::JoinHandle<()>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    phase: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Spinner {
+    fn start(theme: Theme, label: &str) -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let phase = std::sync::Arc::new(std::sync::Mutex::new(label.to_string()));
+        let phase_clone = phase.clone();
+        let warn = theme.warn().to_string();
+        let dim = theme.dim().to_string();
+        let reset = theme.reset().to_string();
+        let handle = std::thread::spawn(move || {
+            let frames: [&str; 10] = [
+                "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+            ];
+            let started = std::time::Instant::now();
+            let mut idx = 0usize;
+            while !stop_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                let elapsed = started.elapsed().as_secs_f32();
+                let current_phase = phase_clone.lock().unwrap().clone();
+                eprint!(
+                    "\r{warn}{}{reset} {current_phase} {dim}({:.1}s){reset}    ",
+                    frames[idx % frames.len()],
+                    elapsed,
+                );
+                use std::io::Write as _;
+                std::io::stderr().flush().ok();
+                idx = idx.wrapping_add(1);
+                std::thread::sleep(std::time::Duration::from_millis(80));
+            }
+            // Erase the spinner line so the caller's print starts clean.
+            eprint!("\r\x1b[2K");
+            use std::io::Write as _;
+            std::io::stderr().flush().ok();
+        });
+        Self {
+            handle: Some(handle),
+            stop,
+            phase,
+        }
+    }
+
+    /// Update the spinner's displayed phase/message
+    fn update_phase(&self, new_phase: &str) {
+        if let Ok(mut phase) = self.phase.lock() {
+            *phase = new_phase.to_string();
+        }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        self.stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 fn display_home(p: &str) -> String {
     if let Ok(home) = std::env::var("HOME") {
         if let Some(rest) = p.strip_prefix(&home) {
@@ -499,6 +934,13 @@ fn strip_ansi(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// Trim an ISO-8601 timestamp (`2026-05-03T09:42:00Z`) to just `2026-05-03`
+/// so the banner row stays inside `BOX_VALUE_W`. Falls back to the raw input
+/// if it doesn't look like an ISO string.
+fn short_iso_date(s: &str) -> String {
+    s.split('T').next().unwrap_or(s).to_string()
 }
 
 /// Trim the `KeySource` description so the banner row never overflows. We only
@@ -544,21 +986,43 @@ async fn count_skills() -> Result<usize> {
     Ok(n)
 }
 
-async fn handle_slash(rest: &str) -> Result<bool> {
+/// Outcome of a slash-command invocation. The interactive loop reads this
+/// to decide whether to keep prompting (`Continue`), exit cleanly (`Exit`),
+/// or reload `Config` + provider (`Reload`) — the latter is essential for
+/// `/login` and `/agent add <id>` to actually take effect within the same
+/// shell session (otherwise the cached `provider` keeps using whatever was
+/// configured at startup, which was the "switched vendor but still on
+/// claude" bug).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlashOutcome {
+    Continue,
+    Exit,
+    Reload,
+}
+
+async fn handle_slash(rest: &str) -> Result<SlashOutcome> {
     let mut parts = rest.split_whitespace();
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
     match cmd {
         "exit" | "quit" | "q" => {
-            println!("bye.");
-            return Ok(true);
+            return Ok(SlashOutcome::Exit);
         }
         "help" | "?" => print_help(),
-        "login" => login_cmd().await?,
+        "login" => {
+            login_cmd().await?;
+            return Ok(SlashOutcome::Reload);
+        }
         "agent" => match args.as_slice() {
             [] | ["list"] => agent_list().await?,
             ["catalog"] => agent_catalog(),
-            ["add", id] => agent_add(id).await?,
+            ["add", id] => {
+                agent_add(id).await?;
+                // Adding an ACP agent doesn't itself flip the active
+                // provider, but if the user just added the one they're
+                // about to switch to, reloading is the right default.
+                return Ok(SlashOutcome::Reload);
+            }
             ["remove", id] => agent_remove(id).await?,
             ["test", id] => agent_test(id).await?,
             _ => println!("usage: /agent [list|catalog|add <id>|remove <id>|test <id>]"),
@@ -579,6 +1043,11 @@ async fn handle_slash(rest: &str) -> Result<bool> {
             ["test", rest @ ..] => secret_test(&rest.join(" ")).await?,
             _ => println!("usage: /secret [list|add <name> [value]|remove <name>|test <text>]"),
         },
+        "channel" => match args.as_slice() {
+            [] | ["list"] => channel_list().await?,
+            ["run", kind] => channel_run(kind).await?,
+            _ => println!("usage: /channel [list|run <kind>]   (built-in: local-pipe)"),
+        },
         "clear" => {
             print!("\x1b[2J\x1b[H");
             std::io::stdout().flush().ok();
@@ -598,9 +1067,30 @@ async fn handle_slash(rest: &str) -> Result<bool> {
             ["search", q @ ..] => memory_search(&q.join(" "), 20).await?,
             q => memory_search(&q.join(" "), 20).await?,
         },
+        "logout" => {
+            logout_cmd().await?;
+            return Ok(SlashOutcome::Reload);
+        }
+        "usage" => usage_cmd().await?,
+        "config" => match args.as_slice() {
+            [] | ["show"] => config_show().await?,
+            ["set", key, value] => config_set(key, value).await?,
+            ["reset"] => config_reset().await?,
+            _ => println!("usage: /config [show|set <key> <value>|reset]"),
+        },
+        "status" => status_cmd().await?,
+        "model" => match args.as_slice() {
+            [] => model_show().await?,
+            ["list"] => model_list().await?,
+            ["set", model_name] => {
+                model_set(model_name).await?;
+                return Ok(SlashOutcome::Reload);
+            }
+            _ => println!("usage: /model [list|set <model_name>]"),
+        },
         other => println!("unknown command: /{other}  (try /help)"),
     }
-    Ok(false)
+    Ok(SlashOutcome::Continue)
 }
 
 fn print_help() {
@@ -608,13 +1098,19 @@ fn print_help() {
     println!("slash commands:");
     println!("  /help                show this help");
     println!("  /login               switch provider / re-enter API key");
+    println!("  /logout              clear current auth and return to login");
     println!("  /agent [sub]         ACP external agents (claude/codex/cursor/copilot)");
     println!("  /mcp   [sub]         MCP servers (filesystem/github/fetch/...)");
     println!("  /secret [sub]        local-only key vault (values never reach the model)");
+    println!("  /channel [sub]       multi-channel adapters (local-pipe / v0.6 plan)");
     println!("  /skill list          list every skill on disk");
     println!("  /skill tree          rebuild and print skill tree");
     println!("  /skill show <id>     dump one skill's YAML");
     println!("  /memory <query>      grep memory L1/L2/L3");
+    println!("  /model [sub]         show/change current model");
+    println!("  /config [sub]        view/modify configuration");
+    println!("  /status              show current session status");
+    println!("  /usage               alias for /tokens");
     println!("  /tokens              7-day / 30-day cost & cache stats");
     println!("  /closure             session JSONL audit (PRD §39)");
     println!("  /replay [path]       pretty-print a session (latest by default)");
@@ -660,17 +1156,45 @@ async fn login_cmd() -> Result<()> {
 
 async fn run_provider_wizard() -> Result<()> {
     let mut choice = onboard::pick_provider().await?;
-    let key_opt = onboard::ask_api_key(&choice).await?;
-    if let Some(ref key) = key_opt {
-        let path = onboard::save_secret(&choice.id, key).await?;
-        println!("  saved key    -> {}", path.display());
+    // ACP-prefixed providers (advanced "evoclaw agent add" path) keep the
+    // legacy flow — they're not part of the new 3-way auth picker.
+    if choice.id.starts_with("acp:") {
+        let cfg_path = onboard::save_config(&choice).await?;
+        println!("  saved config -> {}", cfg_path.display());
+        return Ok(());
     }
-    // After login, let the user pick a specific model from the provider's
-    // /models endpoint (or accept the catalog default). Best-effort — any
-    // error keeps the default and prints one line.
-    onboard::pick_model(&mut choice, key_opt.as_deref()).await?;
-    let cfg_path = onboard::save_config(&choice).await?;
-    println!("  saved config -> {}", cfg_path.display());
+    let auth = onboard::pick_auth_method(&choice)?;
+    match auth {
+        AuthMethod::ApiKey => {
+            let key_opt = onboard::ask_api_key(&choice).await?;
+            if let Some(ref key) = key_opt {
+                let path = onboard::save_secret(&choice.id, key).await?;
+                println!("  saved key    -> {}", path.display());
+            }
+            // Best-effort: pick a specific model from the provider's /models.
+            onboard::pick_model(&mut choice, key_opt.as_deref()).await?;
+            let cfg_path = onboard::save_config_with_auth(&choice, AuthMethod::ApiKey).await?;
+            println!("  saved config -> {}", cfg_path.display());
+        }
+        AuthMethod::Browser => {
+            let profile = onboard::capture_browser_profile(&choice).await?;
+            let path = onboard::save_browser_profile(&profile).await?;
+            println!("  saved browser profile -> {}", path.display());
+            // /models probe with the captured token (best-effort, same code
+            // path as API-key flow — the vendor's auth header doesn't change
+            // the JSON response shape).
+            onboard::pick_model(&mut choice, Some(&profile.session_token)).await?;
+            let cfg_path = onboard::save_config_with_auth(&choice, AuthMethod::Browser).await?;
+            println!("  saved config -> {}", cfg_path.display());
+        }
+        AuthMethod::Acp => {
+            // pick_auth_method() never returns Acp — it loops until the user
+            // picks 1 or 2 — but match exhaustiveness still requires this arm.
+            return Err(eyre::eyre!(
+                "ACP auth was selected but is not yet supported in this build"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -699,40 +1223,126 @@ async fn doctor() -> Result<()> {
     println!("workspace: {}", workspace_dir()?.display());
     println!("logs     : {}", logs_dir()?.display());
     println!("secrets  : {}", onboard::secrets_dir()?.display());
-    match onboard::resolve_api_key(&provider_id).await {
-        Ok((_k, src)) => println!("api_key  : OK ({})", src.describe()),
-        Err(e) => println!("api_key  : MISSING — {e:#}\nrun `evoclaw login`"),
+    // ACP-backed provider: auth is delegated to the upstream agent CLI
+    // (claude-agent-acp / codex-acp / cursor-agent / amp / auggie / …).
+    // We never see the user's vendor credentials, so showing
+    // "api_key MISSING" here is misleading. Surface the agent profile
+    // instead.
+    if let Some(agent_id) = provider_id.strip_prefix("acp:") {
+        match evo_acp_client::load_agent(agent_id).await {
+            Ok(c) => {
+                println!(
+                    "acp      : OK (agent='{}', command='{} {}')",
+                    c.id,
+                    c.command,
+                    c.args.join(" ")
+                );
+            }
+            Err(e) => {
+                println!(
+                    "acp      : MISSING — {e:#}\nrun `evoclaw agent add {agent_id}`"
+                );
+            }
+        }
+        return Ok(());
+    }
+    let auth_method = cfg.auth.parsed();
+    println!("auth     : {} ({})", auth_method.label(), auth_method.as_str());
+    match auth_method {
+        AuthMethod::Browser => match onboard::load_browser_profile(&provider_id).await {
+            Ok(p) => println!(
+                "browser  : OK ({}, captured {})",
+                onboard::browser_profile_path(&provider_id)?.display(),
+                p.captured_at
+            ),
+            Err(e) => println!(
+                "browser  : MISSING — {e:#}\nrun `evoclaw login` and pick (2) Browser sign-in"
+            ),
+        },
+        AuthMethod::Acp => println!(
+            "acp      : NOT YET SUPPORTED — run `evoclaw login` and pick (1) API key or (2) Browser sign-in"
+        ),
+        AuthMethod::ApiKey => match onboard::resolve_api_key(&provider_id).await {
+            Ok((_k, src)) => println!("api_key  : OK ({})", src.describe()),
+            Err(e) => println!("api_key  : MISSING — {e:#}\nrun `evoclaw login`"),
+        },
     }
     Ok(())
 }
 
-async fn run_one_shot(input: &str) -> Result<()> {
-    let cfg = load_config().await?;
-    ensure_layout().await?;
+/// Build the provider once. ACP-backed providers spawn a child process and
+/// run a JSON-RPC handshake — both are slow (npx fetch + SDK initialize),
+/// so the interactive shell builds the provider ONCE and reuses it across
+/// every `evoclaw>` turn (see `interactive()`). The boolean flag is `true`
+/// when this is an ACP backend → caller passes it as
+/// `RuntimeConfig.reflection_enabled = false` so the upstream agent isn't
+/// asked to write a meta-reflection on every short interaction.
+async fn build_provider(cfg: &Config) -> Result<(Arc<dyn Provider>, bool)> {
     let provider_id = cfg
         .model
         .provider
         .clone()
         .unwrap_or_else(|| "deepseek".into());
-    let provider: Arc<dyn Provider> = if let Some(agent_id) = provider_id.strip_prefix("acp:") {
-        // ACP path: spawn external CLI; auth handled by the agent itself.
+    if let Some(agent_id) = provider_id.strip_prefix("acp:") {
         let p = AcpProvider::spawn(agent_id)
             .await
             .map_err(|e| eyre::eyre!("{e:#}"))?;
-        Arc::new(p)
-    } else {
-        let (api_key, _src) = onboard::resolve_api_key(&provider_id).await?;
-        match provider_id.as_str() {
-            "anthropic" => Arc::new(AnthropicProvider::new(api_key, cfg.model.default.clone()))
-                as Arc<dyn Provider>,
-            "copilot" => Arc::new(CopilotProvider::new(api_key, cfg.model.default.clone())),
-            _ => Arc::new(OpenAiCompatProvider::new(
-                cfg.model.base_url.clone(),
-                api_key,
-                cfg.model.default.clone(),
-            )),
+        return Ok((Arc::new(p) as Arc<dyn Provider>, true));
+    }
+    let provider: Arc<dyn Provider> = match cfg.auth.parsed() {
+        AuthMethod::Browser => {
+            let profile = onboard::load_browser_profile(&provider_id)
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "load browser profile for '{provider_id}'. \
+                         Run `evoclaw login` and pick (2) Browser sign-in."
+                    )
+                })?;
+            Arc::new(BrowserProvider::from_profile(&profile)) as Arc<dyn Provider>
+        }
+        AuthMethod::Acp => {
+            return Err(eyre::eyre!(
+                "config.toml has [auth].method = \"acp\" but ACP auth is not yet supported. \
+                 Run `evoclaw login` and pick (1) API key or (2) Browser sign-in."
+            ));
+        }
+        AuthMethod::ApiKey => {
+            let (api_key, _src) = onboard::resolve_api_key(&provider_id).await?;
+            match provider_id.as_str() {
+                "anthropic" => Arc::new(AnthropicProvider::new(api_key, cfg.model.default.clone()))
+                    as Arc<dyn Provider>,
+                "copilot" => Arc::new(CopilotProvider::new(api_key, cfg.model.default.clone())),
+                _ => Arc::new(OpenAiCompatProvider::new(
+                    cfg.model.base_url.clone(),
+                    api_key,
+                    cfg.model.default.clone(),
+                )),
+            }
         }
     };
+    Ok((provider, false))
+}
+
+/// Run a single task with an already-built provider. Each invocation creates
+/// a fresh session/redactor (cheap IO) but **reuses the provider** so shell
+/// loops don't repay process-spawn cost on every turn.
+///
+/// `log_path` controls where the JSONL records land. The interactive shell
+/// passes the same per-window file every turn (so a whole session lives in
+/// one log); the `Cmd::Run` one-shot path passes a dedicated `task-*.jsonl`.
+///
+/// `theme` controls colour output: drives the spinner and the final result
+/// banner. Pass `Theme::detect()` for the standard auto-detected palette.
+async fn run_task_with_provider(
+    input: &str,
+    provider: Arc<dyn Provider>,
+    is_acp: bool,
+    cfg: &Config,
+    log_path: &Path,
+    theme: Theme,
+) -> Result<()> {
+    ensure_layout().await?;
     let mut registry = ToolRegistry::with_builtins();
     let attached_servers = mcp_tools::install_all(&mut registry).await;
     if attached_servers > 0 {
@@ -742,9 +1352,7 @@ async fn run_one_shot(input: &str) -> Result<()> {
         );
     }
     let registry = Arc::new(registry);
-    let task_id = format!("task-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f"));
-    let log_path = logs_dir()?.join(format!("{task_id}.jsonl"));
-    let session = Session::open(&log_path).await?;
+    let session = Session::open(log_path).await?;
     let tool_ctx = ToolContext {
         workspace: workspace_dir()?,
         allow_user_prompt: true,
@@ -752,9 +1360,6 @@ async fn run_one_shot(input: &str) -> Result<()> {
     };
     let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
     let memory = Memory::at(memory_dir()?);
-    // PRD §13.4 — bootstrap secret-redaction barrier from the on-disk vault.
-    // No file = empty vault = pattern-only fallback (still scrubs sk-*, ghp_*,
-    // eyJ*, AKIA*, high-entropy tokens).
     let vault = Vault::load(&vault_path()?).await.wrap_err_with(|| {
         format!(
             "read vault at {}",
@@ -782,6 +1387,10 @@ async fn run_one_shot(input: &str) -> Result<()> {
         tool_ctx,
         evo_core::runtime::RuntimeConfig {
             model: cfg.model.default.clone(),
+            // ACP backend = upstream is already a full agent → don't pay for
+            // an extra reflection round per task. For API providers we keep
+            // the reflection so memory/skill learning still works.
+            reflection_enabled: !is_acp,
             ..Default::default()
         },
     )
@@ -790,16 +1399,79 @@ async fn run_one_shot(input: &str) -> Result<()> {
     .with_skills_dir(skills_dir()?)
     .with_redactor(redactor);
     let started = std::time::Instant::now();
-    println!("→ running…  log: {}", log_path.display());
-    let outcome = runtime.run(input).await?;
-    let elapsed = started.elapsed();
     println!(
-        "\n=== final ({} turns, {:.1}s) ===\n{}",
+        "{frame}→{reset} running… {dim}log: {}{reset}",
+        log_path.display(),
+        frame = theme.frame(),
+        dim = theme.dim(),
+        reset = theme.reset(),
+    );
+    // Enhanced spinner with progress updates. Dropped automatically at
+    // function exit which clears the line so the answer prints clean.
+    let spinner = Spinner::start(theme, "initializing…");
+
+    // Show progress during execution
+    spinner.update_phase("connecting to provider…");
+    std::thread::sleep(std::time::Duration::from_millis(100)); // brief pause for visibility
+
+    spinner.update_phase("processing request…");
+    let outcome = runtime.run(input).await?;
+    drop(spinner);
+    let elapsed = started.elapsed();
+    let usage = &outcome.usage;
+    let usage_summary = if usage.turns_with_usage == 0 {
+        // ACP backends don't surface per-turn `Usage` events — the
+        // upstream agent does its own metering.
+        format!(
+            "{dim}tokens reported by upstream agent{reset}",
+            dim = theme.dim(),
+            reset = theme.reset(),
+        )
+    } else {
+        format!(
+            "{dim}{}↑ in · {}↓ out · {} cached ({:.0}% hit){reset}",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_tokens,
+            usage.cache_hit_rate() * 100.0,
+            dim = theme.dim(),
+            reset = theme.reset(),
+        )
+    };
+    println!(
+        "\n{frame}╭─{reset} {bold}answer{reset} {dim}· {} turn{} · {:.1}s{reset}",
         outcome.turns,
+        if outcome.turns == 1 { "" } else { "s" },
         elapsed.as_secs_f32(),
-        outcome.final_text
+        frame = theme.frame(),
+        bold = theme.bold(),
+        dim = theme.dim(),
+        reset = theme.reset(),
+    );
+    println!(
+        "{ok}{}{reset}",
+        outcome.final_text,
+        ok = theme.ok(),
+        reset = theme.reset(),
+    );
+    println!(
+        "{frame}╰─{reset} {usage_summary}",
+        frame = theme.frame(),
+        reset = theme.reset(),
     );
     Ok(())
+}
+
+async fn run_one_shot(input: &str) -> Result<()> {
+    let cfg = load_config().await?;
+    ensure_layout().await?;
+    let (provider, is_acp) = build_provider(&cfg).await?;
+    // One-shot CLI invocations get a dedicated `task-*.jsonl` so each run
+    // is individually replayable; the interactive shell uses one
+    // `session-*.jsonl` per window (see `interactive()`).
+    let task_id = format!("task-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f"));
+    let log_path = logs_dir()?.join(format!("{task_id}.jsonl"));
+    run_task_with_provider(input, provider, is_acp, &cfg, &log_path, Theme::detect()).await
 }
 
 async fn replay(path: Option<PathBuf>) -> Result<()> {
@@ -857,11 +1529,115 @@ async fn replay(path: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-async fn gateway(bind: &str, token: &str) -> Result<()> {
+/// Path to the persistent gateway token. We co-locate it with the rest of
+/// `~/.evoclaw` runtime state, in its own subdirectory so the file's chmod
+/// 600 is meaningful (not shared with public artefacts).
+fn gateway_token_path() -> Result<PathBuf> {
+    Ok(evoclaw_dir()?.join("gateway").join("token"))
+}
+
+/// SHA-256 fingerprint of the bearer token, first 8 hex chars. Safe to log /
+/// print: an attacker cannot recover the token from this — but operators can
+/// confirm the same value is in use across processes. Reuses
+/// `evo_policy::fingerprint_of` so we add no new top-level dependency.
+fn token_fingerprint(s: &str) -> String {
+    evo_policy::fingerprint_of(s)
+}
+
+/// Resolve the bearer token to use for `evo gateway`:
+///   * `--token <T>` provided   → use as-is (operator override)
+///   * persisted file present   → read it, validate, reuse
+///   * neither                  → generate a fresh 32-hex random token,
+///     write it (mode 0600), print it ONCE.
+async fn resolve_gateway_token(cli_override: Option<&str>) -> Result<(String, bool)> {
+    if let Some(t) = cli_override {
+        let t = t.trim();
+        if t.is_empty() {
+            return Err(eyre::eyre!("--token may not be empty"));
+        }
+        return Ok((t.to_string(), false));
+    }
+    let path = gateway_token_path()?;
+    if let Ok(raw) = tokio::fs::read_to_string(&path).await {
+        let trimmed = raw.trim().to_string();
+        if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Ok((trimmed, false));
+        }
+        // Corrupt or empty file — fall through and regenerate.
+    }
+    let fresh = generate_token_hex(16).await?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&path, &fresh).await?;
+    set_file_mode_600(&path).await.ok();
+    Ok((fresh, true))
+}
+
+/// Read `n_bytes` bytes from `/dev/urandom` (Unix) and hex-encode them. On
+/// non-Unix platforms, fall back to a SHA-256 of high-entropy process state —
+/// still vastly better than the previous default of the literal `"dev"`.
+async fn generate_token_hex(n_bytes: usize) -> Result<String> {
+    #[cfg(unix)]
+    {
+        use tokio::io::AsyncReadExt;
+        if let Ok(mut f) = tokio::fs::File::open("/dev/urandom").await {
+            let mut buf = vec![0u8; n_bytes];
+            f.read_exact(&mut buf).await?;
+            return Ok(bytes_to_hex(&buf));
+        }
+    }
+    let _ = n_bytes; // signature consistency on non-Unix fallback
+    let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    let pid = std::process::id();
+    let stack_addr = &now as *const _ as usize;
+    let env_hash: usize = std::env::vars()
+        .map(|(k, v)| k.len().wrapping_mul(31).wrapping_add(v.len()))
+        .fold(0usize, |a, b| a.wrapping_add(b));
+    // `fingerprint_of` returns 8 hex chars; concatenate four seeded hashes
+    // to reach the 32-hex shape promised by the docstring above.
+    let seed = format!("{now}-{pid}-{stack_addr}-{env_hash}");
+    let a = evo_policy::fingerprint_of(&format!("{seed}-A"));
+    let b = evo_policy::fingerprint_of(&format!("{seed}-B"));
+    let c = evo_policy::fingerprint_of(&format!("{seed}-C"));
+    let d = evo_policy::fingerprint_of(&format!("{seed}-D"));
+    Ok(format!("{a}{b}{c}{d}"))
+}
+
+/// Inline lower-case hex encoder — avoids pulling the `hex` crate in as a new
+/// dep of `evo-cli`. (`hex` is already used by `evo-policy`, but this crate's
+/// Cargo.toml doesn't list it and the workspace constraint forbids new deps.)
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(TABLE[(b >> 4) as usize] as char);
+        out.push(TABLE[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+#[cfg(unix)]
+async fn set_file_mode_600(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    tokio::fs::set_permissions(path, perms).await
+}
+#[cfg(not(unix))]
+async fn set_file_mode_600(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+async fn gateway(bind: &str, token_arg: Option<&str>) -> Result<()> {
     use std::process::Stdio;
+    ensure_layout().await?;
+    let (token, freshly_generated) = resolve_gateway_token(token_arg).await?;
+    let fp = token_fingerprint(&token);
+    let token_path = gateway_token_path()?;
+
     let mut cmd = tokio::process::Command::new("evo-gateway");
     cmd.env("EVO_GATEWAY_BIND", bind)
-        .env("EVO_GATEWAY_ALLOWLIST", token)
+        .env("EVO_GATEWAY_ALLOWLIST", &token)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let mut child = cmd.spawn().map_err(|e| {
@@ -869,13 +1645,62 @@ async fn gateway(bind: &str, token: &str) -> Result<()> {
             "evo-gateway binary not found on PATH: {e}. Build with `cargo build -p evo-gateway`."
         )
     })?;
-    println!("→ evo-gateway started, bound to {bind} (token: {token})");
+    // Never echo the raw token after this point. Operators who need it can
+    // either pass `--token` themselves or read the chmod-600 file directly.
+    println!("→ evo-gateway started, bound to {bind} (token fingerprint: {fp})");
     println!("  WebChat: http://{bind}");
+    if freshly_generated {
+        println!();
+        println!("  ╔══════════════════════════════════════════════════════════════╗");
+        println!("  ║  A NEW gateway token has been generated and saved to disk.   ║");
+        println!("  ║  Save this — it WILL NOT be shown again.                     ║");
+        println!("  ║                                                              ║");
+        println!("  ║    token: {token:<50}║");
+        println!("  ║    file : {:<50}║", token_path.display());
+        println!("  ║    chmod: 0600 (owner read/write only)                       ║");
+        println!("  ╚══════════════════════════════════════════════════════════════╝");
+        println!();
+    } else if token_arg.is_none() {
+        println!("  (token loaded from {})", token_path.display());
+    }
     let status = child.wait().await?;
     if !status.success() {
         return Err(eyre::eyre!("evo-gateway exited: {status}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod gateway_tests {
+    use super::*;
+
+    #[test]
+    fn token_fingerprint_is_8_hex() {
+        let fp = token_fingerprint("hello");
+        assert_eq!(fp.len(), 8);
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn token_fingerprint_is_stable_and_distinguishes_inputs() {
+        assert_eq!(token_fingerprint("same"), token_fingerprint("same"));
+        assert_ne!(token_fingerprint("a"), token_fingerprint("b"));
+    }
+
+    #[test]
+    fn bytes_to_hex_matches_known_vectors() {
+        assert_eq!(bytes_to_hex(&[]), "");
+        assert_eq!(bytes_to_hex(&[0x00, 0xff]), "00ff");
+        assert_eq!(bytes_to_hex(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+    }
+
+    #[tokio::test]
+    async fn generate_token_hex_returns_32_hex_chars() {
+        let t = generate_token_hex(16).await.expect("generate");
+        assert_eq!(t.len(), 32);
+        assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 }
 
 async fn doctor_closure() -> Result<()> {
@@ -1002,6 +1827,658 @@ async fn doctor_tokens() -> Result<()> {
     Ok(())
 }
 
+async fn logout_cmd() -> Result<()> {
+    let theme = Theme::detect();
+    println!();
+    println!(
+        "{warn}logout:{reset} clearing current authentication...",
+        warn = theme.warn(),
+        reset = theme.reset()
+    );
+
+    let cfg = load_config().await?;
+    let auth_method = cfg.auth.parsed();
+
+    // Clear auth based on method
+    match auth_method {
+        AuthMethod::ApiKey => {
+            if let Some(provider_id) = &cfg.model.provider {
+                let secret_path = onboard::secret_file(provider_id)?;
+                if secret_path.exists() {
+                    tokio::fs::remove_file(&secret_path).await.ok();
+                    println!(
+                        "  {ok}✓{reset} removed API key for {bold}{provider_id}{reset}",
+                        ok = theme.ok(),
+                        bold = theme.bold(),
+                        reset = theme.reset()
+                    );
+                }
+            }
+        }
+        AuthMethod::Browser => {
+            if let Some(provider_id) = &cfg.model.provider {
+                let profile_path = onboard::browser_profile_path(provider_id)?;
+                if profile_path.exists() {
+                    tokio::fs::remove_dir_all(&profile_path).await.ok();
+                    println!(
+                        "  {ok}✓{reset} removed browser profile for {bold}{provider_id}{reset}",
+                        ok = theme.ok(),
+                        bold = theme.bold(),
+                        reset = theme.reset()
+                    );
+                }
+            }
+        }
+        AuthMethod::Acp => {
+            println!(
+                "  {dim}(ACP agent-based auth — no local credentials to clear){reset}",
+                dim = theme.dim(),
+                reset = theme.reset()
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "{frame}→{reset} Run {bold}/login{reset} to re-authenticate or Ctrl-D to exit.",
+        frame = theme.frame(),
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    Ok(())
+}
+
+async fn usage_cmd() -> Result<()> {
+    // Alias for /tokens command
+    doctor_tokens().await
+}
+
+async fn config_show() -> Result<()> {
+    let theme = Theme::detect();
+    let cfg = load_config().await?;
+    let cfg_path = config_path()?;
+
+    println!();
+    println!(
+        "{bold}== Configuration =={reset}",
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!(
+        "{frame}path:{reset} {dim}{}{reset}",
+        cfg_path.display(),
+        frame = theme.frame(),
+        dim = theme.dim(),
+        reset = theme.reset()
+    );
+    println!();
+
+    println!("[model]");
+    println!(
+        "  provider     : {}",
+        cfg.model.provider.as_deref().unwrap_or("(not set)")
+    );
+    println!("  default      : {}", cfg.model.default);
+    println!("  base_url     : {}", cfg.model.base_url);
+    if !cfg.model.fallback.is_empty() {
+        println!("  fallback     : {:?}", cfg.model.fallback);
+    }
+
+    println!();
+    println!("[auth]");
+    println!("  method       : {}", cfg.auth.method);
+
+    println!();
+    println!("[budget]");
+    println!("  per_task_usd : ${:.2}", cfg.budget.per_task_usd);
+    println!("  per_day_usd  : ${:.2}", cfg.budget.per_day_usd);
+    println!("  per_month_usd: ${:.0}", cfg.budget.per_month_usd);
+
+    println!();
+    println!("[security]");
+    println!(
+        "  default_permission  : {}",
+        cfg.security.default_permission
+    );
+    println!(
+        "  high_risk_intercept : {}",
+        cfg.security.high_risk_intercept
+    );
+
+    if let Some(logs) = &cfg.logs {
+        println!();
+        println!("[logs]");
+        if let Some(dir) = &logs.dir {
+            println!("  dir          : {}", dir);
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+async fn config_set(key: &str, value: &str) -> Result<()> {
+    let theme = Theme::detect();
+    let cfg_path = config_path()?;
+    let mut cfg = load_config().await?;
+
+    // Support common configuration changes
+    let updated = match key {
+        "model.default" | "model" => {
+            cfg.model.default = value.to_string();
+            true
+        }
+        "model.base_url" | "base_url" => {
+            cfg.model.base_url = value.to_string();
+            true
+        }
+        "budget.per_task_usd" | "budget.per_task" => {
+            match value.parse::<f64>() {
+                Ok(v) => {
+                    cfg.budget.per_task_usd = v;
+                    true
+                }
+                Err(_) => {
+                    println!(
+                        "{err}Invalid number: {value}{reset}",
+                        err = theme.err(),
+                        reset = theme.reset()
+                    );
+                    false
+                }
+            }
+        }
+        "budget.per_day_usd" | "budget.per_day" => {
+            match value.parse::<f64>() {
+                Ok(v) => {
+                    cfg.budget.per_day_usd = v;
+                    true
+                }
+                Err(_) => {
+                    println!(
+                        "{err}Invalid number: {value}{reset}",
+                        err = theme.err(),
+                        reset = theme.reset()
+                    );
+                    false
+                }
+            }
+        }
+        "budget.per_month_usd" | "budget.per_month" => {
+            match value.parse::<f64>() {
+                Ok(v) => {
+                    cfg.budget.per_month_usd = v;
+                    true
+                }
+                Err(_) => {
+                    println!(
+                        "{err}Invalid number: {value}{reset}",
+                        err = theme.err(),
+                        reset = theme.reset()
+                    );
+                    false
+                }
+            }
+        }
+        "security.default_permission" | "default_permission" => {
+            if ["ask", "allow", "deny"].contains(&value) {
+                cfg.security.default_permission = value.to_string();
+                true
+            } else {
+                println!(
+                    "{err}Invalid permission value. Use: ask, allow, or deny{reset}",
+                    err = theme.err(),
+                    reset = theme.reset()
+                );
+                false
+            }
+        }
+        "security.high_risk_intercept" | "high_risk_intercept" => {
+            match value.parse::<bool>() {
+                Ok(v) => {
+                    cfg.security.high_risk_intercept = v;
+                    true
+                }
+                Err(_) => {
+                    println!(
+                        "{err}Invalid boolean: {value}. Use: true or false{reset}",
+                        err = theme.err(),
+                        reset = theme.reset()
+                    );
+                    false
+                }
+            }
+        }
+        _ => {
+            println!();
+            println!(
+                "{warn}Unsupported config key: {key}{reset}",
+                warn = theme.warn(),
+                reset = theme.reset()
+            );
+            println!();
+            println!("Supported keys:");
+            println!("  model.default         - Current model name");
+            println!("  model.base_url        - API base URL");
+            println!("  budget.per_task_usd   - Per-task budget limit");
+            println!("  budget.per_day_usd    - Per-day budget limit");
+            println!("  budget.per_month_usd  - Per-month budget limit");
+            println!("  security.default_permission - ask|allow|deny");
+            println!("  security.high_risk_intercept - true|false");
+            println!();
+            println!(
+                "{dim}For other changes, edit {} manually{reset}",
+                cfg_path.display(),
+                dim = theme.dim(),
+                reset = theme.reset()
+            );
+            println!();
+            return Ok(());
+        }
+    };
+
+    if updated {
+        // Write back the config
+        let toml_str = toml::to_string_pretty(&cfg)
+            .wrap_err("serialize config")?;
+        tokio::fs::write(&cfg_path, toml_str)
+            .await
+            .wrap_err("write config")?;
+
+        println!();
+        println!(
+            "{ok}✓{reset} Set {bold}{key}{reset} = {value}",
+            ok = theme.ok(),
+            bold = theme.bold(),
+            reset = theme.reset()
+        );
+        println!();
+    }
+
+    Ok(())
+}
+
+async fn config_reset() -> Result<()> {
+    let theme = Theme::detect();
+    let cfg_path = config_path()?;
+
+    println!();
+    print!(
+        "{warn}Reset configuration?{reset} This will remove {} [y/N] ",
+        cfg_path.display(),
+        warn = theme.warn(),
+        reset = theme.reset()
+    );
+    std::io::stdout().flush().ok();
+
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+
+    if line.trim().eq_ignore_ascii_case("y") {
+        tokio::fs::remove_file(&cfg_path).await?;
+        println!(
+            "{ok}✓{reset} Configuration reset. Run {bold}evoclaw onboard{reset} to reconfigure.",
+            ok = theme.ok(),
+            bold = theme.bold(),
+            reset = theme.reset()
+        );
+    } else {
+        println!("{dim}(cancelled){reset}", dim = theme.dim(), reset = theme.reset());
+    }
+
+    println!();
+    Ok(())
+}
+
+async fn status_cmd() -> Result<()> {
+    let theme = Theme::detect();
+    let cfg = load_config().await?;
+
+    println!();
+    println!(
+        "{bold}== Session Status =={reset}",
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!();
+
+    // Provider info
+    let provider_id = cfg
+        .model
+        .provider
+        .as_deref()
+        .unwrap_or("(unknown)");
+    let auth_method = cfg.auth.parsed();
+
+    println!(
+        "{frame}Provider:{reset}     {bold}{}{reset}",
+        provider_id,
+        frame = theme.frame(),
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!(
+        "{frame}Model:{reset}        {}",
+        cfg.model.default,
+        frame = theme.frame(),
+        reset = theme.reset()
+    );
+    println!(
+        "{frame}Auth method:{reset}  {}",
+        auth_method.as_str(),
+        frame = theme.frame(),
+        reset = theme.reset()
+    );
+
+    // Auth status
+    let auth_ok = match auth_method {
+        AuthMethod::ApiKey => {
+            onboard::secret_file(provider_id).ok().map(|p| p.exists()).unwrap_or(false)
+        }
+        AuthMethod::Browser => {
+            onboard::browser_profile_path(provider_id).ok().map(|p| p.exists()).unwrap_or(false)
+        }
+        AuthMethod::Acp => true, // ACP handles auth externally
+    };
+
+    println!(
+        "{frame}Auth status:{reset}  {}",
+        if auth_ok {
+            format!("{ok}authenticated{reset}", ok = theme.ok(), reset = theme.reset())
+        } else {
+            format!("{err}not authenticated{reset}", err = theme.err(), reset = theme.reset())
+        },
+        frame = theme.frame(),
+        reset = theme.reset()
+    );
+
+    // Session log
+    if let Ok(session_log) = session_log_path() {
+        println!(
+            "{frame}Session log:{reset}  {dim}{}{reset}",
+            session_log.display(),
+            frame = theme.frame(),
+            dim = theme.dim(),
+            reset = theme.reset()
+        );
+    }
+
+    // Config path
+    if let Ok(cfg_path) = config_path() {
+        println!(
+            "{frame}Config path:{reset}  {dim}{}{reset}",
+            cfg_path.display(),
+            frame = theme.frame(),
+            dim = theme.dim(),
+            reset = theme.reset()
+        );
+    }
+
+    // Workspace
+    if let Ok(ws) = workspace_dir() {
+        println!(
+            "{frame}Workspace:{reset}    {dim}{}{reset}",
+            ws.display(),
+            frame = theme.frame(),
+            dim = theme.dim(),
+            reset = theme.reset()
+        );
+    }
+
+    println!();
+    Ok(())
+}
+
+async fn model_show() -> Result<()> {
+    let theme = Theme::detect();
+    let cfg = load_config().await?;
+
+    println!();
+    println!(
+        "{bold}== Current Model =={reset}",
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!();
+
+    let provider_id = cfg
+        .model
+        .provider
+        .as_deref()
+        .unwrap_or("(unknown)");
+
+    println!(
+        "{frame}Provider:{reset}     {bold}{}{reset}",
+        provider_id,
+        frame = theme.frame(),
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!(
+        "{frame}Current model:{reset} {bold}{}{reset}",
+        cfg.model.default,
+        frame = theme.frame(),
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!(
+        "{frame}Base URL:{reset}      {}",
+        cfg.model.base_url,
+        frame = theme.frame(),
+        reset = theme.reset()
+    );
+
+    if !cfg.model.fallback.is_empty() {
+        println!(
+            "{frame}Fallback:{reset}      {}",
+            cfg.model.fallback.join(", "),
+            frame = theme.frame(),
+            reset = theme.reset()
+        );
+    }
+
+    println!();
+    println!(
+        "{dim}Use {reset}{bold}/model list{reset}{dim} to see available models{reset}",
+        dim = theme.dim(),
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!(
+        "{dim}Use {reset}{bold}/model set <name>{reset}{dim} to switch models{reset}",
+        dim = theme.dim(),
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!();
+
+    Ok(())
+}
+
+async fn model_list() -> Result<()> {
+    let theme = Theme::detect();
+    let cfg = load_config().await?;
+
+    println!();
+    println!(
+        "{bold}== Available Models =={reset}",
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!();
+
+    let provider_id = cfg
+        .model
+        .provider
+        .as_deref()
+        .unwrap_or("deepseek");
+
+    // Try to find the provider profile
+    if let Some(profile) = onboard::find_provider(provider_id) {
+        println!(
+            "{frame}Provider:{reset} {bold}{}{reset} ({})",
+            profile.id,
+            profile.name,
+            frame = theme.frame(),
+            bold = theme.bold(),
+            reset = theme.reset()
+        );
+        println!();
+
+        // Show default model (current)
+        let is_current_default = cfg.model.default == profile.default_model;
+        println!(
+            "  {} {bold}{}{reset}  {dim}(default){reset}",
+            if is_current_default {
+                format!("{ok}●{reset}", ok = theme.ok(), reset = theme.reset())
+            } else {
+                format!("{dim}○{reset}", dim = theme.dim(), reset = theme.reset())
+            },
+            profile.default_model,
+            bold = theme.bold(),
+            dim = theme.dim(),
+            reset = theme.reset()
+        );
+
+        // Show fallback models
+        for model in profile.fallback {
+            let is_current = cfg.model.default == *model;
+            println!(
+                "  {} {}",
+                if is_current {
+                    format!("{ok}●{reset}", ok = theme.ok(), reset = theme.reset())
+                } else {
+                    format!("{dim}○{reset}", dim = theme.dim(), reset = theme.reset())
+                },
+                model
+            );
+        }
+
+        println!();
+        println!(
+            "{dim}Use {reset}{bold}/model set <name>{reset}{dim} to switch{reset}",
+            dim = theme.dim(),
+            bold = theme.bold(),
+            reset = theme.reset()
+        );
+    } else {
+        println!(
+            "{warn}Provider '{provider_id}' not found in catalog{reset}",
+            warn = theme.warn(),
+            reset = theme.reset()
+        );
+        println!();
+        println!(
+            "{dim}Current model: {reset}{bold}{}{reset}",
+            cfg.model.default,
+            dim = theme.dim(),
+            bold = theme.bold(),
+            reset = theme.reset()
+        );
+        println!(
+            "{dim}Use {reset}{bold}/login{reset}{dim} to change provider{reset}",
+            dim = theme.dim(),
+            bold = theme.bold(),
+            reset = theme.reset()
+        );
+    }
+
+    println!();
+    Ok(())
+}
+
+async fn model_set(model_name: &str) -> Result<()> {
+    let theme = Theme::detect();
+    let cfg_path = config_path()?;
+    let mut cfg = load_config().await?;
+
+    let provider_id = cfg
+        .model
+        .provider
+        .as_deref()
+        .unwrap_or("deepseek");
+
+    // Validate the model exists for this provider
+    let profile = match onboard::find_provider(provider_id) {
+        Some(p) => p,
+        None => {
+            println!();
+            println!(
+                "{warn}Warning:{reset} Provider '{provider_id}' not found in catalog",
+                warn = theme.warn(),
+                reset = theme.reset()
+            );
+            println!(
+                "{dim}  Allowing model change anyway (custom provider?){reset}",
+                dim = theme.dim(),
+                reset = theme.reset()
+            );
+            println!();
+            // Allow setting any model for custom providers
+            cfg.model.default = model_name.to_string();
+            let toml_str = toml::to_string_pretty(&cfg)
+                .wrap_err("serialize config")?;
+            tokio::fs::write(&cfg_path, toml_str)
+                .await
+                .wrap_err("write config")?;
+            println!(
+                "{ok}✓{reset} Set model to: {bold}{model_name}{reset}",
+                ok = theme.ok(),
+                bold = theme.bold(),
+                reset = theme.reset()
+            );
+            println!();
+            return Ok(());
+        }
+    };
+
+    let valid_models: Vec<&str> = std::iter::once(profile.default_model)
+        .chain(profile.fallback.iter().copied())
+        .collect();
+
+    if !valid_models.contains(&model_name) {
+        println!();
+        println!(
+            "{err}Model '{model_name}' not available for provider '{provider_id}'{reset}",
+            err = theme.err(),
+            reset = theme.reset()
+        );
+        println!();
+        println!("Available models:");
+        for m in valid_models {
+            println!("  - {}", m);
+        }
+        println!();
+        return Ok(());
+    }
+
+    // Update the config
+    cfg.model.default = model_name.to_string();
+
+    // Write back the config
+    let toml_str = toml::to_string_pretty(&cfg)
+        .wrap_err("serialize config")?;
+    tokio::fs::write(&cfg_path, toml_str)
+        .await
+        .wrap_err("write config")?;
+
+    println!();
+    println!(
+        "{ok}✓{reset} Switched to model: {bold}{model_name}{reset}",
+        ok = theme.ok(),
+        bold = theme.bold(),
+        reset = theme.reset()
+    );
+    println!(
+        "{dim}  Provider will reload on next interaction{reset}",
+        dim = theme.dim(),
+        reset = theme.reset()
+    );
+    println!();
+
+    Ok(())
+}
+
 async fn skill_list() -> Result<()> {
     let dir = skills_dir()?;
     if !dir.exists() {
@@ -1077,13 +2554,32 @@ async fn memory_search(query: &str, limit: usize) -> Result<()> {
 // --- ACP agents ----------------------------------------------------------
 
 fn agent_catalog() {
-    println!("== Available external agents (Zed-style ACP) ==");
-    for p in evo_acp_client::CATALOG {
-        println!("  {:<10} {}", p.id, p.name);
+    println!("== Available external agents ==");
+    println!("  [native] = speaks Zed Agent Client Protocol out of the box");
+    println!(
+        "  [shim]   = does NOT speak Zed ACP; needs a custom shim or use a different provider"
+    );
+    println!();
+    for p in evo_acp_client::catalog() {
+        let badge = if p.acp_native { "[native]" } else { "[shim]  " };
+        println!("  {} {:<10} {}", badge, p.id, p.name);
         println!("    install: {}", p.install_hint);
         println!("    auth   : {}", p.auth_hint);
+        println!("    note   : {}", p.notes);
     }
-    println!("\nadd one with: evoclaw agent add <id>");
+    let paths = evo_acp_client::registry_paths();
+    println!();
+    println!("add one with: evoclaw agent add <id>");
+    if let Some(p) = paths.user_full {
+        println!(
+            "customise:    write {} (full override) or drop *.json into {} (per-id patches)",
+            p.display(),
+            paths
+                .user_patch_dir
+                .map(|d| d.display().to_string())
+                .unwrap_or_default(),
+        );
+    }
 }
 
 async fn agent_list() -> Result<()> {
@@ -1096,7 +2592,15 @@ async fn agent_list() -> Result<()> {
     }
     println!("== Configured ACP agents ==");
     for a in agents {
-        println!("  {:<10} bin={} args={:?}", a.id, a.command, a.args);
+        let badge = match evo_acp_client::find_agent(&a.id) {
+            Some(p) if p.acp_native => "[native]",
+            Some(_) => "[shim]  ",
+            None => "[custom]",
+        };
+        println!(
+            "  {} {:<10} bin={} args={:?}",
+            badge, a.id, a.command, a.args
+        );
     }
     Ok(())
 }
@@ -1134,7 +2638,7 @@ async fn agent_test(id: &str) -> Result<()> {
         eyre::eyre!(
             "{e}; install with: {}",
             evo_acp_client::find_agent(id)
-                .map(|p| p.install_hint)
+                .map(|p| p.install_hint.as_str())
                 .unwrap_or("see catalog")
         )
     })?;
@@ -1154,7 +2658,7 @@ async fn agent_test(id: &str) -> Result<()> {
 
 fn mcp_catalog() {
     println!("== Available MCP servers ==");
-    for p in evo_mcp_client::CATALOG {
+    for p in evo_mcp_client::catalog() {
         println!("  {:<14} {}", p.id, p.name);
         println!("    desc   : {}", p.description);
         println!("    install: {}", p.install_hint);
@@ -1162,7 +2666,19 @@ fn mcp_catalog() {
             println!("    env    : {}", p.auth_env.join(", "));
         }
     }
-    println!("\nadd one with: evoclaw mcp add <id>");
+    let paths = evo_mcp_client::registry_paths();
+    println!();
+    println!("add one with: evoclaw mcp add <id>");
+    if let Some(p) = paths.user_full {
+        println!(
+            "customise:    write {} (full override) or drop *.json into {} (per-id patches)",
+            p.display(),
+            paths
+                .user_patch_dir
+                .map(|d| d.display().to_string())
+                .unwrap_or_default(),
+        );
+    }
 }
 
 async fn mcp_list() -> Result<()> {
@@ -1185,9 +2701,9 @@ async fn mcp_add(id: &str) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("unknown server '{id}' — run `evoclaw mcp catalog`"))?;
     let mut cfg = evo_mcp_client::ServerConfig::from_profile(prof);
     if !prof.auth_env.is_empty() {
-        for var in prof.auth_env {
+        for var in &prof.auth_env {
             if let Ok(v) = std::env::var(var) {
-                cfg.env.push((var.to_string(), v));
+                cfg.env.push((var.clone(), v));
             }
         }
     }
@@ -1198,10 +2714,10 @@ async fn mcp_add(id: &str) -> Result<()> {
     println!("  install: {}", prof.install_hint);
     if !prof.auth_env.is_empty() {
         let captured: Vec<&String> = cfg.env.iter().map(|(k, _)| k).collect();
-        let missing: Vec<&&str> = prof
+        let missing: Vec<&String> = prof
             .auth_env
             .iter()
-            .filter(|v| !captured.iter().any(|c| c.as_str() == **v))
+            .filter(|v| !captured.iter().any(|c| c.as_str() == v.as_str()))
             .collect();
         if !missing.is_empty() {
             println!("  ⚠ missing env vars: {:?}", missing);
@@ -1356,4 +2872,211 @@ async fn most_recent_session() -> Result<PathBuf> {
     newest
         .map(|(_, p)| p)
         .ok_or_else(|| eyre::eyre!("no JSONL sessions in {}", dir.display()))
+}
+
+// ---------------------------------------------------------------------------
+// Channel adapters (v0.6 scaffolding — see docs/channels.md)
+// ---------------------------------------------------------------------------
+
+async fn channel_handler(sub: ChannelCmd) -> Result<()> {
+    match sub {
+        ChannelCmd::List => channel_list().await,
+        ChannelCmd::Run { kind } => channel_run(&kind).await,
+    }
+}
+
+fn channels_dir() -> Result<PathBuf> {
+    Ok(evoclaw_dir()?.join("channels"))
+}
+
+async fn channel_list() -> Result<()> {
+    println!("== EvoClaw channel adapters ==");
+    println!();
+    println!("built-in:");
+    println!(
+        "  {:<14} stdin/stdout JSON (reference adapter)",
+        "local-pipe"
+    );
+    println!();
+
+    let dir = channels_dir()?;
+    let external = if dir.exists() {
+        let mut entries = tokio::fs::read_dir(&dir).await?;
+        let mut found = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("toml") {
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    found.push((stem.to_string(), p));
+                }
+            }
+        }
+        found.sort();
+        found
+    } else {
+        Vec::new()
+    };
+
+    if external.is_empty() {
+        println!("external (~/.evoclaw/channels/*.toml): (none yet)");
+        println!();
+        println!("v0.6 plan: telegram, slack, discord — see docs/channels.md");
+    } else {
+        println!("external (~/.evoclaw/channels/*.toml):");
+        for (name, path) in external {
+            println!("  {:<14} {}", name, path.display());
+        }
+    }
+    Ok(())
+}
+
+async fn channel_run(kind: &str) -> Result<()> {
+    use evo_core::channel::{OutboundKind, OutboundMessage};
+    use evo_core::channel_router::{self, ChannelRouter};
+    use evo_core::local_pipe::LocalPipe;
+
+    if kind != "local-pipe" {
+        return Err(eyre::eyre!(
+            "unknown adapter '{kind}'. Built-in adapters: local-pipe. \
+             Telegram/Slack/Discord ship in v0.6 — see docs/channels.md."
+        ));
+    }
+
+    ensure_layout().await?;
+    tokio::fs::create_dir_all(channels_dir()?).await.ok();
+
+    let adapter = Arc::new(LocalPipe);
+    let mut router = ChannelRouter::new();
+    router.register(adapter.clone());
+
+    let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel(64);
+
+    // Adapters run in the background. We keep a separate `Arc<LocalPipe>`
+    // for outbound replies so the dispatch loop doesn't have to round-trip
+    // through `router.send_via`.
+    let router_handle = tokio::spawn(router.run_all(inbound_tx));
+
+    eprintln!(
+        "→ channel: local-pipe adapter ready. Send line-delimited \
+         InboundMessage JSON on stdin; replies stream to stdout."
+    );
+
+    while let Some(msg) = inbound_rx.recv().await {
+        if !channel_router::should_handle(&msg) {
+            tracing::debug!(
+                conversation_id = %msg.conversation_id,
+                "channel: skipping un-mentioned message"
+            );
+            continue;
+        }
+        let conv_id = msg.conversation_id.clone();
+        let reply = match channel_run_one_shot_text(&msg.text).await {
+            Ok(text) => OutboundMessage {
+                conversation_id: conv_id,
+                text,
+                kind: OutboundKind::Reply,
+            },
+            Err(e) => OutboundMessage {
+                conversation_id: conv_id,
+                text: format!("[error] {e:#}"),
+                kind: OutboundKind::Error,
+            },
+        };
+        if let Err(e) = adapter.send(reply).await {
+            tracing::warn!(error=?e, "channel: failed to send reply");
+        }
+    }
+
+    let _ = router_handle.await;
+    Ok(())
+}
+
+/// Thin wrapper around the conversation runtime that returns the final
+/// text instead of printing it. Used by the channel dispatch loop so the
+/// reply travels through the adapter rather than stdout-as-CLI.
+async fn channel_run_one_shot_text(input: &str) -> Result<String> {
+    let cfg = load_config().await?;
+    ensure_layout().await?;
+    let provider_id = cfg
+        .model
+        .provider
+        .clone()
+        .unwrap_or_else(|| "deepseek".into());
+    let provider: Arc<dyn Provider> = if let Some(agent_id) = provider_id.strip_prefix("acp:") {
+        let p = AcpProvider::spawn(agent_id)
+            .await
+            .map_err(|e| eyre::eyre!("{e:#}"))?;
+        Arc::new(p)
+    } else {
+        match cfg.auth.parsed() {
+            AuthMethod::Browser => {
+                let profile = onboard::load_browser_profile(&provider_id).await.wrap_err_with(
+                    || {
+                        format!(
+                            "load browser profile for '{provider_id}'. \
+                             Run `evoclaw login` and pick (2) Browser sign-in."
+                        )
+                    },
+                )?;
+                Arc::new(BrowserProvider::from_profile(&profile)) as Arc<dyn Provider>
+            }
+            AuthMethod::Acp => {
+                return Err(eyre::eyre!(
+                    "config.toml has [auth].method = \"acp\" but ACP auth is not yet supported. \
+                     Run `evoclaw login` and pick (1) API key or (2) Browser sign-in."
+                ));
+            }
+            AuthMethod::ApiKey => {
+                let (api_key, _src) = onboard::resolve_api_key(&provider_id).await?;
+                match provider_id.as_str() {
+                    "anthropic" => Arc::new(AnthropicProvider::new(
+                        api_key,
+                        cfg.model.default.clone(),
+                    )) as Arc<dyn Provider>,
+                    "copilot" => Arc::new(CopilotProvider::new(
+                        api_key,
+                        cfg.model.default.clone(),
+                    )),
+                    _ => Arc::new(OpenAiCompatProvider::new(
+                        cfg.model.base_url.clone(),
+                        api_key,
+                        cfg.model.default.clone(),
+                    )),
+                }
+            }
+        }
+    };
+    let mut registry = ToolRegistry::with_builtins();
+    let _attached = mcp_tools::install_all(&mut registry).await;
+    let registry = Arc::new(registry);
+    let task_id = format!("task-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f"));
+    let log_path = logs_dir()?.join(format!("{task_id}.jsonl"));
+    let session = Session::open(&log_path).await?;
+    let tool_ctx = ToolContext {
+        workspace: workspace_dir()?,
+        // Channel-driven runs are non-interactive — never block on a tty
+        // prompt for permission upgrades.
+        allow_user_prompt: false,
+        ..Default::default()
+    };
+    let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
+    let memory = Memory::at(memory_dir()?);
+    let vault = Vault::load(&vault_path()?).await.unwrap_or_default();
+    let redactor = Redactor::from_vault(&vault);
+    let mut runtime = ConversationRuntime::new(
+        provider,
+        registry,
+        session,
+        tool_ctx,
+        evo_core::runtime::RuntimeConfig {
+            model: cfg.model.default.clone(),
+            ..Default::default()
+        },
+    )
+    .with_cost_engine(cost_engine)
+    .with_memory(memory)
+    .with_skills_dir(skills_dir()?)
+    .with_redactor(redactor);
+    let outcome = runtime.run(input).await?;
+    Ok(outcome.final_text)
 }

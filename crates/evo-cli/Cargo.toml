@@ -30,6 +30,10 @@ evo-policy    = { workspace = true }
 evo-acp-client = { workspace = true }
 evo-mcp-client = { workspace = true }
 reqwest       = { workspace = true }
+# Line-editor for the interactive REPL: arrow-key history, ctrl-r reverse
+# search, persistent history file. Default features include readline-style
+# editing on Unix and Windows.
+rustyline     = "14"
 
 [features]
 default = []

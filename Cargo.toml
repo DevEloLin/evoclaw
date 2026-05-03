@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.1.9"
+version      = "0.3.0"
 edition      = "2021"
 rust-version = "1.80"
 license      = "MIT"
@@ -23,7 +23,7 @@ repository   = "https://github.com/DevEloLin/evoclaw"
 
 [workspace.dependencies]
 # core deps
-tokio          = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "fs", "process", "time", "sync"] }
+tokio          = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "fs", "process", "time", "sync", "net"] }
 async-trait    = "0.1"
 futures        = "0.3"
 serde          = { version = "1", features = ["derive"] }
@@ -53,6 +53,11 @@ bytes          = "1"
 
 # tools
 inventory      = "0.3"
+
+# Zed Agent Client Protocol (ACP) SDK — pinned to the same version Zed uses
+# in tmp/zed/Cargo.toml. Replaces the hand-rolled JSON-RPC client that was
+# previously in `evo-stdio-rpc` + `evo-acp-client`.
+agent-client-protocol = { version = "=0.11.1", features = ["unstable"] }
 
 # internal
 evo-core       = { path = "crates/evo-core" }

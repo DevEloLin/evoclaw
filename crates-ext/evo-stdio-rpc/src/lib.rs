@@ -7,11 +7,28 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
+/// Default upper bound on a single `call` waiting for its response. Configurable
+/// via [`RpcConfig::call_timeout`].
+pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Hard cap on how many non-matching JSON-RPC envelopes (notifications or
+/// responses for older ids) we will skip while waiting for our own id. Defeats
+/// a malicious or buggy child flooding the channel with notifications.
+const MAX_SKIPPED_NOTIFICATIONS: usize = 1024;
+
+/// Minimal safe environment baseline that the child inherits from the parent
+/// after `env_clear()`. Anything outside this list (notably `EVO_API_KEY`,
+/// `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) MUST be re-injected explicitly
+/// via `SpawnConfig::env`.
+const SAFE_ENV_KEYS: &[&str] = &["PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "TERM"];
+
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RpcError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -23,6 +40,10 @@ pub enum RpcError {
     Exited,
     #[error("command not found: {0}")]
     CommandNotFound(String),
+    #[error("rpc call timed out after {0:?}")]
+    Timeout(Duration),
+    #[error("too many notifications received while awaiting response")]
+    TooManyNotifications,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,9 +85,25 @@ pub struct SpawnConfig {
     pub cwd: Option<PathBuf>,
 }
 
+/// Tunable knobs for [`StdioRpcClient`]. All fields have sane defaults.
+#[derive(Debug, Clone)]
+pub struct RpcConfig {
+    /// Upper bound on a single `call` waiting for its response.
+    pub call_timeout: Duration,
+}
+
+impl Default for RpcConfig {
+    fn default() -> Self {
+        Self {
+            call_timeout: DEFAULT_CALL_TIMEOUT,
+        }
+    }
+}
+
 pub struct StdioRpcClient {
     inner: Arc<Mutex<Inner>>,
     next_id: Arc<AtomicU64>,
+    cfg: RpcConfig,
 }
 
 struct Inner {
@@ -77,6 +114,10 @@ struct Inner {
 
 impl StdioRpcClient {
     pub fn new() -> Self {
+        Self::with_config(RpcConfig::default())
+    }
+
+    pub fn with_config(cfg: RpcConfig) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 child: None,
@@ -84,6 +125,7 @@ impl StdioRpcClient {
                 reader: None,
             })),
             next_id: Arc::new(AtomicU64::new(1)),
+            cfg,
         }
     }
 
@@ -102,6 +144,16 @@ impl StdioRpcClient {
             // is dropped without an explicit shutdown(). Belt-and-braces:
             // shutdown() still calls start_kill+wait when invoked directly.
             .kill_on_drop(true);
+        // SECURITY: scrub the inherited environment so a compromised child
+        // cannot read EVO_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY /
+        // arbitrary tokens from `std::env::var`. Re-add only the minimal set
+        // needed for the child to find binaries, locale, terminal, etc.
+        cmd.env_clear();
+        for key in SAFE_ENV_KEYS {
+            if let Ok(value) = std::env::var(key) {
+                cmd.env(key, value);
+            }
+        }
         for (k, v) in &cfg.env {
             cmd.env(k, v);
         }
@@ -147,25 +199,38 @@ impl StdioRpcClient {
         let stdin = g.stdin.as_mut().ok_or(RpcError::Exited)?;
         stdin.write_all(line.as_bytes()).await?;
         stdin.flush().await?;
-        loop {
-            let reader = g.reader.as_mut().ok_or(RpcError::Exited)?;
-            let mut buf = String::new();
-            let n = reader.read_line(&mut buf).await?;
-            if n == 0 {
-                return Err(RpcError::Exited);
+
+        let timeout = self.cfg.call_timeout;
+        let read_loop = async {
+            let mut skipped = 0usize;
+            loop {
+                let reader = g.reader.as_mut().ok_or(RpcError::Exited)?;
+                let mut buf = String::new();
+                let n = reader.read_line(&mut buf).await?;
+                if n == 0 {
+                    return Err(RpcError::Exited);
+                }
+                let resp: JsonRpcResponse = serde_json::from_str(&buf)
+                    .map_err(|e| RpcError::Decode(format!("response: {e}; line: {buf}")))?;
+                if resp.id != Some(id) {
+                    skipped += 1;
+                    if skipped > MAX_SKIPPED_NOTIFICATIONS {
+                        return Err(RpcError::TooManyNotifications);
+                    }
+                    continue;
+                }
+                if let Some(err) = resp.error {
+                    return Err(RpcError::Rpc {
+                        code: err.code,
+                        message: err.message,
+                    });
+                }
+                return Ok(resp.result.unwrap_or(Value::Null));
             }
-            let resp: JsonRpcResponse = serde_json::from_str(&buf)
-                .map_err(|e| RpcError::Decode(format!("response: {e}; line: {buf}")))?;
-            if resp.id != Some(id) {
-                continue;
-            } // skip notifications / older ids
-            if let Some(err) = resp.error {
-                return Err(RpcError::Rpc {
-                    code: err.code,
-                    message: err.message,
-                });
-            }
-            return Ok(resp.result.unwrap_or(Value::Null));
+        };
+        match tokio::time::timeout(timeout, read_loop).await {
+            Ok(res) => res,
+            Err(_) => Err(RpcError::Timeout(timeout)),
         }
     }
 
@@ -245,6 +310,12 @@ mod tests {
         assert_eq!(r.error.unwrap().code, -32601);
     }
 
+    #[test]
+    fn rpc_config_default_uses_60s_timeout() {
+        let c = RpcConfig::default();
+        assert_eq!(c.call_timeout, Duration::from_secs(60));
+    }
+
     #[tokio::test]
     async fn spawning_missing_command_returns_clear_error() {
         let cli = StdioRpcClient::new();
@@ -256,5 +327,31 @@ mod tests {
         };
         let err = cli.spawn(cfg).await.unwrap_err();
         assert!(matches!(err, RpcError::CommandNotFound(_)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn call_times_out_when_child_never_responds() {
+        // `sleep` neither reads stdin nor writes stdout — the request line we
+        // pipe into the child sits unread and we never get a response.
+        // (`cat` echoes stdin to stdout, so `call` would mis-parse the
+        // request itself as a response and never hit the timeout branch.)
+        // With a tight timeout, `call` must return `RpcError::Timeout`.
+        let cli = StdioRpcClient::with_config(RpcConfig {
+            call_timeout: Duration::from_millis(150),
+        });
+        let cfg = SpawnConfig {
+            command: PathBuf::from("/bin/sleep"),
+            args: vec!["60".into()],
+            env: vec![],
+            cwd: None,
+        };
+        cli.spawn(cfg).await.unwrap();
+        let err = cli.call("ping", json!({})).await.unwrap_err();
+        assert!(
+            matches!(err, RpcError::Timeout(_)),
+            "expected Timeout, got {err:?}"
+        );
+        let _ = cli.shutdown().await;
     }
 }

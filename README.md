@@ -18,7 +18,7 @@
 
 <p align="center">
   <b>🌐 Website</b>: <a href="https://develolin.github.io/EvoClawSite/">develolin.github.io/EvoClawSite</a> ·
-  <b>📦 Version</b>: <a href="./version"><code>v0.1.9</code></a> ·
+  <b>📦 Version</b>: <a href="./version"><code>v0.3.0</code></a> ·
   <b>🇨🇳 中文文档</b>: <a href="./docs/zh/README.md">docs/zh/README.md</a>
 </p>
 
@@ -48,7 +48,7 @@ A handful of design choices we made that we think matter:
 | **6-line system prompt cap** | enforced in CI by `scripts/check.sh`; every tool description capped at 80 chars |
 | **Permission ladder P0..P8** | totally ordered; default ceiling **P1**; channel senders hard-capped at **P4** regardless of config |
 | **Three-tier budget engine** | per-task hard stop, per-day soft warn + hard cap (4×), per-month hard cap; `doctor-of tokens` reports cache-hit rate |
-| **Standard CLI ergonomics** | run `evoclaw` with no subcommand → REPL with slash commands (`/agent /mcp /secret /skill /memory /tokens /closure /replay /doctor`) |
+| **Standard CLI ergonomics** | run `evoclaw` with no subcommand → REPL with slash commands (`/agent /mcp /secret /skill /memory /tokens /closure /replay /doctor /logout /config /status /model /usage`) |
 | **Zero telemetry** | no analytics SDK, no remote pings, no "anonymous usage statistics" toggle hiding the real one |
 | **Local-first by default** | every byte of state lives under `~/.evoclaw/` on your machine — vault, agents/*.toml, mcp/*.toml, JSONL logs, learned Skills |
 
@@ -134,7 +134,7 @@ $ evoclaw
    ║      ███████╗██╗   ██╗ ██████╗  ██████╗██╗      █████╗ ██╗    ║
    ║      ██╔════╝██║   ██║██╔═══██╗██╔════╝██║     ██╔══██╗██║    ║
    ║                          ...                                  ║
-   ║             local-first · self-evolving · v0.1.9              ║
+   ║             local-first · self-evolving · v0.3.0              ║
    ╚═══════════════════════════════════════════════════════════════╝
 
    ┌─ context ─────────────────────────────────────────────────────┐
@@ -297,7 +297,7 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 7   — Multi-channel        | ⏳ v0.6 plan | future     | Telegram / Slack / Discord plugins, Local Dashboard, trust-FSM auto-promote, group-mention enforcement |
 | 8   — Deep hardening       | ⏳ v0.7 plan | future     | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
-Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.1.9.
+Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.3.0.
 
 ---
 
@@ -321,7 +321,7 @@ The version of this code is recorded in [`./version`](./version). The site repo 
 - `EvoClaw/version` (this repo)
 - `EvoClawSite/version`
 
-A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.1.9`**.
+A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.3.0`**.
 
 ---
 

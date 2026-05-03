@@ -17,6 +17,29 @@ pub struct AcpProvider {
 
 impl AcpProvider {
     pub async fn spawn(agent_id: &str) -> Result<Self, ProviderError> {
+        // Catalog-level pre-flight: bail BEFORE the subprocess is spawned if
+        // the picked agent is in our catalog and known not to speak Zed ACP.
+        // Avoids the confusing "error: unknown option '--acp'" /
+        // "subprocess exited unexpectedly" pair the upstream CLI emits when
+        // it doesn't recognise the protocol flag. Custom (user-added) agents
+        // not in CATALOG bypass this check — they're escape-hatch shims.
+        if let Some(profile) = evo_acp_client::find_agent(agent_id) {
+            if !profile.acp_native {
+                let native: Vec<&str> = evo_acp_client::catalog()
+                    .iter()
+                    .filter(|p| p.acp_native)
+                    .map(|p| p.id.as_str())
+                    .collect();
+                return Err(ProviderError::Auth(format!(
+                    "agent '{}' ({}) does not implement Zed Agent Client Protocol natively. \
+                     {} Zed-ACP-native options today: {}.",
+                    profile.id,
+                    profile.name,
+                    profile.notes,
+                    native.join(", "),
+                )));
+            }
+        }
         let cfg = evo_acp_client::load_agent(agent_id).await.map_err(|e| {
             ProviderError::Auth(format!(
                 "load agent {agent_id}: {e}; run `evoclaw agent add {agent_id}` first"
@@ -28,14 +51,20 @@ impl AcpProvider {
                 "spawn {} failed: {e}; install: {}",
                 cfg.command,
                 evo_acp_client::find_agent(agent_id)
-                    .map(|p| p.install_hint)
+                    .map(|p| p.install_hint.as_str())
                     .unwrap_or("(catalog)"),
             ))
         })?;
         client
             .initialize("evoclaw", env!("CARGO_PKG_VERSION"))
             .await
-            .map_err(|e| ProviderError::Auth(format!("ACP initialize: {e}")))?;
+            .map_err(|e| {
+                ProviderError::Auth(format!(
+                    "ACP initialize: {e} — the upstream CLI exited before completing the handshake. \
+                     This usually means it does not implement Zed Agent Client Protocol; \
+                     pick a different `provider` or remove the ACP wrapper."
+                ))
+            })?;
         Ok(Self {
             client,
             agent_id: agent_id.into(),

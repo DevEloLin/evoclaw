@@ -174,7 +174,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 | 升号 | 触发条件 |
 |------|---------|
-| `+1` patch（`v0.1.9 → v0.1.10`） | bug 修复、文档重写、CI 工作流改动、加 LICENSE 等。 |
+| `+1` patch（`v0.2.0 → v0.2.1`） | bug 修复、文档重写、CI 工作流改动、加 LICENSE 等。 |
 | `+1` minor（`v0.1.x → v0.2.0`） | 新 CLI 子命令、新内置工具、新内置 provider / MCP profile，向后兼容的扩展。 |
 | `+1` major（`v0.x.y → v1.0.0`） | 改 `~/.evoclaw/` 目录结构、JSONL 记录 schema、公共 Rust API 或 CLI flag 的破坏性变更。 |
 
