@@ -502,6 +502,7 @@ dependencies = [
  "evo-providers",
  "evo-tools",
  "eyre",
+ "libc",
  "reqwest",
  "rustyline",
  "serde",
