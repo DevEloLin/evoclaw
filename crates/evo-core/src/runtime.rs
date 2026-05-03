@@ -22,8 +22,27 @@ use evo_providers::{
 };
 use evo_tools::{ToolContext, ToolError, ToolRegistry};
 use futures::StreamExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Upper bound on a single provider streaming call inside the per-turn loop.
+/// On timeout the turn is recorded as a failure and the run is aborted with
+/// `completed = false` (partial assistant text preserved).
+const TURN_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Upper bound on the reflection / distillation provider call. These are
+/// best-effort closeouts; on timeout we fall back to the quick synthesiser.
+const REFLECTION_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Marker text used by `head_tail` to signal the omitted middle section.
+const OMIT: &str = " ... ";
+
+/// After this many consecutive `Err(_)` results from the budget engine we
+/// treat the cost log as unreadable and hard-stop the loop (no cost
+/// visibility = stop spending money).
+const BUDGET_ERR_HARD_STOP: u32 = 3;
 
 /// Phase 2.7 — explicit Task FSM (PRD §31).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -61,6 +80,38 @@ pub struct RunOutcome {
     pub turns: u64,
     pub final_text: String,
     pub completed: bool,
+    /// Token usage rolled up across every turn that reported a `Usage`
+    /// stream event. Defaults to zero for providers that don't report it
+    /// (notably ACP, since the upstream agent owns its own metering).
+    pub usage: RunUsage,
+}
+
+/// Aggregate token usage for an entire `run()` invocation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunUsage {
+    pub input_tokens: u64,
+    pub cached_tokens: u64,
+    pub output_tokens: u64,
+    /// How many turns actually carried a `Usage` event. Useful to
+    /// distinguish "0 because the provider doesn't report" from "0 because
+    /// the prompt was empty".
+    pub turns_with_usage: u64,
+}
+
+impl RunUsage {
+    pub fn cache_hit_rate(&self) -> f64 {
+        if self.input_tokens == 0 {
+            0.0
+        } else {
+            self.cached_tokens as f64 / self.input_tokens as f64
+        }
+    }
+    fn add(&mut self, u: &evo_providers::Usage) {
+        self.input_tokens = self.input_tokens.saturating_add(u.input_tokens);
+        self.cached_tokens = self.cached_tokens.saturating_add(u.cached_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(u.output_tokens);
+        self.turns_with_usage = self.turns_with_usage.saturating_add(1);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +120,13 @@ pub struct RuntimeConfig {
     pub max_tokens: u32,
     pub temperature: f32,
     pub model: String,
+    /// Run the reflection-and-distillation closeout after a successful task
+    /// (PRD §11). Defaults to `true` to preserve memory/skill learning for
+    /// regular API providers. ACP-backed providers should turn this off
+    /// because the upstream agent IS already a full agent — letting it
+    /// double-bill on a "reflection" prompt for every short interaction
+    /// can easily double-or-triple the wall time of trivial questions.
+    pub reflection_enabled: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -78,6 +136,7 @@ impl Default for RuntimeConfig {
             max_tokens: 1024,
             temperature: 0.2,
             model: "gpt-4o-mini".into(),
+            reflection_enabled: true,
         }
     }
 }
@@ -207,12 +266,26 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             }))
             .await?;
 
+        // PRD §16 — JSONL closure invariant: every task must end with an `End`
+        // record. The guard below uses a sync `std::fs::OpenOptions` append on
+        // Drop so even a panic inside the loop still seals the log. Flipped to
+        // `true` immediately before the normal `End` record is written.
+        let end_written = Arc::new(AtomicBool::new(false));
+        let _session_guard = SessionEndGuard {
+            path: self.session.path().to_path_buf(),
+            end_written: end_written.clone(),
+        };
+
         let system_msg = Message::system(build_system_prompt(&self.prompt_ctx));
         let mut history: Vec<Message> = vec![system_msg];
         let mut next_user_payload = self.compose_initial_user_msg(&user_input_safe);
         let mut completed = false;
         let mut final_text = String::new();
+        let mut last_assistant_text_safe = String::new();
         let mut turn = 0u64;
+        let mut budget_err_streak: u32 = 0;
+        let mut tool_error_count: u32 = 0;
+        let mut total_usage = RunUsage::default();
 
         while turn < self.config.max_turns {
             history.push(next_user_payload.clone());
@@ -220,13 +293,31 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             // PRD §42.5 — periodic tag-level compression of older history.
             compress_if_due(&mut history, turn, self.compression_cfg);
 
-            // PRD §35 — pre-flight budget check.
+            // PRD §35 — pre-flight budget check. Soft warns are surfaced via
+            // `tracing::warn!`; transient I/O errors are tolerated up to
+            // `BUDGET_ERR_HARD_STOP` consecutive failures, after which we
+            // hard-stop (no cost visibility = stop spending money).
             if let Some(cost) = &self.cost {
                 match cost.check_for_task(&task_id).await {
                     Ok(BudgetCheck::HardStop(level)) => {
                         return Err(RuntimeError::Budget(format!("hard stop: {level:?}")));
                     }
-                    Ok(_) | Err(_) => { /* SoftWarn / IO error: continue */ }
+                    Ok(BudgetCheck::SoftWarn(level)) => {
+                        budget_err_streak = 0;
+                        tracing::warn!(?level, "soft budget warning");
+                    }
+                    Ok(BudgetCheck::Ok) => {
+                        budget_err_streak = 0;
+                    }
+                    Err(e) => {
+                        budget_err_streak = budget_err_streak.saturating_add(1);
+                        tracing::warn!(error=?e, streak=budget_err_streak, "budget check failed");
+                        if budget_err_streak >= BUDGET_ERR_HARD_STOP {
+                            return Err(RuntimeError::Budget(format!(
+                                "cost log unreadable for {budget_err_streak} consecutive checks"
+                            )));
+                        }
+                    }
                 }
             }
 
@@ -241,24 +332,56 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 temperature: self.config.temperature,
             };
 
-            let mut stream = self.provider.stream(req).await?;
             let mut assistant_text = String::new();
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             let mut usage = None;
 
-            while let Some(event) = stream.next().await {
-                match event? {
-                    StreamEvent::Delta(t) => assistant_text.push_str(&t),
-                    StreamEvent::ToolCallStart(tc) => tool_calls.push(tc),
-                    StreamEvent::ToolCallFinish => {}
-                    StreamEvent::Usage(u) => usage = Some(u),
-                    StreamEvent::Done => break,
+            // Bound the entire provider stream (open + drain) by `TURN_TIMEOUT`.
+            // On timeout the partial assistant text is preserved, a synthetic
+            // failed-turn record is appended, and the run ends with
+            // `completed = false`.
+            let stream_fut = async {
+                let mut stream = self.provider.stream(req).await?;
+                while let Some(event) = stream.next().await {
+                    match event? {
+                        StreamEvent::Delta(t) => assistant_text.push_str(&t),
+                        StreamEvent::ToolCallStart(tc) => tool_calls.push(tc),
+                        StreamEvent::ToolCallFinish => {}
+                        StreamEvent::Usage(u) => usage = Some(u),
+                        StreamEvent::Done => break,
+                    }
+                }
+                Ok::<(), ProviderError>(())
+            };
+            match tokio::time::timeout(TURN_TIMEOUT, stream_fut).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(RuntimeError::Provider(e)),
+                Err(_) => {
+                    tracing::warn!(turn, "provider stream timed out");
+                    let assistant_text_safe = self.scrub(&assistant_text);
+                    last_assistant_text_safe = assistant_text_safe.clone();
+                    self.session
+                        .append(&SessionRecord::Turn(TurnRecord {
+                            turn,
+                            summary: Some(format!(
+                                "[ERROR] provider stream timeout after {}s",
+                                TURN_TIMEOUT.as_secs()
+                            )),
+                            tool_calls: Vec::new(),
+                            usage: None,
+                            ts: Utc::now(),
+                        }))
+                        .await?;
+                    turn += 1;
+                    completed = false;
+                    break;
                 }
             }
 
             // Scrub assistant text in case the model echoed a registered secret
             // (it shouldn't, but treat the boundary as untrusted).
             let assistant_text_safe = self.scrub(&assistant_text);
+            last_assistant_text_safe = assistant_text_safe.clone();
             let safe_calls: Vec<ToolCall> = tool_calls
                 .iter()
                 .map(|c| ToolCall {
@@ -280,10 +403,14 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             let mut recorded_calls = Vec::with_capacity(tool_calls.len());
             let mut tool_results: Vec<ToolResult> = Vec::with_capacity(tool_calls.len());
             for call in &tool_calls {
+                // PRD §13.4 — dispatch the *scrubbed* args (not the raw model
+                // output). Built-in tools and MCP wrappers both consume JSON,
+                // so a scrubbed `Value` is a safe substitute and prevents an
+                // MCP server from receiving a secret the model echoed back.
                 let safe_args = self.scrub_value(&call.arguments);
                 match self
                     .registry
-                    .invoke(&self.tool_ctx, &call.name, call.arguments.clone())
+                    .invoke(&self.tool_ctx, &call.name, safe_args.clone())
                     .await
                 {
                     Ok(out) => {
@@ -301,6 +428,7 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                         });
                     }
                     Err(e) => {
+                        tool_error_count = tool_error_count.saturating_add(1);
                         let err = self.scrub(&e.to_string());
                         recorded_calls.push(RecordedToolCall {
                             name: call.name.clone(),
@@ -332,6 +460,9 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                     })
                     .await;
             }
+            if let Some(u) = usage.as_ref() {
+                total_usage.add(u);
+            }
 
             self.session
                 .append(&SessionRecord::Turn(TurnRecord {
@@ -357,12 +488,28 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             turn += 1;
         }
 
+        // Fix 3 — preserve partial progress: if the loop exited without
+        // `completed = true` but the last assistant turn produced text,
+        // surface that to the caller instead of an empty string.
+        if !completed && final_text.is_empty() && !last_assistant_text_safe.is_empty() {
+            final_text = last_assistant_text_safe.clone();
+        }
+
         // Phase 2 — reflection round before terminal state record. Pass the
         // already-scrubbed user_input so reflection cannot leak secrets even
         // by accident.
-        let reflection = if completed && (self.memory.is_some() || self.skills_dir.is_some()) {
-            self.reflection_round(&task_id, &final_text, &user_input_safe)
-                .await
+        let reflection = if completed
+            && self.config.reflection_enabled
+            && (self.memory.is_some() || self.skills_dir.is_some())
+        {
+            self.reflection_round(
+                &task_id,
+                &final_text,
+                &user_input_safe,
+                completed,
+                tool_error_count,
+            )
+            .await
         } else {
             None
         };
@@ -373,6 +520,9 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             (false, _) => TaskState::Failed,
         };
 
+        // Flip the panic-safety flag *before* appending the real End record so
+        // the SessionEndGuard does not double-write on Drop.
+        end_written.store(true, Ordering::SeqCst);
         self.session
             .append(&SessionRecord::End(EndRecord {
                 state: format!("{terminal:?}").to_uppercase(),
@@ -388,6 +538,7 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             turns: turn + 1,
             final_text,
             completed,
+            usage: total_usage,
         })
     }
 
@@ -398,6 +549,8 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         task_id: &str,
         final_text: &str,
         user_input: &str,
+        completed: bool,
+        tool_error_count: u32,
     ) -> Option<ReflectionRecord> {
         // Build a reflection-only ChatRequest (no tools).
         let prompt = build_reflection_prompt(&ReflectionCtx {
@@ -416,20 +569,33 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             temperature: 0.0,
         };
 
-        let mut text = String::new();
-        match self.provider.stream(req).await {
-            Ok(mut s) => {
-                while let Some(ev) = s.next().await {
-                    match ev {
-                        Ok(StreamEvent::Delta(t)) => text.push_str(&t),
-                        Ok(StreamEvent::Done) => break,
-                        Ok(_) => {}
-                        Err(_) => return None,
+        // Bound the reflection provider call. On timeout / error we return
+        // `None`; the run still completes normally.
+        let stream_fut = async {
+            let mut text = String::new();
+            match self.provider.stream(req).await {
+                Ok(mut s) => {
+                    while let Some(ev) = s.next().await {
+                        match ev {
+                            Ok(StreamEvent::Delta(t)) => text.push_str(&t),
+                            Ok(StreamEvent::Done) => break,
+                            Ok(_) => {}
+                            Err(_) => return None,
+                        }
                     }
+                    Some(text)
                 }
+                Err(_) => None,
             }
-            Err(_) => return None,
-        }
+        };
+        let text = match tokio::time::timeout(REFLECTION_TIMEOUT, stream_fut).await {
+            Ok(Some(t)) => t,
+            Ok(None) => return None,
+            Err(_) => {
+                tracing::warn!(task_id, "reflection provider call timed out");
+                return None;
+            }
+        };
 
         let refl = match parse_reflection(&text) {
             Ok(r) => r,
@@ -451,13 +617,20 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             let _ = mem.write(record).await;
         }
 
-        // Distillation → Skill DRAFT (PRD §11.3).
+        // Distillation → Skill DRAFT (PRD §11.3) plus sandbox FSM advancement
+        // (Fix 5: a Draft skill that never gets a sandbox verdict is stuck —
+        // Active promotion can never trigger).
         if let Some(dir) = self.skills_dir.clone() {
             if !matches!(refl.skill_update_decision, SkillUpdateDecision::None) {
                 let skill = self
                     .distil_skill(task_id, &refl, user_input, final_text)
                     .await;
-                if let Some(sk) = skill {
+                if let Some(mut sk) = skill {
+                    if completed && tool_error_count == 0 {
+                        sk.record_sandbox_pass();
+                    } else {
+                        sk.record_sandbox_fail();
+                    }
                     let _ = sk.save_yaml(&dir).await;
                 }
             }
@@ -489,21 +662,33 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             max_tokens: 1024,
             temperature: 0.0,
         };
-        let mut text = String::new();
-        if let Ok(mut s) = self.provider.stream(req).await {
-            while let Some(ev) = s.next().await {
-                match ev {
-                    Ok(StreamEvent::Delta(t)) => text.push_str(&t),
-                    Ok(StreamEvent::Done) => break,
-                    Ok(_) => {}
-                    Err(_) => {
-                        return Some(skill_from_reflection_quick(reflection, task_id, user_input))
+        // Bound the distillation provider call. On timeout / error fall back
+        // to the local `skill_from_reflection_quick` synthesiser.
+        let stream_fut = async {
+            let mut text = String::new();
+            match self.provider.stream(req).await {
+                Ok(mut s) => {
+                    while let Some(ev) = s.next().await {
+                        match ev {
+                            Ok(StreamEvent::Delta(t)) => text.push_str(&t),
+                            Ok(StreamEvent::Done) => break,
+                            Ok(_) => {}
+                            Err(_) => return None,
+                        }
                     }
+                    Some(text)
                 }
+                Err(_) => None,
             }
-        } else {
-            return Some(skill_from_reflection_quick(reflection, task_id, user_input));
-        }
+        };
+        let text = match tokio::time::timeout(REFLECTION_TIMEOUT, stream_fut).await {
+            Ok(Some(t)) => t,
+            Ok(None) => return Some(skill_from_reflection_quick(reflection, task_id, user_input)),
+            Err(_) => {
+                tracing::warn!(task_id, "distillation provider call timed out");
+                return Some(skill_from_reflection_quick(reflection, task_id, user_input));
+            }
+        };
         match parse_distilled_skill(&text, task_id) {
             Ok(sk) => Some(sk),
             Err(_) => Some(skill_from_reflection_quick(reflection, task_id, user_input)),
@@ -538,13 +723,13 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
 }
 
 fn head_tail(s: &str, max: usize) -> String {
-    if s.len() <= max + 8 {
+    if s.len() <= max + OMIT.len() * 2 {
         return s.to_string();
     }
     let half = max / 2;
     let head_end = floor_char_boundary(s, half);
     let tail_start = ceil_char_boundary(s, s.len().saturating_sub(half));
-    format!("{} ... {}", &s[..head_end], &s[tail_start..])
+    format!("{}{OMIT}{}", &s[..head_end], &s[tail_start..])
 }
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
     while i > 0 && !s.is_char_boundary(i) {
@@ -557,6 +742,44 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+/// PRD §16 — JSONL closure invariant guard.
+///
+/// If `run()` returns / panics without writing the terminal `End` record
+/// (`end_written` still `false`), the guard's `Drop` synchronously appends a
+/// synthetic `state = "FAILED"` record using `std::fs` so downstream tools
+/// (`evoclaw doctor closure`) still see a sealed log. We use sync I/O here
+/// because `Drop` cannot be async.
+struct SessionEndGuard {
+    path: PathBuf,
+    end_written: Arc<AtomicBool>,
+}
+
+impl Drop for SessionEndGuard {
+    fn drop(&mut self) {
+        if self.end_written.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = append_synthetic_end(&self.path);
+    }
+}
+
+fn append_synthetic_end(path: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let synthetic = SessionRecord::End(EndRecord {
+        state: "FAILED".to_string(),
+        finished_at: Utc::now(),
+    });
+    let mut line = serde_json::to_string(&synthetic)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    line.push('\n');
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    f.write_all(line.as_bytes())?;
+    f.flush()
 }
 
 #[cfg(test)]
