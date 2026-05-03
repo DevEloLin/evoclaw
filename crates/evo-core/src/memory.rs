@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -66,13 +68,23 @@ impl Memory {
 
     pub async fn write(&self, mut record: MemoryRecord) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&self.root).await?;
+        // Redact BEFORE serialising so the on-disk JSONL never sees raw secrets.
         record.content = redact(&record.content);
         let path = self.layer_path(record.layer);
-        let line = serde_json::to_string(&record)?;
-        let mut content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-        content.push_str(&line);
-        content.push('\n');
-        tokio::fs::write(&path, content).await
+        let mut line = serde_json::to_string(&record)?;
+        line.push('\n');
+        // POSIX O_APPEND writes are atomic up to PIPE_BUF (4096 bytes), which
+        // covers the typical MemoryRecord. Two concurrent gateway writers no
+        // longer race-clobber the file the way the previous read-modify-write
+        // path did. TODO: extremely large reflection records (>PIPE_BUF) may
+        // still interleave; acceptable for now until we add per-layer locks.
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+        f.write_all(line.as_bytes()).await?;
+        f.flush().await
     }
 
     pub async fn read_all(&self, layer: MemoryLayer) -> std::io::Result<Vec<MemoryRecord>> {

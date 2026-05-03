@@ -1,0 +1,132 @@
+{
+  "$comment": "Default ACP agent registry for EvoClaw. Embedded at compile time via include_str!. Users can override the entire catalog by writing ~/.evoclaw/agents/registry.json or add/override single entries by dropping JSON files into ~/.evoclaw/agents/registry.d/. Distribution kinds: 'npx' = `npx -y <package> <args>`; 'command' = direct exec of <cmd> <args> from PATH; 'binary' = pure metadata, install_hint tells the user how to fetch it.",
+  "version": "1.0",
+  "agents": [
+    {
+      "id": "claude",
+      "name": "Claude Agent (Anthropic)",
+      "description": "Official Anthropic+Zed ACP wrapper around Claude Code.",
+      "install_hint": "uses npx to fetch @agentclientprotocol/claude-agent-acp on first run (no global install needed)",
+      "auth_hint": "first run: opens https://claude.ai/login (your Claude subscription)",
+      "acp_native": true,
+      "notes": "Same package Zed installs from the ACP Registry.",
+      "distribution": {
+        "kind": "npx",
+        "package": "@agentclientprotocol/claude-agent-acp@latest",
+        "args": []
+      }
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI (Google)",
+      "description": "Google's gemini-cli with native --experimental-acp support.",
+      "install_hint": "npm install -g @google/gemini-cli",
+      "auth_hint": "first run: `gemini` opens Google OAuth (Gemini Code Assist) or set GEMINI_API_KEY",
+      "acp_native": true,
+      "notes": "Built into the official @google/gemini-cli package via --experimental-acp.",
+      "distribution": {
+        "kind": "command",
+        "cmd": "gemini",
+        "args": ["--experimental-acp"]
+      }
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI (OpenAI)",
+      "description": "Zed-maintained ACP adapter around OpenAI's Codex CLI.",
+      "install_hint": "uses npx to fetch @zed-industries/codex-acp on first run (binary releases at github.com/zed-industries/codex-acp)",
+      "auth_hint": "first run: opens https://chatgpt.com/oauth (your ChatGPT subscription)",
+      "acp_native": true,
+      "notes": "From the ACP Registry; npx distribution avoids platform-specific binaries.",
+      "distribution": {
+        "kind": "npx",
+        "package": "@zed-industries/codex-acp@latest",
+        "args": []
+      }
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor Agent",
+      "description": "Cursor's coding agent with native ACP via the `acp` subcommand.",
+      "install_hint": "Cursor IDE installs `cursor-agent`; see https://docs.cursor.com/cli",
+      "auth_hint": "first run: opens cursor.com/login (your Cursor subscription)",
+      "acp_native": true,
+      "notes": "Cursor's `acp` subcommand exposes Zed Agent Client Protocol natively.",
+      "distribution": {
+        "kind": "command",
+        "cmd": "cursor-agent",
+        "args": ["acp"]
+      }
+    },
+    {
+      "id": "amp",
+      "name": "Amp (frontier coding agent)",
+      "description": "Sourcegraph Amp coding agent with ACP wrapper.",
+      "install_hint": "uses npx to fetch @sourcegraph/amp-acp on first run (binary releases at github.com/tao12345666333/amp-acp)",
+      "auth_hint": "first run: prompts for Sourcegraph credentials",
+      "acp_native": true,
+      "notes": "Community ACP wrapper for Sourcegraph Amp; published on the ACP Registry.",
+      "distribution": {
+        "kind": "npx",
+        "package": "@sourcegraph/amp-acp@latest",
+        "args": []
+      }
+    },
+    {
+      "id": "auggie",
+      "name": "Auggie CLI (Augment Code)",
+      "description": "Augment Code's coding agent with native ACP support.",
+      "install_hint": "npm install -g @augmentcode/auggie",
+      "auth_hint": "first run: `auggie login` for Augment Code account",
+      "acp_native": true,
+      "notes": "Augment Code's coding agent with native ACP support.",
+      "distribution": {
+        "kind": "command",
+        "cmd": "auggie",
+        "args": ["--acp"]
+      }
+    },
+    {
+      "id": "copilot",
+      "name": "GitHub Copilot",
+      "description": "GitHub Copilot CLI is a one-shot suggester, not an ACP server.",
+      "install_hint": "brew install gh && gh extension install github/gh-copilot",
+      "auth_hint": "first run: `gh auth login` then `gh copilot` (your Copilot subscription)",
+      "acp_native": false,
+      "notes": "Custom shim required to bridge gh-copilot to Zed ACP.",
+      "distribution": {
+        "kind": "command",
+        "cmd": "gh",
+        "args": ["copilot", "suggest"]
+      }
+    },
+    {
+      "id": "aider",
+      "name": "Aider (open-source pair programmer)",
+      "description": "Aider is an interactive TUI, not an ACP server.",
+      "install_hint": "pipx install aider-chat (or pip install aider-chat)",
+      "auth_hint": "configure with any model: e.g. `aider --model deepseek-chat`, key via env DEEPSEEK_API_KEY",
+      "acp_native": false,
+      "notes": "Custom shim required to bridge aider to Zed ACP.",
+      "distribution": {
+        "kind": "command",
+        "cmd": "aider",
+        "args": []
+      }
+    },
+    {
+      "id": "qwen-code",
+      "name": "Qwen Code (阿里通义灵码 CLI)",
+      "description": "Qwen Code uses the Tongyi protocol, not Zed ACP.",
+      "install_hint": "npm install -g @qwen-code/qwen-code",
+      "auth_hint": "first run: `qwen` prompts for DashScope API key (https://bailian.console.aliyun.com)",
+      "acp_native": false,
+      "notes": "Custom shim required to bridge qwen-code to Zed ACP.",
+      "distribution": {
+        "kind": "command",
+        "cmd": "qwen",
+        "args": []
+      }
+    }
+  ]
+}

@@ -206,7 +206,17 @@ impl Skill {
         let dir = dir.as_ref();
         tokio::fs::create_dir_all(dir).await?;
         let path = dir.join(format!("{}.yaml", self.id));
-        tokio::fs::write(&path, render_yaml(self)).await?;
+        // Atomic write: render to a unique tmp sibling, then rename. POSIX
+        // `rename` is atomic on the same filesystem, so concurrent reflections
+        // for the same skill ID can no longer truncate each other's output.
+        let tmp = dir.join(format!(
+            "{}.yaml.tmp.{}.{}",
+            self.id,
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        tokio::fs::write(&tmp, render_yaml(self)).await?;
+        tokio::fs::rename(&tmp, &path).await?;
         Ok(path)
     }
 

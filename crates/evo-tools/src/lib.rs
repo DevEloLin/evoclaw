@@ -9,7 +9,8 @@ use evo_policy::Permission;
 use evo_providers::ToolSpec;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::net::IpAddr;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 /// PRD §42.3 — head + omit + tail truncation.
@@ -57,6 +58,11 @@ pub struct ToolContext {
     pub allow_user_prompt: bool,
     pub default_shell_timeout: Duration,
     pub max_observation_chars: usize,
+    /// Permission ceiling enforced by `ToolRegistry::invoke`. Tools whose
+    /// declared `Permission` exceeds this ceiling are denied at dispatch.
+    /// PRD §13.1 / README permission ladder. Defaults to `Permission::P1`
+    /// (workspace write — the documented default ceiling).
+    pub max_permission: Permission,
 }
 
 impl Default for ToolContext {
@@ -66,7 +72,27 @@ impl Default for ToolContext {
             allow_user_prompt: false,
             default_shell_timeout: Duration::from_secs(30),
             max_observation_chars: 8000,
+            max_permission: Permission::DEFAULT,
         }
+    }
+}
+
+impl ToolContext {
+    /// Construct a context rooted at `workspace` with the documented default
+    /// permission ceiling (`Permission::P1`). Existing call sites that build
+    /// `ToolContext` via `..Default::default()` keep working unchanged because
+    /// the new `max_permission` field is populated by `Default`.
+    pub fn default_for_workspace(workspace: PathBuf) -> Self {
+        Self {
+            workspace,
+            ..Default::default()
+        }
+    }
+
+    /// Builder-style override of the permission ceiling.
+    pub fn with_max_permission(mut self, p: Permission) -> Self {
+        self.max_permission = p;
+        self
     }
 }
 
@@ -132,6 +158,14 @@ impl ToolRegistry {
         let tool = self
             .find(name)
             .ok_or_else(|| ToolError::InvalidArgs(format!("unknown tool: {name}")))?;
+        // Permission ladder enforcement at dispatch (PRD §13.1).
+        let required = tool.permission();
+        if !ctx.max_permission.allows(required) {
+            return Err(ToolError::Denied(format!(
+                "tool '{}' requires {:?}, ceiling is {:?}",
+                name, required, ctx.max_permission
+            )));
+        }
         let raw = tool.run(ctx, args).await?;
         Ok(smart_format(&raw, ctx.max_observation_chars))
     }
@@ -144,6 +178,84 @@ fn resolve_path(workspace: &Path, requested: &str) -> PathBuf {
     } else {
         workspace.join(p)
     }
+}
+
+/// Lexically normalize a path: collapse `.` and `..` components without
+/// touching the filesystem. Used as a fallback when `canonicalize` cannot run
+/// (e.g. the target file does not exist yet for `write_file`).
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop the last real component if any; otherwise keep the
+                // ParentDir token so the boundary check downstream catches
+                // escapes that pop past the workspace root.
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Canonicalize when the path exists; otherwise canonicalize the deepest
+/// existing ancestor and re-attach the missing tail. Returns a normalized,
+/// absolute path with all `..` and symlinks resolved up to the existing
+/// portion. The remaining tail is lexically clean.
+async fn canonical_or_lexical(p: &Path) -> std::io::Result<PathBuf> {
+    if let Ok(real) = tokio::fs::canonicalize(p).await {
+        return Ok(real);
+    }
+    // Walk up to find the deepest existing ancestor.
+    let mut anc = p;
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        match tokio::fs::canonicalize(anc).await {
+            Ok(real) => {
+                let mut out = real;
+                for seg in tail.iter().rev() {
+                    out.push(seg);
+                }
+                return Ok(lexical_normalize(&out));
+            }
+            Err(_) => match anc.parent() {
+                Some(parent) => {
+                    if let Some(name) = anc.file_name() {
+                        tail.push(name);
+                    }
+                    anc = parent;
+                }
+                None => {
+                    // No ancestor exists — fall back to lexical normalization
+                    // of the original path. Boundary check downstream still
+                    // rejects out-of-workspace results.
+                    return Ok(lexical_normalize(p));
+                }
+            },
+        }
+    }
+}
+
+/// Resolve `requested` against `workspace` and verify the result stays inside
+/// the workspace after `..` collapse and symlink resolution. Returns the
+/// canonicalized (or lexically normalized) path on success.
+async fn resolve_within_workspace(workspace: &Path, requested: &str) -> Result<PathBuf, ToolError> {
+    let raw = resolve_path(workspace, requested);
+    let resolved = canonical_or_lexical(&raw).await.map_err(ToolError::Io)?;
+    let ws_canon = canonical_or_lexical(workspace)
+        .await
+        .map_err(ToolError::Io)?;
+    if !resolved.starts_with(&ws_canon) {
+        return Err(ToolError::Denied(format!(
+            "path escapes workspace: {}",
+            resolved.display()
+        )));
+    }
+    Ok(resolved)
 }
 
 fn format_with_line_numbers(content: &str) -> String {
@@ -184,7 +296,7 @@ impl Tool for ReadFile {
     async fn run(&self, ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         let a: ReadArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-        let path = resolve_path(&ctx.workspace, &a.path);
+        let path = resolve_within_workspace(&ctx.workspace, &a.path).await?;
         let content = tokio::fs::read_to_string(&path).await?;
         Ok(format_with_line_numbers(&content))
     }
@@ -227,13 +339,7 @@ impl Tool for WriteFile {
     async fn run(&self, ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         let a: WriteArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-        let path = resolve_path(&ctx.workspace, &a.path);
-        if path.is_absolute() && !path.starts_with(&ctx.workspace) {
-            return Err(ToolError::Denied(format!(
-                "write outside workspace: {}",
-                path.display()
-            )));
-        }
+        let path = resolve_within_workspace(&ctx.workspace, &a.path).await?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -247,6 +353,9 @@ inventory::submit!(ToolFactory {
 });
 
 // --- Tool 3: run_shell ----------------------------------------------------
+
+const RUN_SHELL_TIMEOUT_CAP_MS: u64 = 60_000;
+const RUN_SHELL_SAFE_ENV: &[&str] = &["PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "TERM"];
 
 #[derive(Deserialize)]
 struct ShellArgs {
@@ -272,7 +381,7 @@ impl Tool for RunShell {
             "type": "object",
             "properties": {
                 "cmd": { "type": "string" },
-                "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 600000 },
+                "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
             },
             "required": ["cmd"],
             "additionalProperties": false,
@@ -281,12 +390,26 @@ impl Tool for RunShell {
     async fn run(&self, ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         let a: ShellArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-        let timeout = a
+        let requested = a
             .timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(ctx.default_shell_timeout);
+        let cap = Duration::from_millis(RUN_SHELL_TIMEOUT_CAP_MS);
+        let timeout = if requested > cap { cap } else { requested };
+
         let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(&a.cmd).current_dir(&ctx.workspace);
+        cmd.arg("-c")
+            .arg(&a.cmd)
+            .current_dir(&ctx.workspace)
+            .env_clear()
+            .kill_on_drop(true);
+        // Re-add only safe environment variables from the parent process so a
+        // model-issued command cannot exfiltrate secrets like EVO_API_KEY.
+        for key in RUN_SHELL_SAFE_ENV {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
         let output = tokio::time::timeout(timeout, cmd.output())
             .await
             .map_err(|_| ToolError::Timeout(timeout))?
@@ -339,7 +462,7 @@ impl Tool for AskUser {
             return Ok(format!("[ask_user-stub] {}", a.message));
         }
         let prompt = a.message.clone();
-        let answer = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             use std::io::{self, BufRead, Write};
             let stdout = io::stdout();
             let mut h = stdout.lock();
@@ -348,12 +471,19 @@ impl Tool for AskUser {
             let _ = h.flush();
             let stdin = io::stdin();
             let mut line = String::new();
-            stdin.lock().read_line(&mut line).ok();
-            line.trim().to_string()
+            // Distinguish EOF (Ok(0) on first read with empty buffer) from a
+            // real interactive answer. EOF means we are running headless
+            // (gateway, daemon, CI) — fail loudly instead of returning "".
+            match stdin.lock().read_line(&mut line) {
+                Ok(0) => Err(ToolError::Internal(
+                    "ask_user requires an interactive terminal".into(),
+                )),
+                Ok(_) => Ok(line.trim().to_string()),
+                Err(e) => Err(ToolError::Io(e)),
+            }
         })
         .await
-        .map_err(|e| ToolError::Internal(e.to_string()))?;
-        Ok(answer)
+        .map_err(|e| ToolError::Internal(e.to_string()))?
     }
 }
 inventory::submit!(ToolFactory {
@@ -396,13 +526,7 @@ impl Tool for PatchFile {
     async fn run(&self, ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         let a: PatchArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-        let path = resolve_path(&ctx.workspace, &a.path);
-        if path.is_absolute() && !path.starts_with(&ctx.workspace) {
-            return Err(ToolError::Denied(format!(
-                "patch outside workspace: {}",
-                path.display()
-            )));
-        }
+        let path = resolve_within_workspace(&ctx.workspace, &a.path).await?;
         let original = tokio::fs::read_to_string(&path).await?;
         let count = original.matches(&a.old_content).count();
         if count == 0 {
@@ -472,7 +596,7 @@ impl Tool for ListDir {
     async fn run(&self, ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         let a: ListDirArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-        let path = resolve_path(&ctx.workspace, &a.path);
+        let path = resolve_within_workspace(&ctx.workspace, &a.path).await?;
         let max = a.max_entries.unwrap_or(200);
         let mut entries = tokio::fs::read_dir(&path).await?;
         let mut lines = Vec::new();
@@ -514,6 +638,105 @@ struct WebFetchArgs {
 }
 pub struct WebFetch;
 
+/// Reject IPs that point at internal infra (loopback, RFC1918, link-local —
+/// notably 169.254.169.254 cloud IMDS, 127.0.0.1 local services, 10/8, etc.).
+fn is_disallowed_addr(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            if v4.is_loopback() || v4.is_link_local() || v4.is_broadcast() {
+                return true;
+            }
+            if v4.is_unspecified() || v4.is_multicast() {
+                return true;
+            }
+            if v4.is_private() {
+                return true;
+            }
+            // 100.64.0.0/10 (CGNAT) — also non-public.
+            let octets = v4.octets();
+            if octets[0] == 100 && (octets[1] & 0xC0) == 64 {
+                return true;
+            }
+            false
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return true;
+            }
+            let segs = v6.segments();
+            // fe80::/10 — link-local.
+            if (segs[0] & 0xFFC0) == 0xFE80 {
+                return true;
+            }
+            // fc00::/7 — unique local.
+            if (segs[0] & 0xFE00) == 0xFC00 {
+                return true;
+            }
+            // ::ffff:0:0/96 — IPv4-mapped, re-check the embedded v4.
+            if segs[0] == 0
+                && segs[1] == 0
+                && segs[2] == 0
+                && segs[3] == 0
+                && segs[4] == 0
+                && segs[5] == 0xFFFF
+            {
+                let v4 = std::net::Ipv4Addr::new(
+                    (segs[6] >> 8) as u8,
+                    (segs[6] & 0xFF) as u8,
+                    (segs[7] >> 8) as u8,
+                    (segs[7] & 0xFF) as u8,
+                );
+                return is_disallowed_addr(IpAddr::V4(v4));
+            }
+            false
+        }
+    }
+}
+
+/// SSRF guard: parse `url`, resolve its host, and reject if any resolved
+/// address falls into a disallowed range. URLs whose host is a literal IP are
+/// checked directly. DNS happens here on purpose — the alternative (binding a
+/// custom resolver into reqwest) is heavier and still requires this check.
+async fn enforce_public_url(url: &str) -> Result<(), ToolError> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|e| ToolError::InvalidArgs(format!("bad url: {e}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| ToolError::Denied("url has no host".into()))?
+        .to_string();
+    let port = parsed.port_or_known_default().unwrap_or(80);
+
+    // Literal IP fast path.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_disallowed_addr(ip) {
+            return Err(ToolError::Denied(format!(
+                "url host resolves to internal address: {ip}"
+            )));
+        }
+        return Ok(());
+    }
+
+    // DNS resolve and reject if any resolved IP is internal.
+    let target = format!("{host}:{port}");
+    let addrs = tokio::net::lookup_host(target.as_str())
+        .await
+        .map_err(|e| ToolError::Denied(format!("dns resolution failed: {e}")))?;
+    let mut saw_any = false;
+    for sa in addrs {
+        saw_any = true;
+        if is_disallowed_addr(sa.ip()) {
+            return Err(ToolError::Denied(format!(
+                "url host resolves to internal address: {}",
+                sa.ip()
+            )));
+        }
+    }
+    if !saw_any {
+        return Err(ToolError::Denied("dns returned no addresses".into()));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Tool for WebFetch {
     fn name(&self) -> &str {
@@ -544,6 +767,7 @@ impl Tool for WebFetch {
                 "web_fetch only supports http(s) URLs".into(),
             ));
         }
+        enforce_public_url(&a.url).await?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::limited(5))
             .timeout(std::time::Duration::from_secs(15))
@@ -586,10 +810,11 @@ mod tests {
     use super::*;
 
     fn ctx_in(dir: &Path) -> ToolContext {
-        ToolContext {
-            workspace: dir.to_path_buf(),
-            ..Default::default()
-        }
+        // Tests exercise tools across the whole ladder (read, write, shell,
+        // patch). Lift the ceiling so the registry-level permission gate
+        // doesn't deny them; production callers (CLI, gateway) keep the
+        // documented P1 default.
+        ToolContext::default_for_workspace(dir.to_path_buf()).with_max_permission(Permission::P3)
     }
 
     fn unique_tmp(name: &str) -> PathBuf {
@@ -634,6 +859,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_file_rejects_workspace_escape_via_dotdot() {
+        let dir = unique_tmp("read-escape");
+        let parent = dir.parent().unwrap();
+        let secret = parent.join(format!(
+            "secret-{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        tokio::fs::write(&secret, "TOPSECRET").await.unwrap();
+        let ctx = ctx_in(&dir);
+        let escape_arg = format!("../{}", secret.file_name().unwrap().to_string_lossy());
+        let err = ReadFile
+            .run(&ctx, json!({"path": escape_arg}))
+            .await
+            .expect_err("must deny escape");
+        assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
+        let _ = tokio::fs::remove_file(&secret).await;
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_absolute_outside_workspace() {
+        let dir = unique_tmp("write-abs");
+        let ctx = ctx_in(&dir);
+        let err = WriteFile
+            .run(
+                &ctx,
+                json!({"path": "/etc/evo-test-should-not-exist", "content": "x"}),
+            )
+            .await
+            .expect_err("must deny absolute escape");
+        assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
     async fn write_file_creates_and_writes() {
         let dir = unique_tmp("write");
         let ctx = ctx_in(&dir);
@@ -661,11 +922,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_shell_strips_parent_env() {
+        // Set a sentinel var on the parent. With env_clear() it must NOT
+        // appear in the child's environment.
+        std::env::set_var("EVO_SECRET_SENTINEL", "should-not-leak");
+        let dir = unique_tmp("shell-env");
+        let ctx = ctx_in(&dir);
+        let out = RunShell
+            .run(
+                &ctx,
+                json!({"cmd": "echo \"sentinel=${EVO_SECRET_SENTINEL:-missing}\""}),
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("sentinel=missing"), "leaked env: {out}");
+    }
+
+    #[tokio::test]
     async fn ask_user_stubs_when_non_interactive() {
-        let ctx = ToolContext {
-            allow_user_prompt: false,
-            ..Default::default()
-        };
+        let ctx = ToolContext::default().with_max_permission(Permission::P3);
         let out = AskUser.run(&ctx, json!({"message": "x"})).await.unwrap();
         assert!(out.starts_with("[ask_user-stub]"));
     }
@@ -685,6 +960,19 @@ mod tests {
         ] {
             assert!(names.iter().any(|n| n == must), "missing {must}");
         }
+    }
+
+    #[tokio::test]
+    async fn registry_invoke_denies_when_ceiling_too_low() {
+        // Default ceiling is P1; web_fetch requires P3.
+        let r = ToolRegistry::with_builtins();
+        let dir = unique_tmp("perm");
+        let ctx = ToolContext::default_for_workspace(dir);
+        let err = r
+            .invoke(&ctx, "web_fetch", json!({"url": "https://example.com"}))
+            .await
+            .expect_err("must be denied");
+        assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
     }
 
     #[tokio::test]
@@ -744,12 +1032,38 @@ mod tests {
 
     #[tokio::test]
     async fn web_fetch_rejects_non_http() {
+        let ctx = ToolContext::default().with_max_permission(Permission::P3);
         let err = WebFetch
-            .run(&ToolContext::default(), json!({"url": "ftp://example.com"}))
+            .run(&ctx, json!({"url": "ftp://example.com"}))
             .await
             .err()
             .unwrap();
         assert!(matches!(err, ToolError::Denied(_)));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_loopback() {
+        let ctx = ToolContext::default().with_max_permission(Permission::P3);
+        let err = WebFetch
+            .run(&ctx, json!({"url": "http://127.0.0.1/secret"}))
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_imds() {
+        let ctx = ToolContext::default().with_max_permission(Permission::P3);
+        let err = WebFetch
+            .run(
+                &ctx,
+                json!({"url": "http://169.254.169.254/latest/meta-data/"}),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
     }
 
     #[test]

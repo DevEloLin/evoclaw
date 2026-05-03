@@ -174,7 +174,7 @@ Use SemVer:
 
 | Bump | When |
 |------|------|
-| `+1` patch (`v0.1.9 → v0.1.10`) | Bug fix, doc rewrite, CI workflow change, license addition. |
+| `+1` patch (`v0.2.0 → v0.2.1`) | Bug fix, doc rewrite, CI workflow change, license addition. |
 | `+1` minor (`v0.1.x → v0.2.0`) | New CLI subcommand, new built-in tool, new built-in provider/MCP catalog entry, schema-compatible additions. |
 | `+1` major (`v0.x.y → v1.0.0`) | Breaking change to `~/.evoclaw/` layout, JSONL record schema, public Rust API, or CLI flags. |
 

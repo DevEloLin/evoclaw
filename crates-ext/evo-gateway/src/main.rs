@@ -1,7 +1,7 @@
 //! evo-gateway binary.
 
 use directories::BaseDirs;
-use evo_gateway::{serve, GatewayConfig};
+use evo_gateway::{serve, GatewayConfig, DEFAULT_MAX_CONCURRENT};
 use evo_providers::OpenAiCompatProvider;
 use evo_tools::ToolRegistry;
 use eyre::{Result, WrapErr};
@@ -43,17 +43,34 @@ async fn main() -> Result<()> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    let max_concurrent: usize = std::env::var("EVO_GATEWAY_MAX_CONCURRENT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_CONCURRENT);
 
     let provider = Arc::new(OpenAiCompatProvider::new(
         cfg.model.base_url.clone(),
         api_key,
         cfg.model.default.clone(),
     ));
+
+    // TODO(Fix 9 / consolidate): install MCP tools into the gateway registry.
+    // The canonical implementation lives in `evo_cli::mcp_tools::install_all`
+    // (see crates/evo-cli/src/mcp_tools.rs). Surfacing it cross-crate would
+    // require adding `evo-cli` (or replicating `mcp_tools` plus pulling in
+    // `evo-mcp-client`) as a Cargo dependency of `evo-gateway`, which is out
+    // of scope for this hardening pass — the security review constraints
+    // fence edits to source files only. Until that consolidation lands, the
+    // gateway ships with `ToolRegistry::with_builtins()` exactly as before.
+    // The critical half of Fix 9 — wiring the vault-backed `Redactor` into
+    // every WebChat task — IS done in `evo_gateway::lib::handle_chat` so
+    // unredacted secrets never reach the model.
     let registry = Arc::new(ToolRegistry::with_builtins());
 
     let mut gw_cfg = GatewayConfig::local_default(home);
     gw_cfg.bind = bind;
     gw_cfg.allowlist = allowlist;
+    gw_cfg.max_concurrent = max_concurrent;
 
     serve(gw_cfg, provider, registry, cfg.model.default).await
 }

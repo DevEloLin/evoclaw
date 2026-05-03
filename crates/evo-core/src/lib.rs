@@ -1,8 +1,11 @@
 //! evo-core — agent loop, session, prompt, summary protocol, skill, memory,
 //! reflection. Phase 1 + Phase 2.
 
+pub mod channel;
+pub mod channel_router;
 pub mod compression;
 pub mod distillation;
+pub mod local_pipe;
 pub mod memory;
 pub mod prompt;
 pub mod reflection;

@@ -1,14 +1,14 @@
 # EvoClaw — tag-based release.
 #
-# This workflow only runs when pushing version tags like v0.1.9.
+# This workflow only runs when pushing version tags like v0.2.0.
 # main branch pushes do not package or publish releases.
 #
 # Release trigger:
-#   git tag -a v0.1.9 -m "Release v0.1.9"
-#   git push origin v0.1.9
+#   git tag -a v0.2.0 -m "Release v0.2.0"
+#   git push origin v0.2.0
 #
 # Optional release notes:
-#   .github/release-notes/v0.1.9.md
+#   .github/release-notes/v0.2.0.md
 
 name: Release
 

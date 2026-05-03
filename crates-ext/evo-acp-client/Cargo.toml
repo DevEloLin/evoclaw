@@ -18,4 +18,7 @@ thiserror   = { workspace = true }
 tracing     = { workspace = true }
 directories = { workspace = true }
 chrono      = { workspace = true }
-evo-stdio-rpc = { workspace = true }
+futures     = { workspace = true }
+agent-client-protocol = { workspace = true }
+anyhow      = "1"
+tokio-util  = { version = "0.7", features = ["compat"] }
