@@ -789,12 +789,9 @@ async fn interactive() -> Result<()> {
     }
 }
 
-/// Inner width of the welcome box, matching the 63 `═` characters in the top
-/// and bottom borders. All content rows pad-or-truncate to this width.
+/// Inner width of the ASCII-art logo box (63 `═` chars between corners).
+/// The context box is sized dynamically; see `TerminalUI::context_box_width`.
 const BOX_INNER_W: usize = 63;
-/// Width reserved for the value column. Row layout is
-/// `│  <label-8>: <value-W>│` → 2 + 8 + 1 + 1 + W = BOX_INNER_W → W = INNER - 12.
-const BOX_VALUE_W: usize = BOX_INNER_W - 12;
 
 async fn print_banner(cfg: &Config) {
     let provider_id = cfg
@@ -877,14 +874,13 @@ async fn print_banner(cfg: &Config) {
     );
     println!("{cyan_b}   ╚═══════════════════════════════════════════════════════════════╝{reset}");
     println!();
-    println!("{bold}   ┌─ context ─────────────────────────────────────────────────────┐{reset}");
-    print_row(
-        bold,
-        dim,
-        reset,
-        "home    ",
-        &truncate_to(&home_disp, BOX_VALUE_W),
-    );
+    // Context box adapts to terminal width: min 63 inner, max 120.
+    let box_inner_w = TerminalUI::context_box_width();
+    let box_value_w = box_inner_w.saturating_sub(12);
+    // "─ context " = 10 visible chars; remaining fill
+    let hdr_fill = "─".repeat(box_inner_w.saturating_sub(10));
+    println!("{bold}   ┌─ context {hdr_fill}┐{reset}");
+    print_row(bold, dim, reset, "home    ", &truncate_to(&home_disp, box_value_w), box_value_w);
     let prov_value = if is_acp {
         format!("{:<14} {dim}(external ACP agent){reset}", provider_id)
     } else if cfg.model.base_url.is_empty() {
@@ -892,13 +888,13 @@ async fn print_banner(cfg: &Config) {
     } else {
         format!("{:<10} {dim}({}){reset}", provider_id, cfg.model.base_url)
     };
-    print_row(bold, dim, reset, "provider", &prov_value);
+    print_row(bold, dim, reset, "provider", &prov_value, box_value_w);
     let model_value = if is_acp {
         "(remote agent loop)".into()
     } else {
-        truncate_to(&cfg.model.default, BOX_VALUE_W)
+        truncate_to(&cfg.model.default, box_value_w)
     };
-    print_row(bold, dim, reset, "model   ", &model_value);
+    print_row(bold, dim, reset, "model   ", &model_value, box_value_w);
     let key_color = if key_ok { green } else { red };
     let key_value = format!("{key_color}{key_status}{reset}");
     let auth_label = if is_acp {
@@ -910,14 +906,8 @@ async fn print_banner(cfg: &Config) {
             AuthMethod::ApiKey => "api key ",
         }
     };
-    print_row(bold, dim, reset, auth_label, &key_value);
-    print_row(
-        bold,
-        dim,
-        reset,
-        "account ",
-        &truncate_to(&account_status, BOX_VALUE_W),
-    );
+    print_row(bold, dim, reset, auth_label, &key_value, box_value_w);
+    print_row(bold, dim, reset, "account ", &truncate_to(&account_status, box_value_w), box_value_w);
     let vault_value = if vault_count > 0 {
         format!(
             "{green}{vault_count} entr{}{reset} {dim}· redactor active{reset}",
@@ -926,25 +916,19 @@ async fn print_banner(cfg: &Config) {
     } else {
         format!("{dim}empty · pattern fallback only{reset}")
     };
-    print_row(bold, dim, reset, "vault   ", &vault_value);
-    print_row(
-        bold,
-        dim,
-        reset,
-        "skills  ",
-        &format!("{skill_count} learned"),
-    );
-    println!("{bold}   └───────────────────────────────────────────────────────────────┘{reset}");
+    print_row(bold, dim, reset, "vault   ", &vault_value, box_value_w);
+    print_row(bold, dim, reset, "skills  ", &format!("{skill_count} learned"), box_value_w);
+    let ftr_fill = "─".repeat(box_inner_w);
+    println!("{bold}   └{ftr_fill}┘{reset}");
     println!();
     println!("   {bold}Type a task in plain language to run the agent.{reset}");
     println!("   {dim}/help for slash commands  ·  Tab for auto-complete  ·  /exit or Ctrl-D to quit.{reset}");
 }
 
-/// Render one `│ label : value ...│` row, padding the visible portion of
-/// `value` so the right border lands at the expected column.
-fn print_row(bold: &str, dim: &str, reset: &str, label: &str, value: &str) {
+/// Render one `│ label : value ...│` row, padding to the given box_value_w.
+fn print_row(bold: &str, dim: &str, reset: &str, label: &str, value: &str, box_value_w: usize) {
     let visible = strip_ansi(value).chars().count();
-    let pad = BOX_VALUE_W.saturating_sub(visible);
+    let pad = box_value_w.saturating_sub(visible);
     let padding: String = " ".repeat(pad);
     println!("{bold}   │{reset}  {dim}{label}:{reset} {value}{padding}{bold}│{reset}",);
 }
@@ -1140,20 +1124,32 @@ impl DisplayTemplate {
 struct TerminalUI;
 
 impl TerminalUI {
-    /// Get current terminal width, fallback to 100 if detection fails
-    /// Checks COLUMNS environment variable first, then uses default
+    /// Get current terminal width via OS ioctl, with env-var and hard fallback.
+    /// Re-evaluated every call so terminal resize is reflected immediately.
     fn width() -> usize {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            #[repr(C)]
+            struct Winsize { ws_row: u16, ws_col: u16, ws_xpixel: u16, ws_ypixel: u16 }
+            let mut ws = Winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+            let fd = std::io::stdout().as_raw_fd();
+            // SAFETY: fd is valid stdout, Winsize matches kernel ABI.
+            if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
+                return (ws.ws_col as usize).clamp(60, 220);
+            }
+        }
         std::env::var("COLUMNS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(100) // Modern terminals are typically 100+ cols wide
+            .unwrap_or(80)
+            .clamp(60, 220)
     }
 
-    /// Draw a simple thin separator line
-    fn thin_separator(theme: &Theme) -> String {
-        let width = Self::width();
-        let line = "─".repeat(width);
-        format!("{border}{line}{reset}", border = theme.border(), line = line, reset = theme.reset())
+    /// Width for the context/banner box: fills terminal minus indent/borders,
+    /// clamped to [63, 120] so the ASCII logo always fits and lines stay readable.
+    fn context_box_width() -> usize {
+        Self::width().saturating_sub(5).clamp(63, 120)
     }
 
     /// Format status information below the input prompt
@@ -1225,14 +1221,19 @@ impl TerminalUI {
         format!("  {}", status_line)
     }
 
-    /// Draw the chat box: separator line before prompt
-    /// Creates the top border of the input box
+    /// Top border of the chat input box, adapts to terminal width:
+    ///   ╭──────────────────────────────────────────────────╮
     fn chat_box_top(theme: &Theme) -> String {
-        format!("\n{}\n", Self::thin_separator(theme))
+        let w = Self::width();
+        let inner = "─".repeat(w.saturating_sub(2));
+        format!(
+            "\n{b}╭{inner}╮{r}\n",
+            b = theme.border(), inner = inner, r = theme.reset()
+        )
     }
 
-    /// Draw the chat box bottom: separator + status line
-    /// Creates the bottom border and status information
+    /// Bottom border with status embedded, adapts to terminal width:
+    ///   ╰─ model: gpt-4o │ provider: openai ────────────────╯
     fn chat_box_bottom(
         theme: &Theme,
         model: &str,
@@ -1241,16 +1242,18 @@ impl TerminalUI {
         mcp_count: usize,
         active_skill: Option<&str>,
     ) -> String {
-        let mut output = String::new();
-
-        // Bottom separator - forms the bottom of the chat box
-        output.push_str(&Self::thin_separator(theme));
-        output.push('\n');
-
-        // Status line - shows current configuration
-        output.push_str(&Self::format_status(theme, model, provider, acp_status, mcp_count, active_skill));
-
-        output
+        let w = Self::width();
+        let status = Self::format_status(theme, model, provider, acp_status, mcp_count, active_skill);
+        let status = status.trim_start().to_string();
+        let status_vis = strip_ansi(&status).chars().count();
+        // Layout: ╰─ {status} {fill}╯  →  3 + status_vis + 1 + fill + 1 = w
+        let fixed = 3 + status_vis + 2; // "╰─ " + status + " ╯"
+        let fill = "─".repeat(w.saturating_sub(fixed));
+        format!(
+            "{b}╰─ {r}{status}{b} {fill}╯{r}\n",
+            b = theme.border(), r = theme.reset(),
+            status = status, fill = fill,
+        )
     }
 }
 
