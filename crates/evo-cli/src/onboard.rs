@@ -21,7 +21,34 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const PROVIDERS: &[ProviderProfile] = &[
-    // ---- Chinese vendors (国内厂商) -------------------------------------
+    // ---- Top 5 by global popularity (按全球知名度和热度排序) --------
+    ProviderProfile {
+        id: "openai",
+        name: "OpenAI (ChatGPT)",
+        base_url: "https://api.openai.com/v1",
+        default_model: "gpt-4o-mini",
+        key_url: Some("https://platform.openai.com/api-keys"),
+        fallback: &["gpt-4o", "gpt-4-turbo"],
+        local: false,
+    },
+    ProviderProfile {
+        id: "anthropic",
+        name: "Anthropic (Claude)",
+        base_url: "https://api.anthropic.com/v1",
+        default_model: "claude-3-5-sonnet-20241022",
+        key_url: Some("https://console.anthropic.com/settings/keys"),
+        fallback: &["claude-3-5-haiku-20241022"],
+        local: false,
+    },
+    ProviderProfile {
+        id: "gemini",
+        name: "Google Gemini",
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        default_model: "gemini-2.0-flash",
+        key_url: Some("https://aistudio.google.com/app/apikey"),
+        fallback: &["gemini-1.5-pro", "gemini-1.5-flash"],
+        local: false,
+    },
     ProviderProfile {
         id: "deepseek",
         name: "DeepSeek (深度求索)",
@@ -31,6 +58,16 @@ pub const PROVIDERS: &[ProviderProfile] = &[
         fallback: &["deepseek-reasoner"],
         local: false,
     },
+    ProviderProfile {
+        id: "copilot",
+        name: "GitHub Copilot",
+        base_url: "https://api.githubcopilot.com",
+        default_model: "gpt-4o",
+        key_url: None,
+        fallback: &["claude-3.5-sonnet"],
+        local: false,
+    },
+    // ---- Other Chinese vendors (其他国内厂商) -----------------------
     ProviderProfile {
         id: "kimi",
         name: "Kimi · Moonshot (月之暗面)",
@@ -103,43 +140,7 @@ pub const PROVIDERS: &[ProviderProfile] = &[
         fallback: &["hunyuan-large", "hunyuan-standard"],
         local: false,
     },
-    // ---- International vendors (国际厂商) -------------------------------
-    ProviderProfile {
-        id: "openai",
-        name: "OpenAI",
-        base_url: "https://api.openai.com/v1",
-        default_model: "gpt-4o-mini",
-        key_url: Some("https://platform.openai.com/api-keys"),
-        fallback: &["gpt-4o", "gpt-4-turbo"],
-        local: false,
-    },
-    ProviderProfile {
-        id: "anthropic",
-        name: "Anthropic (Claude native API)",
-        base_url: "https://api.anthropic.com/v1",
-        default_model: "claude-3-5-sonnet-20241022",
-        key_url: Some("https://console.anthropic.com/settings/keys"),
-        fallback: &["claude-3-5-haiku-20241022"],
-        local: false,
-    },
-    ProviderProfile {
-        id: "gemini",
-        name: "Google Gemini",
-        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-        default_model: "gemini-2.0-flash",
-        key_url: Some("https://aistudio.google.com/app/apikey"),
-        fallback: &["gemini-1.5-pro", "gemini-1.5-flash"],
-        local: false,
-    },
-    ProviderProfile {
-        id: "copilot",
-        name: "GitHub Copilot (OAuth device flow)",
-        base_url: "https://api.githubcopilot.com",
-        default_model: "gpt-4o",
-        key_url: None,
-        fallback: &["claude-3.5-sonnet"],
-        local: false,
-    },
+    // ---- Other International vendors (其他国际厂商) -----------------
     ProviderProfile {
         id: "mistral",
         name: "Mistral AI",
@@ -239,6 +240,30 @@ pub fn find_provider(id: &str) -> Option<&'static ProviderProfile> {
     PROVIDERS.iter().find(|p| p.id == id)
 }
 
+/// Map a provider ID to its corresponding ACP agent ID (if any).
+///
+/// This allows users to select ACP mode when choosing a provider that has
+/// a corresponding ACP agent available.
+///
+/// Mappings:
+/// - anthropic -> claude
+/// - openai -> codex
+/// - gemini/google -> gemini
+/// - copilot -> copilot
+/// - qwen -> qwen-code
+/// - cursor -> cursor
+pub fn provider_to_acp_agent(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        "anthropic" => Some("claude"),
+        "openai" => Some("codex"),
+        "gemini" | "google" => Some("gemini"),
+        "copilot" => Some("copilot"),
+        "qwen" => Some("qwen-code"),
+        "cursor" => Some("cursor"),
+        _ => None,
+    }
+}
+
 fn home() -> Result<PathBuf> {
     Ok(BaseDirs::new()
         .ok_or_else(|| eyre::eyre!("cannot determine home dir"))?
@@ -314,92 +339,209 @@ pub struct ProviderChoice {
 }
 
 pub async fn pick_provider() -> Result<ProviderChoice> {
-    println!();
-    println!("  Select a provider:");
-    for (i, p) in PROVIDERS.iter().enumerate() {
-        let local_tag = if p.local { "  [local]" } else { "" };
-        println!("    {})  {}{}", i + 1, p.name, local_tag);
+    const QUICK_PICK_COUNT: usize = 5;
+
+    loop {
+        println!();
+        println!("  Select a provider:");
+
+        // Show first 5 providers
+        for (i, p) in PROVIDERS.iter().take(QUICK_PICK_COUNT).enumerate() {
+            let local_tag = if p.local { "  [local]" } else { "" };
+            println!("    {})  {}{}", i + 1, p.name, local_tag);
+        }
+
+        // More option
+        let more_index = QUICK_PICK_COUNT + 1;
+        println!("    {})  More providers...", more_index);
+
+        // ACP agent option
+        let acp_index = more_index + 1;
+        println!(
+            "    {})  External ACP agent (Claude / Codex / Cursor / Copilot)",
+            acp_index
+        );
+
+        // Cancel option
+        println!("    0)  Cancel / Go back");
+        println!();
+        print!("  > ");
+        std::io::stdout().flush().ok();
+
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        let input = line.trim();
+
+        // Handle ESC or cancel
+        if input == "0" || input.to_lowercase() == "cancel" || input.to_lowercase() == "esc" {
+            return Err(eyre::eyre!("Provider selection cancelled by user"));
+        }
+
+        let n: usize = match input.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                println!("  Invalid input. Please enter a number.");
+                continue;
+            }
+        };
+
+        // Handle cancel
+        if n == 0 {
+            return Err(eyre::eyre!("Provider selection cancelled by user"));
+        }
+
+        // Handle More option
+        if n == more_index {
+            return Box::pin(pick_provider_full_list()).await;
+        }
+
+        // Handle ACP agent
+        if n == acp_index {
+            return pick_acp_agent().await;
+        }
+
+        // Handle quick pick (1-5)
+        if n >= 1 && n <= QUICK_PICK_COUNT {
+            let profile = &PROVIDERS[n - 1];
+            if profile.id == "custom" {
+                return prompt_custom();
+            }
+            return Ok(ProviderChoice {
+                id: profile.id.into(),
+                name: profile.name.into(),
+                base_url: profile.base_url.into(),
+                default_model: profile.default_model.into(),
+                fallback: profile.fallback.iter().map(|s| s.to_string()).collect(),
+                key_url: profile.key_url.map(String::from),
+                local: profile.local,
+            });
+        }
+
+        println!("  Choice {} out of range. Please try again.", n);
     }
-    let acp_index = PROVIDERS.len() + 1;
-    println!(
-        "    {})  External ACP agent (Claude / Codex / Cursor / Copilot)",
-        acp_index
-    );
-    println!();
-    print!("  > ");
-    std::io::stdout().flush().ok();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let n: usize = line
-        .trim()
-        .parse()
-        .map_err(|_| eyre::eyre!("not a number; try again with `evoclaw onboard`"))?;
-    if n == acp_index {
-        return pick_acp_agent().await;
+}
+
+/// Full provider list when user selects "More providers..."
+async fn pick_provider_full_list() -> Result<ProviderChoice> {
+    loop {
+        println!();
+        println!("  All providers:");
+        for (i, p) in PROVIDERS.iter().enumerate() {
+            let local_tag = if p.local { "  [local]" } else { "" };
+            println!("    {:>2})  {}{}", i + 1, p.name, local_tag);
+        }
+        println!("     0)  Cancel / Go back");
+        println!();
+        print!("  > ");
+        std::io::stdout().flush().ok();
+
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        let input = line.trim();
+
+        // Handle ESC or cancel
+        if input == "0" || input.to_lowercase() == "cancel" || input.to_lowercase() == "esc" {
+            // Go back to quick pick
+            return Box::pin(pick_provider()).await;
+        }
+
+        let n: usize = match input.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                println!("  Invalid input. Please enter a number.");
+                continue;
+            }
+        };
+
+        if n == 0 {
+            return Box::pin(pick_provider()).await;
+        }
+
+        if let Some(profile) = PROVIDERS.get(n - 1) {
+            if profile.id == "custom" {
+                return prompt_custom();
+            }
+            return Ok(ProviderChoice {
+                id: profile.id.into(),
+                name: profile.name.into(),
+                base_url: profile.base_url.into(),
+                default_model: profile.default_model.into(),
+                fallback: profile.fallback.iter().map(|s| s.to_string()).collect(),
+                key_url: profile.key_url.map(String::from),
+                local: profile.local,
+            });
+        }
+
+        println!("  Choice {} out of range. Please try again.", n);
     }
-    let profile = PROVIDERS
-        .get(n.checked_sub(1).unwrap_or(usize::MAX))
-        .ok_or_else(|| eyre::eyre!("choice {n} out of range"))?;
-    if profile.id == "custom" {
-        return prompt_custom();
-    }
-    Ok(ProviderChoice {
-        id: profile.id.into(),
-        name: profile.name.into(),
-        base_url: profile.base_url.into(),
-        default_model: profile.default_model.into(),
-        fallback: profile.fallback.iter().map(|s| s.to_string()).collect(),
-        key_url: profile.key_url.map(String::from),
-        local: profile.local,
-    })
 }
 
 /// ACP agent picker. Result has `id = "acp:<agent>"` so `run_one_shot`
 /// dispatches via `AcpProvider::spawn` instead of fetching an API key.
 /// Side-effect: writes `~/.evoclaw/agents/<agent>.toml`.
 async fn pick_acp_agent() -> Result<ProviderChoice> {
-    println!();
-    println!("  Pick an external ACP agent (auth handled by the agent itself):");
-    let catalog = evo_acp_client::catalog();
-    for (i, a) in catalog.iter().enumerate() {
-        let badge = if a.acp_native { "[native]" } else { "[shim]  " };
-        println!("    {}) {} {:<10}  — {}", i + 1, badge, a.id, a.name);
-        println!("           install: {}", a.install_hint);
-        println!("           auth   : {}", a.auth_hint);
+    loop {
+        println!();
+        println!("  Pick an external ACP agent (auth handled by the agent itself):");
+        let catalog = evo_acp_client::catalog();
+        for (i, a) in catalog.iter().enumerate() {
+            let badge = if a.acp_native { "[native]" } else { "[shim]  " };
+            println!("    {}) {} {:<10}  — {}", i + 1, badge, a.id, a.name);
+            println!("           install: {}", a.install_hint);
+            println!("           auth   : {}", a.auth_hint);
+        }
+        println!("    0)  Cancel / Go back");
+        println!();
+        print!("  > ");
+        std::io::stdout().flush().ok();
+
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        let input = line.trim();
+
+        // Handle ESC or cancel - go back to provider selection
+        if input == "0" || input.to_lowercase() == "cancel" || input.to_lowercase() == "esc" {
+            return Box::pin(pick_provider()).await;
+        }
+
+        let m: usize = match input.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                println!("  Invalid input. Please enter a number.");
+                continue;
+            }
+        };
+
+        if m == 0 {
+            return Box::pin(pick_provider()).await;
+        }
+
+        if let Some(prof) = catalog.get(m - 1) {
+            let cfg = evo_acp_client::AgentConfig::from_profile(prof);
+            let saved = evo_acp_client::save_agent(&cfg)
+                .await
+                .map_err(|e| eyre::eyre!("save agent {}: {e}", prof.id))?;
+            println!();
+            println!("  ✓ saved agent profile -> {}", saved.display());
+            println!(
+                "    Resolved command: '{} {}'",
+                cfg.command,
+                cfg.args.join(" ")
+            );
+            println!("    install: {}", prof.install_hint);
+            return Ok(ProviderChoice {
+                id: format!("acp:{}", prof.id),
+                name: prof.name.clone(),
+                base_url: String::new(),
+                default_model: format!("acp:{}", prof.id),
+                fallback: Vec::new(),
+                key_url: None,
+                local: true,
+            });
+        }
+
+        println!("  Choice {} out of range. Please try again.", m);
     }
-    println!();
-    print!("  > ");
-    std::io::stdout().flush().ok();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let m: usize = line
-        .trim()
-        .parse()
-        .map_err(|_| eyre::eyre!("not a number"))?;
-    let prof = catalog
-        .get(m.checked_sub(1).unwrap_or(usize::MAX))
-        .ok_or_else(|| eyre::eyre!("choice {m} out of range"))?;
-    let cfg = evo_acp_client::AgentConfig::from_profile(prof);
-    let saved = evo_acp_client::save_agent(&cfg)
-        .await
-        .map_err(|e| eyre::eyre!("save agent {}: {e}", prof.id))?;
-    println!();
-    println!("  ✓ saved agent profile -> {}", saved.display());
-    println!(
-        "    Resolved command: '{} {}'",
-        cfg.command,
-        cfg.args.join(" ")
-    );
-    println!("    install: {}", prof.install_hint);
-    Ok(ProviderChoice {
-        id: format!("acp:{}", prof.id),
-        name: prof.name.clone(),
-        base_url: String::new(),
-        default_model: format!("acp:{}", prof.id),
-        fallback: Vec::new(),
-        key_url: None,
-        local: true,
-    })
 }
 
 fn prompt_custom() -> Result<ProviderChoice> {
@@ -723,12 +865,15 @@ fn render_config_toml_with_auth(p: &ProviderChoice, auth: AuthMethod) -> String 
 // Auth-method picker (PRD §44 — shell entry rework)
 // ---------------------------------------------------------------------------
 
-/// Show the 3-way auth-method picker.
+/// Show the auth-method picker (2 or 3 options depending on provider).
 ///
-/// Priority and labels match the requirement in the shell entry:
+/// Priority and labels:
 ///   1) API key                  ← preferred (returns `AuthMethod::ApiKey`)
 ///   2) Browser sign-in          ← `AuthMethod::Browser`
-///   3) ACP agent (NOT YET SUPPORTED) ← prints a clear notice and re-prompts
+///   3) ACP agent                ← only shown if provider has a corresponding ACP agent
+///
+/// If the provider has a corresponding ACP agent (e.g., anthropic -> claude,
+/// openai -> codex), we show option 3 and return `AuthMethod::Acp`.
 ///
 /// Local providers (Ollama / vLLM / llama.cpp) have no auth at all — we
 /// short-circuit to `ApiKey` (which then becomes a no-op in `ask_api_key`).
@@ -736,36 +881,50 @@ pub fn pick_auth_method(profile: &ProviderChoice) -> Result<AuthMethod> {
     if profile.local {
         return Ok(AuthMethod::ApiKey);
     }
-    println!();
-    println!("  How would you like to authenticate with {}?", profile.name);
-    println!("    1)  API key                       (preferred · simplest)");
-    println!("    2)  Browser sign-in               (paste session token from your browser)");
-    println!("    3)  ACP agent                     (暂时不支持 / not yet supported)");
+
+    // Check if this provider has a corresponding ACP agent
+    let acp_agent_id = provider_to_acp_agent(&profile.id);
+    let has_acp = acp_agent_id.is_some();
+
     loop {
+        println!();
+        println!("  How would you like to authenticate with {}?", profile.name);
+        println!("    1)  API key                       (preferred · simplest)");
+        println!("    2)  Browser sign-in               (paste session token from your browser)");
+
+        if has_acp {
+            let agent_name = acp_agent_id.unwrap();
+            // Find the full agent name from catalog
+            let agent_display = evo_acp_client::find_agent(agent_name)
+                .map(|a| a.name.as_str())
+                .unwrap_or(agent_name);
+            println!("    3)  ACP agent                     ({})", agent_display);
+        }
+
+        println!("    0)  Cancel / Go back");
         print!("  > ");
         std::io::stdout().flush().ok();
+
         let mut line = String::new();
         std::io::stdin().read_line(&mut line)?;
-        match line.trim() {
+        let input = line.trim();
+
+        // Handle ESC or cancel
+        if input == "0" || input.to_lowercase() == "cancel" || input.to_lowercase() == "esc" {
+            return Err(eyre::eyre!("Authentication method selection cancelled by user"));
+        }
+
+        match input {
             "" | "1" | "api_key" | "apikey" | "key" => return Ok(AuthMethod::ApiKey),
             "2" | "browser" | "web" | "cookie" => return Ok(AuthMethod::Browser),
-            "3" | "acp" | "agent" => {
-                println!();
-                println!(
-                    "  ACP authentication is not yet supported in this build.\n\
-                     Reason: most upstream agent CLIs (claude-code, codex, gemini-cli)\n\
-                     do not implement Zed Agent Client Protocol natively, so the handshake\n\
-                     fails with `error: unknown option '--acp'` / `subprocess exited unexpectedly`.\n\
-                     Please pick (1) API key or (2) Browser sign-in for now.\n\
-                     Power users can still configure ACP via `evoclaw agent add <id>`."
-                );
-                println!();
-                println!("    1)  API key                       (preferred · simplest)");
-                println!("    2)  Browser sign-in               (paste session token from your browser)");
-                continue;
-            }
+            "3" | "acp" | "agent" if has_acp => return Ok(AuthMethod::Acp),
+            "0" => return Err(eyre::eyre!("Authentication method selection cancelled by user")),
             other => {
-                println!("  unrecognised choice '{other}', try 1 / 2 / 3");
+                if has_acp {
+                    println!("  unrecognised choice '{other}', try 1 / 2 / 3 / 0");
+                } else {
+                    println!("  unrecognised choice '{other}', try 1 / 2 / 0");
+                }
                 continue;
             }
         }
@@ -824,6 +983,11 @@ pub async fn capture_browser_profile(profile: &ProviderChoice) -> Result<Browser
     let mut hint_line = String::new();
     std::io::stdin().read_line(&mut hint_line)?;
     let hint = hint_line.trim().to_string();
+    print!("  Optional account label (e.g. email / handle, press Enter to skip): ");
+    std::io::stdout().flush().ok();
+    let mut account_line = String::new();
+    std::io::stdin().read_line(&mut account_line)?;
+    let account_label = account_line.trim().to_string();
     let captured_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     Ok(BrowserProfile {
         provider_id: profile.id.clone(),
@@ -832,6 +996,11 @@ pub async fn capture_browser_profile(profile: &ProviderChoice) -> Result<Browser
         session_token: token,
         shape: shape.into(),
         source_hint: if hint.is_empty() { None } else { Some(hint) },
+        account_label: if account_label.is_empty() {
+            None
+        } else {
+            Some(account_label)
+        },
         captured_at,
     })
 }

@@ -66,7 +66,7 @@ impl AuthMethod {
         match self {
             AuthMethod::ApiKey => "API key",
             AuthMethod::Browser => "Browser sign-in",
-            AuthMethod::Acp => "ACP agent (not yet supported)",
+            AuthMethod::Acp => "ACP agent",
         }
     }
 }
@@ -102,6 +102,11 @@ pub struct BrowserProfile {
     /// session expires and the user has to repeat the steps.
     #[serde(default)]
     pub source_hint: Option<String>,
+    /// Optional user-facing account label (email / handle / workspace member)
+    /// captured during login so status UIs can show which browser session is
+    /// currently configured.
+    #[serde(default)]
+    pub account_label: Option<String>,
     /// ISO-8601 capture time. Used for `evoclaw doctor` staleness warnings.
     pub captured_at: String,
 }
@@ -210,8 +215,8 @@ mod tests {
     }
 
     #[test]
-    fn acp_label_marks_unsupported() {
-        assert!(AuthMethod::Acp.label().contains("not yet supported"));
+    fn acp_label_is_correct() {
+        assert_eq!(AuthMethod::Acp.label(), "ACP agent");
     }
 
     #[test]
@@ -236,6 +241,7 @@ mod tests {
             session_token: "tok".into(),
             shape: BrowserShapeRepr::Bearer,
             source_hint: Some("DevTools cookie".into()),
+            account_label: Some("alice@example.com".into()),
             captured_at: "2026-05-03T00:00:00Z".into(),
         };
         let s = serde_json::to_string(&p).unwrap();
@@ -253,6 +259,7 @@ mod tests {
             session_token: "tok".into(),
             shape: BrowserShapeRepr::AnthropicHeader,
             source_hint: None,
+            account_label: None,
             captured_at: "2026-05-03T00:00:00Z".into(),
         };
         let bp = BrowserProvider::from_profile(&p);
@@ -268,6 +275,7 @@ mod tests {
             session_token: "tok".into(),
             shape: BrowserShapeRepr::Bearer,
             source_hint: None,
+            account_label: None,
             captured_at: "2026-05-03T00:00:00Z".into(),
         };
         let bp = BrowserProvider::from_profile(&p);

@@ -127,6 +127,10 @@ pub struct RuntimeConfig {
     /// double-bill on a "reflection" prompt for every short interaction
     /// can easily double-or-triple the wall time of trivial questions.
     pub reflection_enabled: bool,
+    /// Provider ID for logging (e.g., "deepseek", "openai", "acp:claude")
+    pub provider_id: Option<String>,
+    /// Active MCP server names for logging
+    pub mcp_servers: Vec<String>,
 }
 
 impl Default for RuntimeConfig {
@@ -137,6 +141,8 @@ impl Default for RuntimeConfig {
             temperature: 0.2,
             model: "gpt-4o-mini".into(),
             reflection_enabled: true,
+            provider_id: None,
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -262,6 +268,12 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 user_input: user_input_safe.clone(),
                 source: "cli".into(),
                 model: self.config.model.clone(),
+                provider: self.config.provider_id.clone(),
+                acp_agent: self.config.provider_id.as_ref()
+                    .filter(|p| p.starts_with("acp:"))
+                    .map(|p| p.strip_prefix("acp:").unwrap_or(p).to_string()),
+                mcp_servers: self.config.mcp_servers.clone(),
+                skills_used: Vec::new(), // Populated during execution
                 started_at: Utc::now(),
             }))
             .await?;
