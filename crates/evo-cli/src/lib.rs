@@ -4,6 +4,7 @@ pub mod mcp_tools;
 pub mod onboard;
 
 use clap::{Parser, Subcommand};
+use onboard::ProviderChoice;
 use directories::BaseDirs;
 use evo_core::channel::ChannelAdapter;
 use evo_core::{ConversationRuntime, Memory, MemoryLayer, Session, Skill, SkillTree};
@@ -14,6 +15,11 @@ use evo_providers::{
 };
 use evo_tools::{ToolContext, ToolRegistry};
 use eyre::{Result, WrapErr};
+use rustyline::completion::{Completer, Pair};
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{Context, Helper};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -175,6 +181,8 @@ fn vault_path() -> Result<PathBuf> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
+    #[serde(default)]
+    meta: ProfileMeta,
     model: ModelCfg,
     #[serde(default)]
     auth: AuthCfg,
@@ -185,6 +193,14 @@ struct Config {
     /// temp dir (`/tmp/evoclaw` on Unix, `%TEMP%\\evoclaw` on Windows).
     #[serde(default)]
     logs: Option<LogsCfg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ProfileMeta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -248,6 +264,14 @@ fn home() -> Result<PathBuf> {
 }
 fn evoclaw_dir() -> Result<PathBuf> {
     Ok(home()?.join(".evoclaw"))
+}
+
+fn profiles_dir() -> Result<PathBuf> {
+    Ok(evoclaw_dir()?.join("profiles"))
+}
+
+fn active_profile_file() -> Result<PathBuf> {
+    Ok(evoclaw_dir()?.join("active-profile.txt"))
 }
 fn config_path() -> Result<PathBuf> {
     Ok(evoclaw_dir()?.join("config.toml"))
@@ -414,6 +438,88 @@ pub async fn entry() -> Result<()> {
 // Interactive REPL
 // ---------------------------------------------------------------------------
 
+/// Slash command completer for rustyline.
+/// Provides auto-completion and hints for all slash commands and their subcommands.
+#[derive(Default)]
+struct SlashCompleter {
+    commands: Vec<&'static str>,
+}
+
+impl SlashCompleter {
+    fn new() -> Self {
+        Self {
+            commands: vec![
+                // Main commands
+                "/help", "/login", "/logout", "/exit", "/quit", "/q",
+                "/clear", "/doctor", "/tokens", "/usage", "/closure", "/replay",
+                "/status",
+                // Commands with subcommands
+                "/agent", "/agent list", "/agent catalog", "/agent add", "/agent remove", "/agent test",
+                "/mcp", "/mcp list", "/mcp catalog", "/mcp add", "/mcp remove", "/mcp test",
+                "/secret", "/secret list", "/secret add", "/secret remove", "/secret test",
+                "/channel", "/channel list", "/channel run",
+                "/skill", "/skill list", "/skill tree", "/skill show",
+                "/memory", "/memory search",
+                "/model", "/model list", "/model set",
+                "/config", "/config show", "/config set", "/config reset",
+            ],
+        }
+    }
+}
+
+impl Completer for SlashCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let line_lower = line[..pos].to_lowercase();
+
+        // Only complete if line starts with /
+        if !line_lower.starts_with('/') {
+            return Ok((pos, vec![]));
+        }
+
+        let matches: Vec<Pair> = self
+            .commands
+            .iter()
+            .filter(|cmd| cmd.to_lowercase().starts_with(&line_lower))
+            .map(|cmd| Pair {
+                display: cmd.to_string(),
+                replacement: cmd.to_string(),
+            })
+            .collect();
+
+        Ok((0, matches))
+    }
+}
+
+impl Hinter for SlashCompleter {
+    type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
+        let line_lower = line[..pos].to_lowercase();
+
+        // Only hint if line starts with /
+        if !line_lower.starts_with('/') {
+            return None;
+        }
+
+        // Find first matching command
+        self.commands
+            .iter()
+            .find(|cmd| cmd.to_lowercase().starts_with(&line_lower) && cmd.len() > pos)
+            .map(|cmd| cmd[pos..].to_string())
+    }
+}
+
+impl Highlighter for SlashCompleter {}
+impl Validator for SlashCompleter {}
+impl Helper for SlashCompleter {}
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 async fn interactive() -> Result<()> {
@@ -436,12 +542,6 @@ async fn interactive() -> Result<()> {
         println!(
             "    {ok}2){reset}  Browser sign-in     — {dim}paste session token from your browser{reset}",
             ok = theme.ok(),
-            dim = theme.dim(),
-            reset = theme.reset(),
-        );
-        println!(
-            "    {warn}3){reset}  ACP agent           — {warn}暂时不支持{reset} {dim}/ not yet supported{reset}",
-            warn = theme.warn(),
             dim = theme.dim(),
             reset = theme.reset(),
         );
@@ -483,11 +583,20 @@ async fn interactive() -> Result<()> {
         reset = theme.reset(),
     );
 
-    // Build the rustyline editor. Arrow keys, history (Ctrl-P / Ctrl-N),
-    // and reverse-search (Ctrl-R) come for free. History persists across
-    // sessions in `<logs_dir>/history.txt`.
-    let mut editor: rustyline::DefaultEditor = rustyline::DefaultEditor::new()
+    // Build the rustyline editor with slash command auto-completion.
+    // Arrow keys, history (Ctrl-P / Ctrl-N), reverse-search (Ctrl-R),
+    // Tab completion, and command hints all come courtesy of rustyline.
+    // Vim-style keybindings: Ctrl+A (start), Ctrl+E (end), Ctrl+K (kill-end),
+    // Ctrl+U (kill-start), Ctrl+W (kill-word) are enabled by default in Emacs mode.
+    // History persists across sessions in `<logs_dir>/history.txt`.
+    let config = rustyline::Config::builder()
+        .edit_mode(rustyline::EditMode::Emacs)  // Emacs mode includes vim-style Ctrl bindings
+        .auto_add_history(true)
+        .build();
+    let helper = SlashCompleter::new();
+    let mut editor = rustyline::Editor::with_config(config)
         .map_err(|e| eyre::eyre!("init readline: {e}"))?;
+    editor.set_helper(Some(helper));
     let history = history_path()?;
     if let Some(parent) = history.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
@@ -495,13 +604,39 @@ async fn interactive() -> Result<()> {
     if history.exists() {
         let _ = editor.load_history(&history);
     }
+    // Load MCP servers and track count for status display
+    let mut mcp_count = 0;
+    let mut registry = evo_tools::ToolRegistry::with_builtins();
+    match mcp_tools::install_all(&mut registry).await {
+        n if n > 0 => {
+            mcp_count = n;
+            println!(
+                "{ok}✓{reset} MCP: {n} server(s) attached, registry has {} tools",
+                registry.names().len(),
+                ok = theme.ok(),
+                reset = theme.reset(),
+            );
+        }
+        _ => {}
+    }
+
     let prompt = format!(
-        "\n{frame}evoclaw>{reset} ",
+        "{frame}❯{reset} ",
         frame = theme.frame(),
         reset = theme.reset(),
     );
 
+    // Track consecutive Ctrl+C presses for exit
+    let mut ctrl_c_count = 0;
+    // Track active skill (None for now, can be enhanced later)
+    let active_skill: Option<String> = None;
+
     loop {
+        // Display chat box top border before each prompt
+        // Recalculate width each time for terminal resize support
+        print!("{}", TerminalUI::chat_box_top(&theme));
+        std::io::stdout().flush().ok();
+
         // rustyline is sync; bounce to a blocking thread so we don't stall
         // the tokio scheduler while waiting on user input.
         let line_res: Result<String, rustyline::error::ReadlineError> = {
@@ -518,13 +653,25 @@ async fn interactive() -> Result<()> {
         let line = match line_res {
             Ok(l) => l,
             Err(rustyline::error::ReadlineError::Interrupted) => {
-                // Ctrl-C: cancel the current line, keep the shell open.
-                println!(
-                    "{dim}(Ctrl-C){reset}",
-                    dim = theme.dim(),
-                    reset = theme.reset()
-                );
-                continue;
+                // Ctrl-C: First press shows hint, second press exits
+                ctrl_c_count += 1;
+                if ctrl_c_count >= 2 {
+                    println!();
+                    println!(
+                        "{frame}bye.{reset}",
+                        frame = theme.frame(),
+                        reset = theme.reset()
+                    );
+                    let _ = editor.save_history(&history);
+                    return Ok(());
+                } else {
+                    println!(
+                        "{dim}(Ctrl-C again to exit, or Ctrl-D){reset}",
+                        dim = theme.dim(),
+                        reset = theme.reset()
+                    );
+                    continue;
+                }
             }
             Err(rustyline::error::ReadlineError::Eof) => {
                 // Ctrl-D: clean exit.
@@ -545,6 +692,34 @@ async fn interactive() -> Result<()> {
                 continue;
             }
         };
+        // Reset Ctrl+C counter on successful input
+        ctrl_c_count = 0;
+
+        // Display chat box bottom border and status after input
+        let model_name = &cfg.model.default;
+        let provider_id = cfg
+            .model
+            .provider
+            .as_deref()
+            .unwrap_or("unknown");
+        let acp_status = if is_acp {
+            Some(provider_id)
+        } else {
+            None
+        };
+
+        println!(
+            "{}",
+            TerminalUI::chat_box_bottom(
+                &theme,
+                model_name,
+                provider_id,
+                acp_status,
+                mcp_count,
+                active_skill.as_deref(),
+            )
+        );
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -629,24 +804,44 @@ async fn print_banner(cfg: &Config) {
         .unwrap_or_else(|| "deepseek".into());
     let is_acp = provider_id.starts_with("acp:");
     let auth_method = cfg.auth.parsed();
-    let (key_ok, key_status) = if is_acp {
-        (true, "managed by external agent".into())
+    let (key_ok, key_status, account_status) = if is_acp {
+        (
+            true,
+            "managed by external agent".into(),
+            "external agent".into(),
+        )
     } else {
         match auth_method {
             AuthMethod::Browser => match onboard::load_browser_profile(&provider_id).await {
-                Ok(p) => (
-                    true,
-                    format!("browser · captured {}", short_iso_date(&p.captured_at)),
+                Ok(p) => {
+                    let account = p
+                        .account_label
+                        .clone()
+                        .unwrap_or_else(|| "not recorded — run /login to add it".into());
+                    (
+                        true,
+                        format!("browser · captured {}", short_iso_date(&p.captured_at)),
+                        account,
+                    )
+                }
+                Err(_) => (
+                    false,
+                    "MISSING browser profile — run /login".into(),
+                    "unknown".into(),
                 ),
-                Err(_) => (false, "MISSING browser profile — run /login".into()),
             },
             AuthMethod::Acp => (
-                false,
-                "ACP method selected but not yet supported — run /login".into(),
+                true,
+                "ACP agent handles authentication".into(),
+                "external".into(),
             ),
             AuthMethod::ApiKey => match onboard::resolve_api_key(&provider_id).await {
-                Ok((_k, src)) => (true, format!("ok · {}", short_key_source(&src.describe()))),
-                Err(_) => (false, "MISSING — run /login".into()),
+                Ok((_k, src)) => (
+                    true,
+                    format!("ok · {}", short_key_source(&src.describe())),
+                    "not available for API key auth".into(),
+                ),
+                Err(_) => (false, "MISSING — run /login".into(), "unknown".into()),
             },
         }
     };
@@ -716,6 +911,13 @@ async fn print_banner(cfg: &Config) {
         }
     };
     print_row(bold, dim, reset, auth_label, &key_value);
+    print_row(
+        bold,
+        dim,
+        reset,
+        "account ",
+        &truncate_to(&account_status, BOX_VALUE_W),
+    );
     let vault_value = if vault_count > 0 {
         format!(
             "{green}{vault_count} entr{}{reset} {dim}· redactor active{reset}",
@@ -735,7 +937,7 @@ async fn print_banner(cfg: &Config) {
     println!("{bold}   └───────────────────────────────────────────────────────────────┘{reset}");
     println!();
     println!("   {bold}Type a task in plain language to run the agent.{reset}");
-    println!("   {dim}/help for slash commands  ·  /exit or Ctrl-D to quit.{reset}");
+    println!("   {dim}/help for slash commands  ·  Tab for auto-complete  ·  /exit or Ctrl-D to quit.{reset}");
 }
 
 /// Render one `│ label : value ...│` row, padding the visible portion of
@@ -769,12 +971,39 @@ fn use_color() -> bool {
     std::io::stdout().is_terminal()
 }
 
-/// Centralised colour palette so every TTY-facing surface has a consistent
-/// look. The interactive shell, banner, error prints, and spinner all read
-/// these — turning them into ANSI escapes only if `use_color()` says yes.
+/// Centralised colour palette with modern, tech-aesthetic colors.
+/// Provides soft, professional colors that are easy on the eyes while maintaining
+/// a high-tech feel. All colors are centralized and never hardcoded.
 #[derive(Debug, Clone, Copy)]
 struct Theme {
     enabled: bool,
+}
+
+/// Color definitions - centralized and easy to modify
+/// Using 256-color palette for richer, more professional appearance
+mod colors {
+    // Primary colors - soft teal/cyan for tech aesthetic
+    pub const PRIMARY: &str = "\x1b[38;5;51m";      // Soft cyan
+
+    // Status colors - soft and professional
+    pub const SUCCESS: &str = "\x1b[38;5;120m";     // Soft green
+    pub const ERROR: &str = "\x1b[38;5;204m";       // Soft red
+    pub const WARNING: &str = "\x1b[38;5;222m";     // Amber/orange
+    pub const INFO: &str = "\x1b[38;5;117m";        // Soft blue
+
+    // Accent colors
+    pub const ACCENT: &str = "\x1b[38;5;141m";      // Soft purple
+    pub const HIGHLIGHT: &str = "\x1b[38;5;228m";   // Soft yellow
+
+    // Text styles
+    pub const DIM: &str = "\x1b[38;5;240m";         // Gray for secondary info
+    pub const BOLD: &str = "\x1b[1m";               // Bold
+    pub const RESET: &str = "\x1b[0m";              // Reset all
+
+    // Semantic colors for different use cases
+    pub const LABEL: &str = "\x1b[38;5;249m";       // Light gray for labels
+    pub const VALUE: &str = "\x1b[38;5;253m";       // Bright white for values
+    pub const BORDER: &str = "\x1b[38;5;240m";      // Gray for borders
 }
 
 impl Theme {
@@ -783,6 +1012,7 @@ impl Theme {
             enabled: use_color(),
         }
     }
+
     fn s(&self, code: &'static str) -> &'static str {
         if self.enabled {
             code
@@ -790,38 +1020,237 @@ impl Theme {
             ""
         }
     }
+
     fn reset(&self) -> &'static str {
-        self.s("\x1b[0m")
+        self.s(colors::RESET)
     }
-    /// Bright cyan — used for the prompt, banner border, "→ session log:"
-    /// and other framing chrome.
+
+    /// Primary cyan — used for prompts, banners, and primary UI elements
     fn frame(&self) -> &'static str {
-        self.s("\x1b[1;36m")
+        self.s(colors::PRIMARY)
     }
-    /// Bright green — used for success markers and the agent's reply text.
+
+    /// Soft green — success markers and positive feedback
     fn ok(&self) -> &'static str {
-        self.s("\x1b[1;32m")
+        self.s(colors::SUCCESS)
     }
-    /// Bright red — error messages.
+
+    /// Soft red — error messages
     fn err(&self) -> &'static str {
-        self.s("\x1b[1;31m")
+        self.s(colors::ERROR)
     }
-    /// Yellow — "thinking" spinner and warnings.
+
+    /// Amber/orange — warnings and spinner
     fn warn(&self) -> &'static str {
-        self.s("\x1b[33m")
+        self.s(colors::WARNING)
     }
-    /// Magenta — slash-command echo / system notices.
-    #[allow(dead_code)]
-    fn note(&self) -> &'static str {
-        self.s("\x1b[35m")
+
+    /// Soft blue — informational messages
+    fn info(&self) -> &'static str {
+        self.s(colors::INFO)
     }
-    /// Dim — secondary metadata (model name, timing, file paths).
+
+    /// Soft purple — system notices and accents
+    fn accent(&self) -> &'static str {
+        self.s(colors::ACCENT)
+    }
+
+    /// Soft yellow — highlights
+    fn highlight(&self) -> &'static str {
+        self.s(colors::HIGHLIGHT)
+    }
+
+    /// Gray — secondary metadata (paths, timing, etc.)
     fn dim(&self) -> &'static str {
-        self.s("\x1b[2m")
+        self.s(colors::DIM)
     }
-    /// Bold — labels and headings.
+
+    /// Bold — headings and emphasis
     fn bold(&self) -> &'static str {
-        self.s("\x1b[1m")
+        self.s(colors::BOLD)
+    }
+
+    /// Light gray — for labels in key-value displays
+    fn label(&self) -> &'static str {
+        self.s(colors::LABEL)
+    }
+
+    /// Bright white — for values in key-value displays
+    fn value(&self) -> &'static str {
+        self.s(colors::VALUE)
+    }
+
+    /// Gray — for borders and separators
+    fn border(&self) -> &'static str {
+        self.s(colors::BORDER)
+    }
+}
+
+/// Template-based display utilities for consistent formatting
+struct DisplayTemplate;
+
+impl DisplayTemplate {
+    /// Format a key-value pair with consistent styling
+    fn kv(theme: &Theme, key: &str, value: &str) -> String {
+        format!(
+            "  {label}{key:.<18}{reset} {value_color}{value}{reset}",
+            label = theme.label(),
+            key = key,
+            reset = theme.reset(),
+            value_color = theme.value(),
+            value = value
+        )
+    }
+
+    /// Format a key-value pair with custom value color
+    fn kv_colored(theme: &Theme, key: &str, value: &str, color: &str) -> String {
+        format!(
+            "  {label}{key:.<18}{reset} {color}{value}{reset}",
+            label = theme.label(),
+            key = key,
+            reset = theme.reset(),
+            color = color,
+            value = value
+        )
+    }
+
+    /// Format a section header
+    fn header(theme: &Theme, title: &str) -> String {
+        format!(
+            "\n{border}╭─ {primary}{bold}{title}{reset}{border} ─────────────────────────────────────╮{reset}",
+            border = theme.border(),
+            primary = theme.frame(),
+            bold = theme.bold(),
+            title = title,
+            reset = theme.reset()
+        )
+    }
+
+    /// Format a section footer
+    fn footer(theme: &Theme) -> String {
+        format!(
+            "{border}╰──────────────────────────────────────────────────────────────╯{reset}",
+            border = theme.border(),
+            reset = theme.reset()
+        )
+    }
+}
+
+/// Terminal UI utilities for adaptive layouts
+struct TerminalUI;
+
+impl TerminalUI {
+    /// Get current terminal width, fallback to 100 if detection fails
+    /// Checks COLUMNS environment variable first, then uses default
+    fn width() -> usize {
+        std::env::var("COLUMNS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(100) // Modern terminals are typically 100+ cols wide
+    }
+
+    /// Draw a simple thin separator line
+    fn thin_separator(theme: &Theme) -> String {
+        let width = Self::width();
+        let line = "─".repeat(width);
+        format!("{border}{line}{reset}", border = theme.border(), line = line, reset = theme.reset())
+    }
+
+    /// Format status information below the input prompt
+    /// Shows: model, account, ACP/MCP status, active skill
+    fn format_status(
+        theme: &Theme,
+        model: &str,
+        provider: &str,
+        acp_status: Option<&str>,
+        mcp_count: usize,
+        active_skill: Option<&str>,
+    ) -> String {
+        let mut parts = Vec::new();
+
+        // Model info
+        parts.push(format!(
+            "{label}model:{reset} {value}{model}{reset}",
+            label = theme.dim(),
+            reset = theme.reset(),
+            value = theme.frame(),
+            model = model
+        ));
+
+        // Provider/Account info
+        parts.push(format!(
+            "{label}provider:{reset} {value}{provider}{reset}",
+            label = theme.dim(),
+            reset = theme.reset(),
+            value = theme.info(),
+            provider = provider
+        ));
+
+        // ACP status if present
+        if let Some(acp) = acp_status {
+            parts.push(format!(
+                "{label}acp:{reset} {value}{acp}{reset}",
+                label = theme.dim(),
+                reset = theme.reset(),
+                value = theme.accent(),
+                acp = acp
+            ));
+        }
+
+        // MCP servers count
+        if mcp_count > 0 {
+            parts.push(format!(
+                "{label}mcp:{reset} {value}{count} server{s}{reset}",
+                label = theme.dim(),
+                reset = theme.reset(),
+                value = theme.ok(),
+                count = mcp_count,
+                s = if mcp_count == 1 { "" } else { "s" }
+            ));
+        }
+
+        // Active skill if any
+        if let Some(skill) = active_skill {
+            parts.push(format!(
+                "{label}skill:{reset} {value}{skill}{reset}",
+                label = theme.dim(),
+                reset = theme.reset(),
+                value = theme.highlight(),
+                skill = skill
+            ));
+        }
+
+        // Join with separator and pad
+        let status_line = parts.join(&format!(" {dim}│{reset} ", dim = theme.dim(), reset = theme.reset()));
+        format!("  {}", status_line)
+    }
+
+    /// Draw the chat box: separator line before prompt
+    /// Creates the top border of the input box
+    fn chat_box_top(theme: &Theme) -> String {
+        format!("\n{}\n", Self::thin_separator(theme))
+    }
+
+    /// Draw the chat box bottom: separator + status line
+    /// Creates the bottom border and status information
+    fn chat_box_bottom(
+        theme: &Theme,
+        model: &str,
+        provider: &str,
+        acp_status: Option<&str>,
+        mcp_count: usize,
+        active_skill: Option<&str>,
+    ) -> String {
+        let mut output = String::new();
+
+        // Bottom separator - forms the bottom of the chat box
+        output.push_str(&Self::thin_separator(theme));
+        output.push('\n');
+
+        // Status line - shows current configuration
+        output.push_str(&Self::format_status(theme, model, provider, acp_status, mcp_count, active_skill));
+
+        output
     }
 }
 
@@ -1088,6 +1517,20 @@ async fn handle_slash(rest: &str) -> Result<SlashOutcome> {
             }
             _ => println!("usage: /model [list|set <model_name>]"),
         },
+        "profile" => match args.as_slice() {
+            [] | ["show"] => profile_show(None).await?,
+            ["show", name] => profile_show(Some(name)).await?,
+            ["list"] | ["ls"] => profile_list().await?,
+            ["switch" | "use", name] => {
+                profile_switch(name).await?;
+                return Ok(SlashOutcome::Reload);
+            }
+            ["add", name] => profile_add(name, args.get(3).copied()).await?,
+            ["remove" | "rm", name] => profile_remove(name).await?,
+            ["edit", name] => profile_edit(Some(name)).await?,
+            ["edit"] => profile_edit(None).await?,
+            _ => println!("usage: /profile [list|show [name]|switch <name>|add <name>|remove <name>|edit [name]]"),
+        },
         other => println!("unknown command: /{other}  (try /help)"),
     }
     Ok(SlashOutcome::Continue)
@@ -1108,6 +1551,7 @@ fn print_help() {
     println!("  /skill show <id>     dump one skill's YAML");
     println!("  /memory <query>      grep memory L1/L2/L3");
     println!("  /model [sub]         show/change current model");
+    println!("  /profile [sub]       manage configuration profiles");
     println!("  /config [sub]        view/modify configuration");
     println!("  /status              show current session status");
     println!("  /usage               alias for /tokens");
@@ -1116,9 +1560,43 @@ fn print_help() {
     println!("  /replay [path]       pretty-print a session (latest by default)");
     println!("  /doctor              health check");
     println!("  /clear               clear screen");
-    println!("  /exit  /quit  /q     exit (also Ctrl-D)");
+    println!("  /exit  /quit  /q     exit (also Ctrl-D, or Ctrl-C twice)");
+    println!();
+    println!("keyboard shortcuts:");
+    println!("  Tab                  auto-complete slash commands");
+    println!("  ↑/↓ or Ctrl-P/N      history navigation");
+    println!("  Ctrl-R               reverse search history");
+    println!("  Ctrl-A / Ctrl-E      jump to start / end of line");
+    println!("  Ctrl-K / Ctrl-U      delete to end / start of line");
+    println!("  Ctrl-W               delete previous word");
+    println!("  Ctrl-C (twice)       exit");
     println!();
     println!("anything else is treated as a task and runs through the agent loop.");
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/// Get list of active MCP server names by reading *.toml files in mcp/ directory
+async fn get_active_mcp_servers() -> Result<Vec<String>> {
+    let mcp_dir = evoclaw_dir()?.join("mcp");
+    if !mcp_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut servers = Vec::new();
+    let mut entries = tokio::fs::read_dir(&mcp_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                servers.push(stem.to_string());
+            }
+        }
+    }
+    servers.sort();
+    Ok(servers)
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,14 +1666,127 @@ async fn run_provider_wizard() -> Result<()> {
             println!("  saved config -> {}", cfg_path.display());
         }
         AuthMethod::Acp => {
-            // pick_auth_method() never returns Acp — it loops until the user
-            // picks 1 or 2 — but match exhaustiveness still requires this arm.
-            return Err(eyre::eyre!(
-                "ACP auth was selected but is not yet supported in this build"
-            ));
+            // User selected ACP agent for this provider. Configure the corresponding
+            // ACP agent automatically.
+            let agent_id = onboard::provider_to_acp_agent(&choice.id)
+                .ok_or_else(|| eyre::eyre!("No ACP agent available for provider '{}'", choice.id))?;
+
+            // Find the agent profile from catalog
+            let agent_profile = evo_acp_client::find_agent(agent_id)
+                .ok_or_else(|| eyre::eyre!("ACP agent '{}' not found in catalog", agent_id))?;
+
+            // Save the agent configuration
+            let agent_config = evo_acp_client::AgentConfig::from_profile(agent_profile);
+            let agent_path = evo_acp_client::save_agent(&agent_config)
+                .await
+                .map_err(|e| eyre::eyre!("save agent {}: {e}", agent_id))?;
+
+            println!();
+            println!("  ✓ saved ACP agent profile -> {}", agent_path.display());
+            println!("    Agent: {}", agent_profile.name);
+            println!("    Command: {} {}", agent_config.command, agent_config.args.join(" "));
+            println!("    Install: {}", agent_profile.install_hint);
+            println!("    Auth: {}", agent_profile.auth_hint);
+
+            // Save config with acp: prefix
+            let acp_choice = ProviderChoice {
+                id: format!("acp:{}", agent_id),
+                name: agent_profile.name.clone(),
+                base_url: String::new(),
+                default_model: format!("acp:{}", agent_id),
+                fallback: Vec::new(),
+                key_url: None,
+                local: true,
+            };
+
+            let cfg_path = onboard::save_config(&acp_choice).await?;
+            println!("  saved config -> {}", cfg_path.display());
+
+            // Test ACP agent connection
+            println!();
+            println!("  Testing ACP agent connection...");
+
+            match test_acp_connection(&agent_config).await {
+                Ok(_) => {
+                    println!("  ✓ Connection test PASSED");
+                    println!("  ✓ ACP agent '{}' is ready to use", agent_profile.name);
+                }
+                Err(e) => {
+                    println!("  ✗ Connection test FAILED: {}", e);
+                    println!();
+                    println!("  Troubleshooting:");
+                    println!("    1. Check if the agent is installed: {}", agent_profile.install_hint);
+                    println!("    2. Verify authentication: {}", agent_profile.auth_hint);
+                    println!("    3. Try running the command manually:");
+                    println!("       {} {}", agent_config.command, agent_config.args.join(" "));
+                    println!();
+                    println!("  Configuration saved but connection failed.");
+                    println!("  Run `evoclaw doctor` to diagnose or retry with `evoclaw login`.");
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Test ACP agent connection by spawning the agent and performing a handshake.
+///
+/// Returns Ok(()) if connection succeeds, Err with details if it fails.
+/// Uses a timeout to avoid hanging on unresponsive agents.
+async fn test_acp_connection(agent_config: &evo_acp_client::AgentConfig) -> Result<()> {
+    use tokio::time::{timeout, Duration};
+
+    // Create a temporary ACP client for testing
+    let client = evo_acp_client::AcpClient::new();
+
+    // Step 1: Try to spawn with a 30-second timeout
+    let spawn_result = timeout(
+        Duration::from_secs(30),
+        client.spawn(agent_config)
+    ).await;
+
+    match spawn_result {
+        Ok(Ok(())) => {
+            // Spawn succeeded - now try initialize handshake
+        }
+        Ok(Err(e)) => {
+            return Err(eyre::eyre!("spawn failed: {}", e));
+        }
+        Err(_) => {
+            drop(client);
+            return Err(eyre::eyre!(
+                "spawn timed out after 30s. Agent may need installation or user input."
+            ));
+        }
+    }
+
+    // Step 2: Try initialize handshake with a 30-second timeout
+    let init_result = timeout(
+        Duration::from_secs(30),
+        client.initialize("evoclaw-test", env!("CARGO_PKG_VERSION"))
+    ).await;
+
+    match init_result {
+        Ok(Ok(result)) => {
+            // Success - display server info if available
+            if let Some(info) = result.get("serverInfo") {
+                println!("  Server info: {}", info);
+            }
+            // Clean shutdown
+            client.shutdown().await.ok();
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            client.shutdown().await.ok();
+            Err(eyre::eyre!("initialize handshake failed: {}", e))
+        }
+        Err(_) => {
+            client.shutdown().await.ok();
+            Err(eyre::eyre!(
+                "initialize timed out after 30s. Agent may require authentication first."
+            ))
+        }
+    }
 }
 
 async fn doctor() -> Result<()> {
@@ -1259,9 +1850,10 @@ async fn doctor() -> Result<()> {
                 "browser  : MISSING — {e:#}\nrun `evoclaw login` and pick (2) Browser sign-in"
             ),
         },
-        AuthMethod::Acp => println!(
-            "acp      : NOT YET SUPPORTED — run `evoclaw login` and pick (1) API key or (2) Browser sign-in"
-        ),
+        AuthMethod::Acp => {
+            // Config shows ACP but it's actually handled via acp: provider prefix
+            println!("acp      : configured (auth handled by external agent)")
+        },
         AuthMethod::ApiKey => match onboard::resolve_api_key(&provider_id).await {
             Ok((_k, src)) => println!("api_key  : OK ({})", src.describe()),
             Err(e) => println!("api_key  : MISSING — {e:#}\nrun `evoclaw login`"),
@@ -1303,8 +1895,8 @@ async fn build_provider(cfg: &Config) -> Result<(Arc<dyn Provider>, bool)> {
         }
         AuthMethod::Acp => {
             return Err(eyre::eyre!(
-                "config.toml has [auth].method = \"acp\" but ACP auth is not yet supported. \
-                 Run `evoclaw login` and pick (1) API key or (2) Browser sign-in."
+                "config.toml has [auth].method = \"acp\" but provider is not set to an ACP agent. \
+                 Run `evoclaw login` and select 'External ACP agent' from the provider list."
             ));
         }
         AuthMethod::ApiKey => {
@@ -1391,6 +1983,8 @@ async fn run_task_with_provider(
             // an extra reflection round per task. For API providers we keep
             // the reflection so memory/skill learning still works.
             reflection_enabled: !is_acp,
+            provider_id: cfg.model.provider.clone(),
+            mcp_servers: get_active_mcp_servers().await.unwrap_or_default(),
             ..Default::default()
         },
     )
@@ -2134,98 +2728,162 @@ async fn status_cmd() -> Result<()> {
     let theme = Theme::detect();
     let cfg = load_config().await?;
 
-    println!();
-    println!(
-        "{bold}== Session Status =={reset}",
-        bold = theme.bold(),
-        reset = theme.reset()
-    );
-    println!();
+    // ═══════════════════════════════════════════════════════════
+    // Provider & Model Section
+    // ═══════════════════════════════════════════════════════════
+    println!("{}", DisplayTemplate::header(&theme, "Provider & Model"));
 
-    // Provider info
-    let provider_id = cfg
-        .model
-        .provider
-        .as_deref()
-        .unwrap_or("(unknown)");
-    let auth_method = cfg.auth.parsed();
+    // Show active profile name
+    let active_profile = get_active_profile_name()
+        .await
+        .unwrap_or_else(|_| "default".to_string());
+    println!("{}", DisplayTemplate::kv(&theme, "Active Profile", &active_profile));
 
-    println!(
-        "{frame}Provider:{reset}     {bold}{}{reset}",
-        provider_id,
-        frame = theme.frame(),
-        bold = theme.bold(),
-        reset = theme.reset()
-    );
-    println!(
-        "{frame}Model:{reset}        {}",
-        cfg.model.default,
-        frame = theme.frame(),
-        reset = theme.reset()
-    );
-    println!(
-        "{frame}Auth method:{reset}  {}",
-        auth_method.as_str(),
-        frame = theme.frame(),
-        reset = theme.reset()
-    );
+    let provider_id = cfg.model.provider.as_deref().unwrap_or("unknown");
+    let is_acp = provider_id.starts_with("acp:");
 
-    // Auth status
-    let auth_ok = match auth_method {
-        AuthMethod::ApiKey => {
-            onboard::secret_file(provider_id).ok().map(|p| p.exists()).unwrap_or(false)
+    // Get provider details from catalog
+    let (vendor_name, is_local) = if is_acp {
+        let agent_name = provider_id.strip_prefix("acp:").unwrap_or(provider_id);
+        (format!("External ACP Agent: {}", agent_name), false)
+    } else {
+        match onboard::find_provider(provider_id) {
+            Some(profile) => (
+                format!("{} ({})", profile.name, if profile.local { "Local" } else { "Cloud" }),
+                profile.local
+            ),
+            None => (format!("Custom: {}", provider_id), false),
         }
-        AuthMethod::Browser => {
-            onboard::browser_profile_path(provider_id).ok().map(|p| p.exists()).unwrap_or(false)
-        }
-        AuthMethod::Acp => true, // ACP handles auth externally
     };
 
+    println!("{}", DisplayTemplate::kv(&theme, "Vendor", &vendor_name));
+    println!("{}", DisplayTemplate::kv(&theme, "Provider ID", provider_id));
+
+    if !cfg.model.base_url.is_empty() {
+        println!(
+            "{}",
+            DisplayTemplate::kv_colored(&theme, "API Endpoint", &cfg.model.base_url, theme.info())
+        );
+    }
+
+    println!("{}", DisplayTemplate::kv(&theme, "Model", &cfg.model.default));
+
+    if is_local {
+        println!(
+            "{}",
+            DisplayTemplate::kv_colored(&theme, "Type", "Local Inference", theme.accent())
+        );
+    }
+
+    println!("{}", DisplayTemplate::footer(&theme));
+
+    // ═══════════════════════════════════════════════════════════
+    // Authentication Section
+    // ═══════════════════════════════════════════════════════════
+    println!("{}", DisplayTemplate::header(&theme, "Authentication"));
+
+    let auth_method = cfg.auth.parsed();
+    println!("{}", DisplayTemplate::kv(&theme, "Method", auth_method.as_str()));
+
+    // Check auth status and get account info
+    let (auth_ok, account_info) = match auth_method {
+        AuthMethod::ApiKey => {
+            let exists = onboard::secret_file(provider_id)
+                .ok()
+                .map(|p| p.exists())
+                .unwrap_or(false);
+            (exists, String::from("API Key authentication"))
+        }
+        AuthMethod::Browser => {
+            let exists = onboard::browser_profile_path(provider_id)
+                .ok()
+                .map(|p| p.exists())
+                .unwrap_or(false);
+            let account = if exists {
+                match onboard::load_browser_profile(provider_id).await {
+                    Ok(p) => p.account_label.unwrap_or_else(|| String::from("Unknown account")),
+                    Err(_) => String::from("Profile exists but cannot be read"),
+                }
+            } else {
+                String::from("No browser profile found")
+            };
+            (exists, account)
+        }
+        AuthMethod::Acp => (true, format!("Managed by external agent: {}", provider_id)),
+    };
+
+    let status_text = if auth_ok { "Authenticated" } else { "Not Authenticated" };
+    let status_color = if auth_ok { theme.ok() } else { theme.err() };
     println!(
-        "{frame}Auth status:{reset}  {}",
-        if auth_ok {
-            format!("{ok}authenticated{reset}", ok = theme.ok(), reset = theme.reset())
-        } else {
-            format!("{err}not authenticated{reset}", err = theme.err(), reset = theme.reset())
-        },
-        frame = theme.frame(),
-        reset = theme.reset()
+        "{}",
+        DisplayTemplate::kv_colored(&theme, "Status", status_text, status_color)
     );
 
-    // Session log
+    if matches!(auth_method, AuthMethod::Browser | AuthMethod::Acp) || !auth_ok {
+        println!("{}", DisplayTemplate::kv(&theme, "Account", &account_info));
+    }
+
+    println!("{}", DisplayTemplate::footer(&theme));
+
+    // ═══════════════════════════════════════════════════════════
+    // Session & Paths Section
+    // ═══════════════════════════════════════════════════════════
+    println!("{}", DisplayTemplate::header(&theme, "Session & Paths"));
+
     if let Ok(session_log) = session_log_path() {
         println!(
-            "{frame}Session log:{reset}  {dim}{}{reset}",
-            session_log.display(),
-            frame = theme.frame(),
-            dim = theme.dim(),
-            reset = theme.reset()
+            "{}",
+            DisplayTemplate::kv_colored(
+                &theme,
+                "Session Log",
+                &session_log.display().to_string(),
+                theme.dim()
+            )
         );
     }
 
-    // Config path
     if let Ok(cfg_path) = config_path() {
         println!(
-            "{frame}Config path:{reset}  {dim}{}{reset}",
-            cfg_path.display(),
-            frame = theme.frame(),
-            dim = theme.dim(),
-            reset = theme.reset()
+            "{}",
+            DisplayTemplate::kv_colored(
+                &theme,
+                "Config",
+                &cfg_path.display().to_string(),
+                theme.dim()
+            )
         );
     }
 
-    // Workspace
     if let Ok(ws) = workspace_dir() {
         println!(
-            "{frame}Workspace:{reset}    {dim}{}{reset}",
-            ws.display(),
-            frame = theme.frame(),
-            dim = theme.dim(),
-            reset = theme.reset()
+            "{}",
+            DisplayTemplate::kv_colored(
+                &theme,
+                "Workspace",
+                &ws.display().to_string(),
+                theme.dim()
+            )
         );
     }
 
+    // Vault info
+    let vault_count = count_vault_entries().await;
+    println!(
+        "{}",
+        DisplayTemplate::kv(&theme, "Vault Entries", &format!("{} secrets", vault_count))
+    );
+
+    // Skills info
+    if let Ok(skill_count) = count_skills().await {
+        println!(
+            "{}",
+            DisplayTemplate::kv(&theme, "Learned Skills", &format!("{} skills", skill_count))
+        );
+    }
+
+    println!("{}", DisplayTemplate::footer(&theme));
     println!();
+
     Ok(())
 }
 
@@ -2385,6 +3043,301 @@ async fn model_list() -> Result<()> {
 
     println!();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Profile management commands
+// ---------------------------------------------------------------------------
+
+async fn get_active_profile_name() -> Result<String> {
+    let active_file = active_profile_file()?;
+    if active_file.exists() {
+        let name = tokio::fs::read_to_string(&active_file).await?;
+        Ok(name.trim().to_string())
+    } else {
+        Ok("default".to_string())
+    }
+}
+
+async fn set_active_profile_name(name: &str) -> Result<()> {
+    let active_file = active_profile_file()?;
+    if let Some(parent) = active_file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&active_file, name).await?;
+    Ok(())
+}
+
+async fn get_profile_path(name: &str) -> Result<PathBuf> {
+    Ok(profiles_dir()?.join(format!("{}.toml", name)))
+}
+
+async fn profile_list() -> Result<()> {
+    let theme = Theme::detect();
+    let profiles_path = profiles_dir()?;
+
+    println!("{}", DisplayTemplate::header(&theme, "Configuration Profiles"));
+
+    if !profiles_path.exists() {
+        println!("  {}", DisplayTemplate::kv(&theme, "Profiles", "None created yet"));
+        println!("{}", DisplayTemplate::footer(&theme));
+        println!();
+        println!("  Tip: Use '/profile add <name>' to create a new profile");
+        return Ok(());
+    }
+
+    let active = get_active_profile_name().await.unwrap_or_else(|_| "default".to_string());
+    let mut profiles = Vec::new();
+
+    let mut entries = tokio::fs::read_dir(&profiles_path).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                let is_active = stem == active;
+                let cfg_str = tokio::fs::read_to_string(&path).await.ok();
+                let description = cfg_str
+                    .and_then(|s| toml::from_str::<Config>(&s).ok())
+                    .and_then(|c| c.meta.description.or(c.meta.name))
+                    .unwrap_or_else(|| "No description".to_string());
+
+                profiles.push((stem.to_string(), description, is_active));
+            }
+        }
+    }
+
+    profiles.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (name, desc, is_active) in profiles {
+        let marker = if is_active {
+            format!(" {}", theme.ok())
+        } else {
+            String::new()
+        };
+        let display_name = if is_active {
+            format!("{} (active){}", name, theme.reset())
+        } else {
+            name.clone()
+        };
+        println!("  {}{}", DisplayTemplate::kv_colored(&theme, &display_name, &desc, theme.dim()), marker);
+    }
+
+    println!("{}", DisplayTemplate::footer(&theme));
+    println!();
+    Ok(())
+}
+
+async fn profile_show(name: Option<&str>) -> Result<()> {
+    let theme = Theme::detect();
+    let profile_name = match name {
+        Some(n) => n.to_string(),
+        None => get_active_profile_name().await?,
+    };
+
+    let profile_path = get_profile_path(&profile_name).await?;
+    if !profile_path.exists() {
+        println!();
+        println!("{err}Profile '{profile_name}' not found{reset}",
+            err = theme.err(), reset = theme.reset());
+        println!();
+        return Ok(());
+    }
+
+    let cfg_str = tokio::fs::read_to_string(&profile_path).await?;
+    let cfg: Config = toml::from_str(&cfg_str)?;
+
+    println!("{}", DisplayTemplate::header(&theme, &format!("Profile: {}", profile_name)));
+
+    if let Some(desc) = &cfg.meta.description {
+        println!("  {}", DisplayTemplate::kv(&theme, "Description", desc));
+    }
+
+    let provider_id = cfg.model.provider.as_deref().unwrap_or("(not set)");
+    println!("  {}", DisplayTemplate::kv(&theme, "Provider", provider_id));
+    println!("  {}", DisplayTemplate::kv(&theme, "Model", &cfg.model.default));
+    println!("  {}", DisplayTemplate::kv(&theme, "Auth Method", cfg.auth.parsed().as_str()));
+    println!("  {}", DisplayTemplate::kv(&theme, "Budget (task)", &format!("${:.2}", cfg.budget.per_task_usd)));
+
+    println!("{}", DisplayTemplate::footer(&theme));
+    println!();
+    Ok(())
+}
+
+async fn profile_switch(name: &str) -> Result<()> {
+    let theme = Theme::detect();
+    let profile_path = get_profile_path(name).await?;
+
+    if !profile_path.exists() {
+        println!();
+        println!("{err}Profile '{name}' not found{reset}",
+            err = theme.err(), reset = theme.reset());
+        println!();
+        println!("Available profiles:");
+        profile_list().await?;
+        return Ok(());
+    }
+
+    // Set as active profile
+    set_active_profile_name(name).await?;
+
+    // Copy to config.toml for backward compatibility
+    let config_path = config_path()?;
+    tokio::fs::copy(&profile_path, &config_path).await?;
+
+    println!();
+    println!("{ok}Switched to profile '{name}'{reset}",
+        ok = theme.ok(), reset = theme.reset());
+    println!();
+    Ok(())
+}
+
+async fn profile_add(name: &str, template: Option<&str>) -> Result<()> {
+    let theme = Theme::detect();
+    let profiles_path = profiles_dir()?;
+    tokio::fs::create_dir_all(&profiles_path).await?;
+
+    let profile_path = get_profile_path(name).await?;
+    if profile_path.exists() {
+        println!();
+        println!("{warn}Profile '{name}' already exists{reset}",
+            warn = theme.warn(), reset = theme.reset());
+        println!();
+        return Ok(());
+    }
+
+    // Create profile from template or copy current config
+    let template_cfg = if let Some(tmpl) = template {
+        get_profile_template(tmpl)?
+    } else {
+        // Copy current config as template
+        load_config().await?
+    };
+
+    let mut cfg = template_cfg;
+    cfg.meta.name = Some(name.to_string());
+    cfg.meta.description = Some(format!("Profile: {}", name));
+
+    let toml_str = toml::to_string_pretty(&cfg)?;
+    tokio::fs::write(&profile_path, toml_str).await?;
+
+    println!();
+    println!("{ok}Created profile '{name}'{reset}",
+        ok = theme.ok(), reset = theme.reset());
+    println!("  Location: {dim}{}{reset}",
+        profile_path.display(), dim = theme.dim(), reset = theme.reset());
+    println!();
+    println!("  Use '/profile switch {name}' to activate it");
+    println!();
+    Ok(())
+}
+
+async fn profile_remove(name: &str) -> Result<()> {
+    let theme = Theme::detect();
+
+    if name == "default" {
+        println!();
+        println!("{err}Cannot remove 'default' profile{reset}",
+            err = theme.err(), reset = theme.reset());
+        println!();
+        return Ok(());
+    }
+
+    let active = get_active_profile_name().await.unwrap_or_else(|_| "default".to_string());
+    if name == active {
+        println!();
+        println!("{err}Cannot remove active profile{reset}",
+            err = theme.err(), reset = theme.reset());
+        println!("  Switch to another profile first");
+        println!();
+        return Ok(());
+    }
+
+    let profile_path = get_profile_path(name).await?;
+    if !profile_path.exists() {
+        println!();
+        println!("{warn}Profile '{name}' not found{reset}",
+            warn = theme.warn(), reset = theme.reset());
+        println!();
+        return Ok(());
+    }
+
+    tokio::fs::remove_file(&profile_path).await?;
+
+    println!();
+    println!("{ok}Removed profile '{name}'{reset}",
+        ok = theme.ok(), reset = theme.reset());
+    println!();
+    Ok(())
+}
+
+async fn profile_edit(name: Option<&str>) -> Result<()> {
+    let theme = Theme::detect();
+    let profile_name = match name {
+        Some(n) => n.to_string(),
+        None => get_active_profile_name().await?,
+    };
+
+    let profile_path = get_profile_path(&profile_name).await?;
+    if !profile_path.exists() {
+        println!();
+        println!("{err}Profile '{profile_name}' not found{reset}",
+            err = theme.err(), reset = theme.reset());
+        println!();
+        return Ok(());
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+    println!();
+    println!("{info}Opening profile in {editor}...{reset}",
+        info = theme.info(), reset = theme.reset());
+
+    std::process::Command::new(&editor)
+        .arg(&profile_path)
+        .status()?;
+
+    println!();
+    println!("{ok}Profile '{profile_name}' saved{reset}",
+        ok = theme.ok(), reset = theme.reset());
+    println!("  Use '/profile switch {profile_name}' to reload if this is not the active profile");
+    println!();
+    Ok(())
+}
+
+fn get_profile_template(template: &str) -> Result<Config> {
+    // Provide common templates
+    let (provider, model, description) = match template {
+        "deepseek" => ("deepseek", "deepseek-chat", "DeepSeek Chat configuration"),
+        "openai" => ("openai", "gpt-4o", "OpenAI GPT-4o configuration"),
+        "claude" | "anthropic" => ("anthropic", "claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet configuration"),
+        "gemini" | "google" => ("google", "gemini-2.0-flash-exp", "Google Gemini configuration"),
+        "ollama" => ("ollama", "llama3.2", "Ollama local model configuration"),
+        _ => return Err(eyre::eyre!("Unknown template: {}", template)),
+    };
+
+    Ok(Config {
+        meta: ProfileMeta {
+            name: Some(template.to_string()),
+            description: Some(description.to_string()),
+        },
+        model: ModelCfg {
+            provider: Some(provider.to_string()),
+            default: model.to_string(),
+            base_url: String::new(),
+            fallback: Vec::new(),
+        },
+        auth: AuthCfg::default(),
+        budget: ConfigBudget {
+            per_task_usd: 0.5,
+            per_day_usd: 5.0,
+            per_month_usd: 100.0,
+        },
+        security: SecurityCfg {
+            default_permission: "P1".to_string(),
+            high_risk_intercept: true,
+        },
+        logs: None,
+    })
 }
 
 async fn model_set(model_name: &str) -> Result<()> {
@@ -3022,8 +3975,8 @@ async fn channel_run_one_shot_text(input: &str) -> Result<String> {
             }
             AuthMethod::Acp => {
                 return Err(eyre::eyre!(
-                    "config.toml has [auth].method = \"acp\" but ACP auth is not yet supported. \
-                     Run `evoclaw login` and pick (1) API key or (2) Browser sign-in."
+                    "config.toml has [auth].method = \"acp\" but provider is not set to an ACP agent. \
+                     Run `evoclaw login` and select 'External ACP agent' from the provider list."
                 ));
             }
             AuthMethod::ApiKey => {
@@ -3070,6 +4023,8 @@ async fn channel_run_one_shot_text(input: &str) -> Result<String> {
         tool_ctx,
         evo_core::runtime::RuntimeConfig {
             model: cfg.model.default.clone(),
+            provider_id: cfg.model.provider.clone(),
+            mcp_servers: get_active_mcp_servers().await.unwrap_or_default(),
             ..Default::default()
         },
     )
@@ -3079,4 +4034,138 @@ async fn channel_run_one_shot_text(input: &str) -> Result<String> {
     .with_redactor(redactor);
     let outcome = runtime.run(input).await?;
     Ok(outcome.final_text)
+}
+
+#[cfg(test)]
+mod ui_tests {
+    use super::*;
+
+    #[test]
+    fn test_terminal_width_detection() {
+        // Should return a reasonable width (100 default or from COLUMNS env)
+        let width = TerminalUI::width();
+        assert!(width >= 40, "Terminal width should be at least 40 columns");
+        assert!(width <= 500, "Terminal width should be reasonable (<= 500)");
+    }
+
+    #[test]
+    fn test_thin_separator() {
+        let theme = Theme::detect();
+        let separator = TerminalUI::thin_separator(&theme);
+
+        // Should contain box drawing characters
+        assert!(separator.contains("─"), "Separator should contain horizontal line character");
+
+        // Should not be empty
+        assert!(!separator.is_empty(), "Separator should not be empty");
+    }
+
+    #[test]
+    fn test_format_status() {
+        let theme = Theme::detect();
+
+        // Test basic status with model and provider
+        let status = TerminalUI::format_status(
+            &theme,
+            "gpt-4",
+            "openai",
+            None,
+            0,
+            None,
+        );
+        assert!(status.contains("gpt-4"), "Status should contain model name");
+        assert!(status.contains("openai"), "Status should contain provider name");
+
+        // Test with ACP
+        let status_with_acp = TerminalUI::format_status(
+            &theme,
+            "claude-3",
+            "anthropic",
+            Some("claude-desktop"),
+            0,
+            None,
+        );
+        assert!(status_with_acp.contains("claude-3"), "Status should contain model");
+        assert!(status_with_acp.contains("acp"), "Status should mention ACP");
+        assert!(status_with_acp.contains("claude-desktop"), "Status should contain ACP name");
+
+        // Test with MCP servers
+        let status_with_mcp = TerminalUI::format_status(
+            &theme,
+            "gpt-4",
+            "openai",
+            None,
+            3,
+            None,
+        );
+        assert!(status_with_mcp.contains("mcp"), "Status should mention MCP");
+        assert!(status_with_mcp.contains("3"), "Status should show MCP count");
+
+        // Test with active skill
+        let status_with_skill = TerminalUI::format_status(
+            &theme,
+            "gpt-4",
+            "openai",
+            None,
+            0,
+            Some("code-review"),
+        );
+        assert!(status_with_skill.contains("skill"), "Status should mention skill");
+        assert!(status_with_skill.contains("code-review"), "Status should show skill name");
+    }
+
+    #[test]
+    fn test_chat_box_top() {
+        let theme = Theme::detect();
+
+        let header = TerminalUI::chat_box_top(&theme);
+
+        // Should contain separator
+        assert!(header.contains("─"), "Should contain separator line");
+
+        // Should have newlines
+        assert!(header.contains('\n'), "Should be multi-line");
+
+        // Should start and end with newline for proper spacing
+        assert!(header.starts_with('\n'), "Should start with newline");
+        assert!(header.ends_with('\n'), "Should end with newline");
+    }
+
+    #[test]
+    fn test_chat_box_bottom() {
+        let theme = Theme::detect();
+
+        let footer = TerminalUI::chat_box_bottom(
+            &theme,
+            "gpt-4-turbo",
+            "openai",
+            Some("copilot"),
+            3,
+            Some("refactor"),
+        );
+
+        // Should contain separator
+        assert!(footer.contains("─"), "Should contain separator line");
+
+        // Should contain all status information
+        assert!(footer.contains("gpt-4-turbo"), "Should show model name");
+        assert!(footer.contains("openai"), "Should show provider");
+        assert!(footer.contains("copilot"), "Should show ACP status");
+        assert!(footer.contains("3"), "Should show MCP count");
+        assert!(footer.contains("refactor"), "Should show skill name");
+
+        // Should have multiple lines
+        assert!(footer.contains('\n'), "Should be multi-line");
+    }
+
+    #[test]
+    fn test_width_with_columns_env() {
+        // Test that COLUMNS environment variable is respected
+        std::env::set_var("COLUMNS", "120");
+        let width = TerminalUI::width();
+        assert_eq!(width, 120, "Should use COLUMNS env variable");
+
+        // Clean up
+        std::env::remove_var("COLUMNS");
+    }
 }
