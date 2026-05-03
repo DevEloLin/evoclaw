@@ -87,7 +87,14 @@ async fn main() -> Result<()> {
     gw_cfg.allowlist = allowlist;
     gw_cfg.max_concurrent = max_concurrent;
 
-    serve(gw_cfg, provider, registry, cfg.model.default, identity_summary).await
+    serve(
+        gw_cfg,
+        provider,
+        registry,
+        cfg.model.default,
+        identity_summary,
+    )
+    .await
 }
 
 async fn load_identity_summary(home: &std::path::Path, cfg: &Config) -> String {

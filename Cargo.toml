@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.3.2"
+version      = "0.3.3"
 edition      = "2021"
 rust-version = "1.80"
 license      = "MIT"
@@ -34,6 +34,8 @@ thiserror      = "2"
 
 # CLI / IO / config
 clap           = { version = "4", features = ["derive"] }
+unicode-width  = "0.2"
+crossterm      = "0.28"
 directories    = "5"
 chrono         = { version = "0.4", features = ["serde"] }
 tracing        = "0.1"

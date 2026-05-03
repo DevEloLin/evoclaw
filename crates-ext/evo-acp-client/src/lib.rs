@@ -28,9 +28,8 @@
 
 use agent_client_protocol::schema::{
     self as acp, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
-    SessionUpdate, TextContent,
+    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, TextContent,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use directories::BaseDirs;
@@ -180,13 +179,10 @@ fn load_catalog() -> Vec<AgentProfile> {
 
     // Full override file: replaces the entire list.
     if let Ok(home_path) = home() {
-        let user_full = home_path
-            .join(".evoclaw/agents")
-            .join("registry.json");
+        let user_full = home_path.join(".evoclaw/agents").join("registry.json");
         if user_full.exists() {
             if let Ok(text) = std::fs::read_to_string(&user_full) {
-                let user_entries =
-                    parse_registry_or_warn(&text, &user_full.display().to_string());
+                let user_entries = parse_registry_or_warn(&text, &user_full.display().to_string());
                 if !user_entries.is_empty() {
                     entries = user_entries;
                 }
@@ -205,9 +201,7 @@ fn load_catalog() -> Vec<AgentProfile> {
                 paths.sort();
                 for path in paths {
                     if let Ok(text) = std::fs::read_to_string(&path) {
-                        for patch in
-                            parse_patch_or_warn(&text, &path.display().to_string())
-                        {
+                        for patch in parse_patch_or_warn(&text, &path.display().to_string()) {
                             apply_patch(&mut entries, patch);
                         }
                     }
@@ -558,8 +552,7 @@ impl AcpClient {
     pub async fn cancel(&self, session_id: &str) -> Result<(), AcpError> {
         let connection = self.connection_clone().await?;
         let session = SessionId::new(session_id.to_string());
-        connection
-            .send_notification(acp::CancelNotification::new(session))?;
+        connection.send_notification(acp::CancelNotification::new(session))?;
         Ok(())
     }
 
@@ -777,7 +770,10 @@ mod tests {
             id: "claude".into(),
             name: "Claude".into(),
             command: "npx".into(),
-            args: vec!["-y".into(), "@agentclientprotocol/claude-agent-acp@latest".into()],
+            args: vec![
+                "-y".into(),
+                "@agentclientprotocol/claude-agent-acp@latest".into(),
+            ],
             env: vec![],
             installed_at: None,
         };

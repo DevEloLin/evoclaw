@@ -155,8 +155,7 @@ fn load_catalog() -> Vec<ServerProfile> {
         let user_full = home_path.join(".evoclaw/mcp").join("registry.json");
         if user_full.exists() {
             if let Ok(text) = std::fs::read_to_string(&user_full) {
-                let user_entries =
-                    parse_registry_or_warn(&text, &user_full.display().to_string());
+                let user_entries = parse_registry_or_warn(&text, &user_full.display().to_string());
                 if !user_entries.is_empty() {
                     entries = user_entries;
                 }
@@ -534,7 +533,10 @@ mod tests {
         };
         assert_eq!(
             d.resolve().unwrap(),
-            ("npx".into(), vec!["-y".into(), "@scope/pkg".into(), "--flag".into()])
+            (
+                "npx".into(),
+                vec!["-y".into(), "@scope/pkg".into(), "--flag".into()]
+            )
         );
     }
 
@@ -558,7 +560,10 @@ mod tests {
         };
         assert_eq!(
             d.resolve().unwrap(),
-            ("/usr/local/bin/my-mcp".into(), vec!["--port".into(), "0".into()])
+            (
+                "/usr/local/bin/my-mcp".into(),
+                vec!["--port".into(), "0".into()]
+            )
         );
     }
 

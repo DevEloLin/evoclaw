@@ -15,7 +15,9 @@ pub mod openai;
 
 pub use acp::AcpProvider;
 pub use anthropic::AnthropicProvider;
-pub use browser::{AuthMethod, BrowserAuthShape, BrowserProfile, BrowserProvider, BrowserShapeRepr};
+pub use browser::{
+    AuthMethod, BrowserAuthShape, BrowserProfile, BrowserProvider, BrowserShapeRepr,
+};
 pub use copilot::CopilotProvider;
 pub use fingerprint::{ToolFingerprint, ToolPayload};
 pub use openai::OpenAiCompatProvider;
@@ -155,6 +157,12 @@ pub enum ProviderError {
     Auth(String),
     #[error("budget: {0}")]
     Budget(String),
+    /// Local pre-flight failure that has nothing to do with the upstream
+    /// provider. Used when EvoClaw refuses to dispatch a request because
+    /// of an internal invariant (e.g. fully-redacted prompt detected
+    /// before send — see `prd/plan/acp.md`).
+    #[error("{0}")]
+    Other(String),
 }
 
 #[async_trait]
