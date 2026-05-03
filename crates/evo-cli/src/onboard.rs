@@ -401,7 +401,7 @@ pub async fn pick_provider() -> Result<ProviderChoice> {
         }
 
         // Handle quick pick (1-5)
-        if n >= 1 && n <= QUICK_PICK_COUNT {
+        if (1..=QUICK_PICK_COUNT).contains(&n) {
             let profile = &PROVIDERS[n - 1];
             if profile.id == "custom" {
                 return prompt_custom();
@@ -817,10 +817,7 @@ pub async fn save_config(profile: &ProviderChoice) -> Result<PathBuf> {
 /// Persist `config.toml` with the selected auth method recorded under `[auth]`.
 /// Older callers that only know about API-key auth keep working via
 /// `save_config` (above), which forwards `AuthMethod::ApiKey`.
-pub async fn save_config_with_auth(
-    profile: &ProviderChoice,
-    auth: AuthMethod,
-) -> Result<PathBuf> {
+pub async fn save_config_with_auth(profile: &ProviderChoice, auth: AuthMethod) -> Result<PathBuf> {
     let path = config_path()?;
     let toml_text = render_config_toml_with_auth(profile, auth);
     tokio::fs::create_dir_all(evoclaw_dir()?).await?;
@@ -888,7 +885,10 @@ pub fn pick_auth_method(profile: &ProviderChoice) -> Result<AuthMethod> {
 
     loop {
         println!();
-        println!("  How would you like to authenticate with {}?", profile.name);
+        println!(
+            "  How would you like to authenticate with {}?",
+            profile.name
+        );
         println!("    1)  API key                       (preferred · simplest)");
         println!("    2)  Browser sign-in               (paste session token from your browser)");
 
@@ -911,14 +911,20 @@ pub fn pick_auth_method(profile: &ProviderChoice) -> Result<AuthMethod> {
 
         // Handle ESC or cancel
         if input == "0" || input.to_lowercase() == "cancel" || input.to_lowercase() == "esc" {
-            return Err(eyre::eyre!("Authentication method selection cancelled by user"));
+            return Err(eyre::eyre!(
+                "Authentication method selection cancelled by user"
+            ));
         }
 
         match input {
             "" | "1" | "api_key" | "apikey" | "key" => return Ok(AuthMethod::ApiKey),
             "2" | "browser" | "web" | "cookie" => return Ok(AuthMethod::Browser),
             "3" | "acp" | "agent" if has_acp => return Ok(AuthMethod::Acp),
-            "0" => return Err(eyre::eyre!("Authentication method selection cancelled by user")),
+            "0" => {
+                return Err(eyre::eyre!(
+                    "Authentication method selection cancelled by user"
+                ))
+            }
             other => {
                 if has_acp {
                     println!("  unrecognised choice '{other}', try 1 / 2 / 3 / 0");
@@ -1009,8 +1015,8 @@ pub async fn save_browser_profile(profile: &BrowserProfile) -> Result<PathBuf> {
     let dir = browser_profiles_dir()?;
     tokio::fs::create_dir_all(&dir).await?;
     let path = browser_profile_path(&profile.provider_id)?;
-    let json = serde_json::to_string_pretty(profile)
-        .wrap_err("serialise BrowserProfile to JSON")?;
+    let json =
+        serde_json::to_string_pretty(profile).wrap_err("serialise BrowserProfile to JSON")?;
     tokio::fs::write(&path, json).await?;
     chmod_600(&path).await?;
     Ok(path)
@@ -1037,8 +1043,8 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_is_default_first_entry() {
-        assert_eq!(PROVIDERS[0].id, "deepseek");
+    fn openai_is_default_first_entry() {
+        assert_eq!(PROVIDERS[0].id, "openai");
     }
 
     #[test]

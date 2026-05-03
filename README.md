@@ -18,7 +18,7 @@
 
 <p align="center">
   <b>🌐 Website</b>: <a href="https://develolin.github.io/EvoClawSite/">develolin.github.io/EvoClawSite</a> ·
-  <b>📦 Version</b>: <a href="./version"><code>v0.3.1</code></a> ·
+  <b>📦 Version</b>: <a href="./version"><code>v0.3.3</code></a> ·
   <b>🇨🇳 中文文档</b>: <a href="./docs/zh/README.md">docs/zh/README.md</a>
 </p>
 
@@ -130,31 +130,62 @@ Type **`evoclaw`** — no subcommand — to enter the interactive shell:
 ```
 $ evoclaw
 
-   ╔═══════════════════════════════════════════════════════════════╗
-   ║      ███████╗██╗   ██╗ ██████╗  ██████╗██╗      █████╗ ██╗    ║
-   ║      ██╔════╝██║   ██║██╔═══██╗██╔════╝██║     ██╔══██╗██║    ║
-   ║                          ...                                  ║
-   ║             local-first · self-evolving · v0.3.1              ║
-   ╚═══════════════════════════════════════════════════════════════╝
+╭─────────────────────────────────────────────────────────────────────────────────╮
+│ evoclaw v0.3.3  •  deepseek  •  deepseek-chat                                   │
+│ workspace: ~/.evoclaw                                        2026-05-04 12:00:00 │
+╰─────────────────────────────────────────────────────────────────────────────────╯
 
-   ┌─ context ─────────────────────────────────────────────────────┐
-   │  home    : ~/.evoclaw                                         │
-   │  provider: deepseek    (https://api.deepseek.com/v1)          │
-   │  model   : deepseek-chat                                      │
-   │  api key : ok · secrets file: ~/.evoclaw/secrets/deepseek.key │
-   │  vault   : 2 entries · redactor active                        │
-   │  skills  : 8 learned                                          │
-   └───────────────────────────────────────────────────────────────┘
+╭─ evoclaw ───────────────────────────────────────────────────────────────────────╮
+│ auth: ok · ~/.evoclaw/secrets/deepseek.key                                      │
+│ account: not available for API key auth                                         │
+│ vault: 2 secrets · redactor active                                              │
+│ skills: 8 learned  ·  mcp: none attached                                        │
+│ Type a question or /help for commands · Ctrl-D to exit                          │
+╰─────────────────────────────────────────────────────────────────────────────────╯
 
-   Type a task in plain language to run the agent.
-   /help for slash commands  ·  Tab to auto-complete  ·  /exit or Ctrl-D to quit.
-   Vim keybindings: Ctrl+A/E (start/end), Ctrl+K/U (delete to end/start), Ctrl+W (delete word).
-   Ctrl-C twice to exit.
 
-evoclaw> diagnose why my SSH hangs intermittently
-→ running…  log: ~/.evoclaw/logs/task-...jsonl
-=== final (4 turns, 6.2s) ===
-...
+
+
+╭─ input ─────────────────────────────────────────────────────────────────────────╮
+│ ▷ Type your message and press Enter to send  ·  /help for commands              │
+╰─────────────────────────────────────────────────────────────────────────────────╯
+Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
+```
+
+Type a question and press Enter — it appears in the conversation area above while the
+assistant streams in-place on a single status line:
+
+```
+╭─ You · 12:00:05 ────────────────────────────────────────────────────────────────╮
+│ diagnose why my SSH hangs intermittently                                         │
+╰─────────────────────────────────────────────────────────────────────────────────╯
+
+⠹ generating · deepseek · 3.1s · 412 chars
+
+╭─ input ─────────────────────────────────────────────────────────────────────────╮
+│ ▷ Type your message and press Enter to send  ·  /help for commands              │
+╰─────────────────────────────────────────────────────────────────────────────────╯
+Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
+```
+
+When done the full answer scrolls into the history above the fixed input box:
+
+```
+╭─ EvoClaw · deepseek · 12:00:05 · 3.4s · 512tok ────────────────────────────────╮
+│ The most common cause is TCP keepalive not being configured.                     │
+│                                                                                  │
+│ ## Fix                                                                           │
+│ Add to ~/.ssh/config:                                                            │
+│   ┌─ code: ssh ──────────────────────────────────────────────────────           │
+│   │ ServerAliveInterval 60                                                       │
+│   │ ServerAliveCountMax 3                                                        │
+│   └───────────────────────────────────────────────────────────────              │
+╰─────────────────────────────────────────────────────────────────────────────────╯
+
+╭─ input ─────────────────────────────────────────────────────────────────────────╮
+│ ▷ Type your message and press Enter to send  ·  /help for commands              │
+╰─────────────────────────────────────────────────────────────────────────────────╯
+Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
 ```
 
 5-minute walkthrough: [`docs/getting-started.md`](./docs/getting-started.md) · 中文: [`docs/zh/getting-started.md`](./docs/zh/getting-started.md)
@@ -343,7 +374,7 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 7   — Multi-channel        | ⏳ v0.6 plan | future     | Telegram / Slack / Discord plugins, Local Dashboard, trust-FSM auto-promote, group-mention enforcement |
 | 8   — Deep hardening       | ⏳ v0.7 plan | future     | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
-Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.3.1.
+Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.3.3.
 
 ---
 
@@ -367,7 +398,7 @@ The version of this code is recorded in [`./version`](./version). The site repo 
 - `EvoClaw/version` (this repo)
 - `EvoClawSite/version`
 
-A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.3.1`**.
+A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.3.3`**.
 
 ---
 

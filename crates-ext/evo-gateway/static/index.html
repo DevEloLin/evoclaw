@@ -156,7 +156,7 @@
 </head>
 <body>
   <div class="container">
-    <h1>EvoClaw <span class="version">v0.3.1</span></h1>
+    <h1>EvoClaw <span class="version">v0.3.3</span></h1>
     <div class="hint">Local Gateway &middot; POST /chat with <code>Authorization: Bearer &lt;token&gt;</code></div>
 
     <div class="row">
@@ -165,15 +165,15 @@
         <input id="tok" type="password" autocomplete="off" placeholder="paste your gateway token">
       </label>
     </div>
-    <div id="session">Current account: unavailable</div>
+    <div id="session">Provider: —</div>
 
-    <textarea id="prompt" placeholder="Tell EvoClaw what to do..."></textarea>
+    <textarea id="prompt" placeholder="Type your message and press Send  ·  /help for slash commands"></textarea>
     <div class="row">
-      <button id="go">Send Message</button>
+      <button id="go">Send</button>
       <span id="meta" class="meta"></span>
     </div>
 
-    <pre id="out">(no response yet)</pre>
+    <pre id="out"></pre>
   </div>
 
   <script>
@@ -184,33 +184,29 @@
 
     async function refreshSession() {
       const token = tok.value.trim();
-      if (!token) {
-        session.textContent = 'Current account: unavailable';
-        return;
-      }
+      if (!token) { session.textContent = 'Provider: —'; return; }
       try {
-        const r = await fetch('/session', {
-          headers: { 'Authorization': 'Bearer ' + token }
-        });
-        if (!r.ok) {
-          session.textContent = 'Current account: unavailable';
-          return;
-        }
-        const data = await r.json();
-        session.textContent = 'Current account: ' + (data.identity || data.provider || 'unavailable');
-      } catch (_e) {
-        session.textContent = 'Current account: unavailable';
+        const r = await fetch('/session', { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!r.ok) { session.textContent = 'Provider: — (invalid token)'; return; }
+        const d = await r.json();
+        session.textContent = 'Provider: ' + (d.identity || d.provider || '—');
+      } catch (_) {
+        session.textContent = 'Provider: — (gateway unreachable)';
       }
     }
 
     tok.addEventListener('change', refreshSession);
     tok.addEventListener('blur', refreshSession);
+
     document.getElementById('go').addEventListener('click', async () => {
       const token = tok.value.trim();
       const input = document.getElementById('prompt').value.trim();
       if (!input) return;
       await refreshSession();
-      meta.textContent = 'sending...';
+      const btn = document.getElementById('go');
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+      meta.textContent = '';
       out.textContent = '';
       try {
         const t0 = performance.now();
@@ -219,13 +215,16 @@
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
           body: JSON.stringify({ input })
         });
-        const t1 = performance.now();
-        const data = await r.json();
-        meta.textContent = r.status + ' / ' + (t1-t0).toFixed(0) + ' ms / ' + (data.turns||0) + ' turns / ' + (data.task_id||'');
-        out.textContent = data.final_text || JSON.stringify(data, null, 2);
+        const ms = (performance.now() - t0).toFixed(0);
+        const d = await r.json();
+        meta.textContent = r.status + ' · ' + ms + ' ms · ' + (d.turns || 0) + ' turns · ' + (d.task_id || '');
+        out.textContent = d.final_text || JSON.stringify(d, null, 2);
       } catch (e) {
         meta.textContent = 'error';
         out.textContent = String(e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Send';
       }
     });
   </script>
