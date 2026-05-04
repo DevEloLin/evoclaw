@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// PRD §42.3 — head + omit + tail truncation.
@@ -63,16 +64,26 @@ pub struct ToolContext {
     /// PRD §13.1 / README permission ladder. Defaults to `Permission::P1`
     /// (workspace write — the documented default ceiling).
     pub max_permission: Permission,
+    /// Canonical path of the running EvoClaw binary. Populated automatically
+    /// by `Default`. Write tools and `run_shell` reject any operation that
+    /// targets this path or references its filename, preventing the agent from
+    /// self-modifying its own executable.
+    pub self_exe: Option<Arc<PathBuf>>,
 }
 
 impl Default for ToolContext {
     fn default() -> Self {
+        let self_exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.canonicalize().ok())
+            .map(Arc::new);
         Self {
             workspace: PathBuf::from("."),
             allow_user_prompt: false,
             default_shell_timeout: Duration::from_secs(30),
             max_observation_chars: 8000,
             max_permission: Permission::DEFAULT,
+            self_exe,
         }
     }
 }
@@ -93,6 +104,35 @@ impl ToolContext {
     pub fn with_max_permission(mut self, p: Permission) -> Self {
         self.max_permission = p;
         self
+    }
+
+    /// Deny a write operation if `path` resolves to the running binary.
+    fn deny_if_self_write(&self, path: &Path) -> Result<(), ToolError> {
+        if let Some(exe) = &self.self_exe {
+            if path == exe.as_ref() {
+                return Err(ToolError::Denied(
+                    "self-guard: cannot write to own executable".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Deny a shell command if it references the running binary's filename,
+    /// blocking replacement, deletion, or chmod of the executable.
+    fn deny_if_shell_targets_self(&self, cmd: &str) -> Result<(), ToolError> {
+        if let Some(exe) = &self.self_exe {
+            let stem = exe
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("evoclaw");
+            if cmd.contains(stem) {
+                return Err(ToolError::Denied(format!(
+                    "self-guard: shell command references own executable '{stem}'"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -340,6 +380,7 @@ impl Tool for WriteFile {
         let a: WriteArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
         let path = resolve_within_workspace(&ctx.workspace, &a.path).await?;
+        ctx.deny_if_self_write(&path)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -390,6 +431,7 @@ impl Tool for RunShell {
     async fn run(&self, ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         let a: ShellArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
+        ctx.deny_if_shell_targets_self(&a.cmd)?;
         let requested = a
             .timeout_ms
             .map(Duration::from_millis)
@@ -527,6 +569,7 @@ impl Tool for PatchFile {
         let a: PatchArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
         let path = resolve_within_workspace(&ctx.workspace, &a.path).await?;
+        ctx.deny_if_self_write(&path)?;
         let original = tokio::fs::read_to_string(&path).await?;
         let count = original.matches(&a.old_content).count();
         if count == 0 {
@@ -1077,5 +1120,92 @@ mod tests {
                 spec.description.len()
             );
         }
+    }
+
+    // ── self-guard tests ──────────────────────────────────────────────────────
+
+    fn ctx_with_fake_exe(dir: &Path, exe_name: &str) -> ToolContext {
+        // Place a sentinel "binary" inside the workspace so workspace-boundary
+        // checks pass, then point self_exe at its canonical path.
+        let exe_path = dir.join(exe_name);
+        std::fs::write(&exe_path, b"fake-binary").unwrap();
+        let canonical = exe_path.canonicalize().unwrap();
+        ToolContext {
+            self_exe: Some(Arc::new(canonical)),
+            ..ctx_in(dir)
+        }
+    }
+
+    #[tokio::test]
+    async fn write_file_blocked_when_path_is_self_exe() {
+        let dir = unique_tmp("self-write");
+        let ctx = ctx_with_fake_exe(&dir, "evoclaw");
+        let err = WriteFile
+            .run(&ctx, json!({"path": "evoclaw", "content": "pwned"}))
+            .await
+            .expect_err("must deny write to own exe");
+        assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
+        // File must not be overwritten.
+        let content = std::fs::read(dir.join("evoclaw")).unwrap();
+        assert_eq!(content, b"fake-binary");
+    }
+
+    #[tokio::test]
+    async fn patch_file_blocked_when_path_is_self_exe() {
+        let dir = unique_tmp("self-patch");
+        // patch_file reads the file first, so put recognisable content in it.
+        let exe_path = dir.join("evoclaw");
+        std::fs::write(&exe_path, "original").unwrap();
+        let canonical = exe_path.canonicalize().unwrap();
+        let ctx = ToolContext {
+            self_exe: Some(Arc::new(canonical)),
+            ..ctx_in(&dir)
+        };
+        let err = PatchFile
+            .run(
+                &ctx,
+                json!({"path": "evoclaw", "old_content": "original", "new_content": "pwned"}),
+            )
+            .await
+            .expect_err("must deny patch to own exe");
+        assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("evoclaw")).unwrap(), "original");
+    }
+
+    #[tokio::test]
+    async fn run_shell_blocked_when_cmd_references_self_exe() {
+        let dir = unique_tmp("self-shell");
+        let ctx = ctx_with_fake_exe(&dir, "evoclaw");
+        let err = RunShell
+            .run(&ctx, json!({"cmd": "rm evoclaw"}))
+            .await
+            .expect_err("must deny shell referencing own exe");
+        assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn run_shell_allowed_when_cmd_unrelated_to_self() {
+        let dir = unique_tmp("self-shell-ok");
+        let ctx = ctx_with_fake_exe(&dir, "evoclaw");
+        let out = RunShell
+            .run(&ctx, json!({"cmd": "echo hello"}))
+            .await
+            .unwrap();
+        assert!(out.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn write_file_allowed_when_self_exe_not_set() {
+        let dir = unique_tmp("self-none");
+        let mut ctx = ctx_in(&dir);
+        ctx.self_exe = None;
+        let path = dir.join("data.txt");
+        std::fs::write(&path, b"ok").unwrap();
+        // Should succeed — no guard when self_exe is None.
+        let out = WriteFile
+            .run(&ctx, json!({"path": "data.txt", "content": "updated"}))
+            .await
+            .unwrap();
+        assert!(out.contains("wrote"));
     }
 }

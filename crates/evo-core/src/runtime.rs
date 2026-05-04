@@ -961,7 +961,12 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         } else {
             format!("{history}\n\n")
         };
-        Message::user(format!("{prefix}<user_input>\n{user_input}\n</user_input>"))
+        Message::user(format!(
+            "{prefix}<user_input>\n{user_input}\n</user_input>\n\
+             <format_requirement>Reply in standard Markdown: \
+             ## headings, - lists, **bold**, `inline code`, ```fenced blocks```. \
+             Every response MUST use at least one Markdown element.</format_requirement>"
+        ))
     }
 
     fn compose_next_user_msg(&self, tool_results: Vec<ToolResult>) -> Message {
@@ -971,10 +976,24 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             parts.push(history);
         }
         parts.push("<tool_results>".into());
+        let mut has_error = false;
         for r in &tool_results {
-            parts.push(format!("[{}] {}", r.call_id, r.content));
+            if r.is_error {
+                has_error = true;
+                parts.push(format!("[{}] TOOL_ERROR: {}", r.call_id, r.content));
+            } else {
+                parts.push(format!("[{}] {}", r.call_id, r.content));
+            }
         }
         parts.push("</tool_results>".into());
+        if has_error {
+            let alternatives = self.registry.names().join(", ");
+            parts.push(format!(
+                "<retry_directive>Tool call failed. IMMEDIATELY call a different tool to \
+                 accomplish the same goal — do NOT write explanation text. \
+                 Available: {alternatives}</retry_directive>"
+            ));
+        }
         let mut msg = Message::user(parts.join("\n"));
         msg.tool_results = tool_results;
         msg
