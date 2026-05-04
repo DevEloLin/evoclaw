@@ -1064,6 +1064,8 @@ mod colors {
     // Text styles
     pub const DIM: &str = "\x1b[38;5;240m"; // Gray for secondary info
     pub const BOLD: &str = "\x1b[1m"; // Bold
+    pub const ITALIC: &str = "\x1b[3m"; // Italic
+    pub const STRIKETHROUGH: &str = "\x1b[9m"; // Strikethrough
     pub const RESET: &str = "\x1b[0m"; // Reset all
 
     // Semantic colors for different use cases
@@ -1134,6 +1136,16 @@ impl Theme {
     /// Bold — headings and emphasis
     fn bold(&self) -> &'static str {
         self.s(colors::BOLD)
+    }
+
+    /// Italic — emphasis in Markdown
+    fn italic(&self) -> &'static str {
+        self.s(colors::ITALIC)
+    }
+
+    /// Strikethrough — ~~deleted~~ text in Markdown
+    fn strikethrough(&self) -> &'static str {
+        self.s(colors::STRIKETHROUGH)
     }
 
     /// Light gray — for labels in key-value displays
@@ -1396,9 +1408,42 @@ impl TerminalUI {
                 continue;
             }
 
-            if let Some(content) = parse_unordered_list_item(trimmed) {
+            // GFM table row: | col | col |
+            if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 2 {
+                let inner = &trimmed[1..trimmed.len() - 1];
+                let is_sep = inner
+                    .chars()
+                    .all(|c| c == '-' || c == ':' || c == '|' || c == ' ');
+                if is_sep {
+                    out.push(format!(
+                        "  {dim}├────────────────────────────────┤{reset}",
+                        dim = theme.dim(),
+                        reset = theme.reset(),
+                    ));
+                    continue;
+                }
+                let sep = format!(" {dim}│{reset} ", dim = theme.dim(), reset = theme.reset());
+                let row_str = inner
+                    .split('|')
+                    .map(|c| render_inline_markdown(theme, c.trim()))
+                    .collect::<Vec<_>>()
+                    .join(&sep);
                 out.push(format!(
-                    "{accent}•{reset} {}",
+                    "  {dim}│{reset} {row_str} {dim}│{reset}",
+                    dim = theme.dim(),
+                    reset = theme.reset(),
+                ));
+                continue;
+            }
+
+            let indent_spaces = raw_line.chars().take_while(|&c| c == ' ').count();
+            let nest = indent_spaces / 2;
+
+            if let Some(content) = parse_unordered_list_item(trimmed) {
+                let pad = "  ".repeat(nest);
+                let bullet = if nest == 0 { "•" } else { "◦" };
+                out.push(format!(
+                    "{pad}{accent}{bullet}{reset} {}",
                     render_inline_markdown(theme, content),
                     accent = theme.accent(),
                     reset = theme.reset(),
@@ -1407,8 +1452,9 @@ impl TerminalUI {
             }
 
             if let Some((n, content)) = parse_ordered_list_item(trimmed) {
+                let pad = "  ".repeat(nest);
                 out.push(format!(
-                    "{accent}{n}.{reset} {}",
+                    "{pad}{accent}{n}.{reset} {}",
                     render_inline_markdown(theme, content),
                     accent = theme.accent(),
                     reset = theme.reset(),
@@ -1521,80 +1567,147 @@ fn parse_ordered_list_item(s: &str) -> Option<(&str, &str)> {
 }
 
 fn render_inline_markdown(theme: &Theme, text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
     let mut out = String::new();
-    let mut chars = text.chars().peekable();
+    let mut i = 0;
     let mut in_code = false;
     let mut in_bold = false;
+    let mut in_italic = false;
+    let mut in_strike = false;
 
-    while let Some(ch) = chars.next() {
+    while i < n {
+        let ch = chars[i];
+
+        // Inline code
         if ch == '`' {
-            if in_code {
-                out.push_str(theme.reset());
+            out.push_str(if in_code {
+                theme.reset()
             } else {
-                out.push_str(theme.highlight());
-            }
+                theme.highlight()
+            });
             in_code = !in_code;
+            i += 1;
             continue;
         }
 
-        if !in_code && ch == '*' && matches!(chars.peek(), Some('*')) {
-            let _ = chars.next();
-            if in_bold {
-                out.push_str(theme.reset());
-            } else {
-                out.push_str(theme.bold());
-            }
-            in_bold = !in_bold;
+        if in_code {
+            out.push(ch);
+            i += 1;
             continue;
         }
 
-        if !in_code && ch == '[' {
+        // Link: [text](url)
+        if ch == '[' {
             let mut label = String::new();
-            let mut saw_close = false;
-            while let Some(&next) = chars.peek() {
-                chars.next();
-                if next == ']' {
-                    saw_close = true;
-                    break;
+            let mut j = i + 1;
+            let mut depth = 1usize;
+            while j < n {
+                match chars[j] {
+                    '[' => {
+                        depth += 1;
+                        label.push('[');
+                    }
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        label.push(']');
+                    }
+                    c => label.push(c),
                 }
-                label.push(next);
+                j += 1;
             }
-            if saw_close && matches!(chars.peek(), Some('(')) {
-                let _ = chars.next();
+            if j < n && j + 1 < n && chars[j + 1] == '(' {
                 let mut url = String::new();
+                let mut k = j + 2;
                 let mut closed = false;
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if next == ')' {
+                while k < n {
+                    if chars[k] == ')' {
                         closed = true;
+                        k += 1;
                         break;
                     }
-                    url.push(next);
+                    url.push(chars[k]);
+                    k += 1;
                 }
                 if closed {
                     out.push_str(theme.info());
                     out.push_str(&label);
                     out.push_str(theme.reset());
                     out.push_str(theme.dim());
-                    out.push_str(" (");
-                    out.push_str(&url);
-                    out.push(')');
+                    out.push_str(&format!(" ({url})"));
                     out.push_str(theme.reset());
+                    i = k;
                     continue;
                 }
             }
-            out.push('[');
-            out.push_str(&label);
-            if saw_close {
-                out.push(']');
-            }
+        }
+
+        // Strikethrough: ~~...~~
+        if ch == '~' && i + 1 < n && chars[i + 1] == '~' {
+            out.push_str(if in_strike {
+                theme.reset()
+            } else {
+                theme.strikethrough()
+            });
+            in_strike = !in_strike;
+            i += 2;
             continue;
         }
 
+        // Bold: **...**
+        if ch == '*' && i + 1 < n && chars[i + 1] == '*' {
+            out.push_str(if in_bold {
+                theme.reset()
+            } else {
+                theme.bold()
+            });
+            in_bold = !in_bold;
+            i += 2;
+            continue;
+        }
+
+        // Italic: *...* (single asterisk)
+        if ch == '*' {
+            out.push_str(if in_italic {
+                theme.reset()
+            } else {
+                theme.italic()
+            });
+            in_italic = !in_italic;
+            i += 1;
+            continue;
+        }
+
+        // Italic: _..._ — skip at identifier boundaries to avoid snake_case issues
+        if ch == '_' {
+            let prev_word = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+            let next_word =
+                i + 1 < n && (chars[i + 1].is_alphanumeric() || chars[i + 1] == '_');
+            let is_boundary = if in_italic {
+                !next_word
+            } else {
+                !prev_word && !next_word
+            };
+            if is_boundary {
+                out.push_str(if in_italic {
+                    theme.reset()
+                } else {
+                    theme.italic()
+                });
+                in_italic = !in_italic;
+                i += 1;
+                continue;
+            }
+        }
+
         out.push(ch);
+        i += 1;
     }
 
-    if in_code || in_bold {
+    if in_code || in_bold || in_italic || in_strike {
         out.push_str(theme.reset());
     }
     out
@@ -4830,5 +4943,58 @@ mod ui_tests {
         assert!(rendered.contains("┌─ code: 中文语言标签"));
         assert!(rendered.contains("│ 内容"));
         assert!(rendered.contains("└"));
+    }
+
+    #[test]
+    fn test_render_inline_markdown_italic_single_asterisk() {
+        let theme = Theme { enabled: false };
+        let rendered = render_inline_markdown(&theme, "This is *italic* text");
+        assert!(rendered.contains("italic"), "italic text should pass through");
+        assert!(!rendered.contains('*'), "asterisks should be consumed");
+    }
+
+    #[test]
+    fn test_render_inline_markdown_strikethrough() {
+        let theme = Theme { enabled: false };
+        let rendered = render_inline_markdown(&theme, "~~deleted~~ text");
+        assert!(rendered.contains("deleted"));
+        assert!(!rendered.contains("~~"), "tildes should be consumed");
+    }
+
+    #[test]
+    fn test_render_markdown_gfm_table() {
+        let theme = Theme { enabled: false };
+        let md = "| Name | Age |\n|------|-----|\n| Alice | 30 |";
+        let rendered = TerminalUI::render_markdown(&theme, md);
+        assert!(rendered.contains("Name"), "header cell should appear");
+        assert!(rendered.contains("Age"), "header cell should appear");
+        assert!(rendered.contains("Alice"), "data cell should appear");
+        assert!(rendered.contains('│'), "table columns should have separator");
+        assert!(rendered.contains('├'), "separator row should render as rule");
+    }
+
+    #[test]
+    fn test_render_markdown_nested_list() {
+        let theme = Theme { enabled: false };
+        let md = "- top\n  - nested";
+        let rendered = TerminalUI::render_markdown(&theme, md);
+        assert!(rendered.contains("top"));
+        assert!(rendered.contains("nested"));
+        // Nested item should be indented further than top-level
+        let top_line = rendered.lines().find(|l| l.contains("top")).unwrap();
+        let nested_line = rendered.lines().find(|l| l.contains("nested")).unwrap();
+        let top_indent = top_line.chars().take_while(|&c| c == ' ').count();
+        let nested_indent = nested_line.chars().take_while(|&c| c == ' ').count();
+        assert!(
+            nested_indent > top_indent,
+            "nested list item should be indented more: top={top_indent} nested={nested_indent}"
+        );
+    }
+
+    #[test]
+    fn test_render_inline_markdown_snake_case_not_italic() {
+        let theme = Theme { enabled: false };
+        let rendered = render_inline_markdown(&theme, "use snake_case here");
+        assert!(rendered.contains("snake_case"), "underscore in identifier should not trigger italic");
     }
 }

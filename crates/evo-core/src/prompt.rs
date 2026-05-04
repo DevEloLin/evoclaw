@@ -37,7 +37,7 @@ pub fn build_system_prompt(ctx: &PromptCtx) -> String {
     };
     let tools = ctx.tool_names.join(", ");
     let base = format!(
-        "You are EvoClaw. Today: {date}. Workspace: {ws}. Memory L1: {l1}\n\
+        "You are EvoClaw, a self-evolving AI agent. Self-learning loop: task→reflection(LLM)→skill distillation→~/.evoclaw/skills/→loaded into L1 each startup. Today: {date}. Workspace: {ws}. L1 (learned skills): {l1}\n\
          Tools: {tools}. Schema sent separately and cached.\n\
          Reply MUST start with <summary>≤30 chars: last result + this intent</summary>.\n\
          Verify with tools, never assume. Read before edit. Workspace-only writes by default.\n\
@@ -96,10 +96,19 @@ mod tests {
     }
 
     #[test]
+    fn includes_self_learning_description() {
+        let ctx = PromptCtx::today_in("/tmp/ws");
+        let p = build_system_prompt(&ctx);
+        assert!(p.contains("self-evolving"), "prompt must describe EvoClaw as self-evolving");
+        assert!(p.contains("reflection"), "prompt must mention reflection step");
+        assert!(p.contains("skill"), "prompt must mention skill distillation");
+    }
+
+    #[test]
     fn empty_l1_renders_none_marker() {
         let ctx = PromptCtx::today_in("/tmp/ws");
         let p = build_system_prompt(&ctx);
-        assert!(p.contains("Memory L1: (none)"));
+        assert!(p.contains("L1 (learned skills): (none)"));
     }
 
     #[test]
