@@ -3,8 +3,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
+
+static MEM_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -40,7 +43,11 @@ impl MemoryRecord {
     ) -> Self {
         let now = Utc::now();
         Self {
-            id: format!("mem-{}", now.format("%Y%m%dT%H%M%S%.6f")),
+            id: format!(
+                "mem-{}-{}",
+                now.format("%Y%m%dT%H%M%S%.6f"),
+                MEM_SEQ.fetch_add(1, Ordering::Relaxed)
+            ),
             layer,
             content: content.into(),
             source: source.into(),

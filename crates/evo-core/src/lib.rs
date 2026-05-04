@@ -2,6 +2,7 @@
 //! reflection. Phase 1 + Phase 2.
 
 pub mod channel;
+pub mod channel_config;
 pub mod channel_router;
 pub mod compression;
 pub mod distillation;
@@ -14,6 +15,7 @@ pub mod session;
 pub mod skill;
 pub mod skill_tree;
 pub mod summary;
+pub mod telegram;
 
 pub use compression::{compress_if_due, CompressionConfig};
 pub use distillation::{
