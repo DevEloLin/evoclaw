@@ -758,6 +758,10 @@ impl UiRenderer {
 // ── Markdown renderer for finished assistant blocks ───────────────────────────
 
 /// Lightweight markdown → ANSI renderer for finished assistant blocks.
+///
+/// Handles: code fences, headings, hr, blockquotes, nested lists, GFM tables,
+/// and delegates inline formatting (bold, italic, strikethrough, links, code)
+/// to `render_inline`.
 pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
     let mut out = Vec::new();
     let mut in_code = false;
@@ -807,8 +811,9 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
         if depth > 0 && depth <= 6 {
             let rest = trimmed[depth..].trim();
             if !rest.is_empty() {
+                let heading_text = render_inline(theme, rest);
                 out.push(format!(
-                    "{bold}{frame}{prefix} {rest}{r}",
+                    "{bold}{frame}{prefix} {heading_text}{r}",
                     bold = theme.bold(),
                     frame = theme.frame(),
                     prefix = "#".repeat(depth),
@@ -818,33 +823,81 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
             }
         }
 
-        // Horizontal rule
-        if trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == '*' || c == '_') {
+        // Horizontal rule — all dashes, stars, or underscores (with optional spaces)
+        {
+            let non_space: Vec<char> = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+            if non_space.len() >= 3
+                && non_space
+                    .iter()
+                    .all(|&c| c == '-' || c == '*' || c == '_')
+                && non_space.iter().all(|&c| c == non_space[0])
+            {
+                out.push(format!(
+                    "{dim}────────────────────────────────{r}",
+                    dim = theme.dim(),
+                    r = theme.reset()
+                ));
+                continue;
+            }
+        }
+
+        // Blockquote (supports `> ` prefix; strips leading `>` chars for nesting)
+        if trimmed.starts_with('>') {
+            let rest = trimmed
+                .trim_start_matches('>')
+                .trim_start_matches(' ');
+            let rendered = render_inline(theme, rest);
             out.push(format!(
-                "{dim}────────────────────────────────{r}",
+                "{dim}│{r} {rendered}",
                 dim = theme.dim(),
                 r = theme.reset()
             ));
             continue;
         }
 
-        // Blockquote
-        if let Some(rest) = trimmed.strip_prefix("> ") {
+        // GFM table row: starts and ends with `|`
+        if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 2 {
+            let inner = &trimmed[1..trimmed.len() - 1];
+            // Separator row (e.g. |---|---| ) — render as thin rule
+            let is_sep = inner
+                .chars()
+                .all(|c| c == '-' || c == ':' || c == '|' || c == ' ');
+            if is_sep {
+                out.push(format!(
+                    "  {dim}├────────────────────────────────┤{r}",
+                    dim = theme.dim(),
+                    r = theme.reset()
+                ));
+                continue;
+            }
+            let sep = format!(" {dim}│{r} ", dim = theme.dim(), r = theme.reset());
+            let row_str = inner
+                .split('|')
+                .map(|c| render_inline(theme, c.trim()))
+                .collect::<Vec<_>>()
+                .join(&sep);
             out.push(format!(
-                "{dim}│{r} {rest}",
+                "  {dim}│{r} {row_str} {dim}│{r}",
                 dim = theme.dim(),
                 r = theme.reset()
             ));
             continue;
         }
+
+        // Leading-space count for nested list indentation (2 spaces = 1 level)
+        let indent_spaces = raw_line.chars().take_while(|&c| c == ' ').count();
+        let nest = indent_spaces / 2;
 
         // Unordered list
         if let Some(rest) = trimmed
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
         {
+            let pad = "  ".repeat(nest);
+            let bullet = if nest == 0 { "•" } else { "◦" };
+            let rendered = render_inline(theme, rest);
             out.push(format!(
-                "  {ok}•{r} {rest}",
+                "{pad}  {ok}{bullet}{r} {rendered}",
                 ok = theme.ok(),
                 r = theme.reset()
             ));
@@ -853,11 +906,13 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
 
         // Ordered list
         if let Some(dot) = trimmed.find(". ") {
-            if dot > 0 && trimmed[..dot].chars().all(|c| c.is_ascii_digit()) {
+            if dot > 0 && dot <= 3 && trimmed[..dot].chars().all(|c| c.is_ascii_digit()) {
                 let num = &trimmed[..dot];
                 let rest = &trimmed[dot + 2..];
+                let pad = "  ".repeat(nest);
+                let rendered = render_inline(theme, rest);
                 out.push(format!(
-                    "  {ok}{num}.{r} {rest}",
+                    "{pad}  {ok}{num}.{r} {rendered}",
                     ok = theme.ok(),
                     r = theme.reset()
                 ));
@@ -874,12 +929,68 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
     out.join("\n")
 }
 
+/// Parse `[link text](url)` starting at `chars[start]` (which must be `[`).
+/// Returns `(display_text, url, end_index)` where `end_index` is one past `)`.
+fn parse_inline_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
+    let mut i = start + 1;
+    let mut text = String::new();
+    let mut depth = 1usize;
+    while i < chars.len() {
+        match chars[i] {
+            '[' => {
+                depth += 1;
+                text.push('[');
+            }
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                text.push(']');
+            }
+            ch => text.push(ch),
+        }
+        i += 1;
+    }
+    if i >= chars.len() {
+        return None;
+    }
+    // Expect `(` immediately after `]`
+    if i + 1 >= chars.len() || chars[i + 1] != '(' {
+        return None;
+    }
+    i += 2; // skip `](`
+    let mut url = String::new();
+    while i < chars.len() && chars[i] != ')' {
+        url.push(chars[i]);
+        i += 1;
+    }
+    if i >= chars.len() {
+        return None;
+    }
+    // Strip optional title attribute: `url "title"` → keep only the URL token
+    let url_clean = url
+        .splitn(2, ' ')
+        .next()
+        .unwrap_or(url.as_str())
+        .to_string();
+    Some((text, url_clean, i + 1))
+}
+
 fn render_inline(theme: &Theme, text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
     let mut out = String::new();
-    let mut chars = text.chars().peekable();
+    let mut i = 0;
     let mut in_code = false;
     let mut in_bold = false;
-    while let Some(ch) = chars.next() {
+    let mut in_italic = false;
+    let mut in_strike = false;
+
+    while i < n {
+        let ch = chars[i];
+
+        // Inline code: `...`
         if ch == '`' {
             out.push_str(if in_code {
                 theme.reset()
@@ -887,17 +998,94 @@ fn render_inline(theme: &Theme, text: &str) -> String {
                 theme.highlight()
             });
             in_code = !in_code;
+            i += 1;
             continue;
         }
-        if !in_code && ch == '*' && matches!(chars.peek(), Some('*')) {
-            chars.next();
-            out.push_str(if in_bold { theme.reset() } else { theme.bold() });
+
+        if in_code {
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+
+        // Link: [text](url)
+        if ch == '[' {
+            if let Some((link_text, url, end)) = parse_inline_link(&chars, i) {
+                out.push_str(theme.info());
+                out.push_str(&link_text);
+                out.push_str(theme.reset());
+                out.push_str(theme.dim());
+                out.push_str(&format!(" ({url})"));
+                out.push_str(theme.reset());
+                i = end;
+                continue;
+            }
+        }
+
+        // Strikethrough: ~~...~~
+        if ch == '~' && i + 1 < n && chars[i + 1] == '~' {
+            out.push_str(if in_strike {
+                theme.reset()
+            } else {
+                theme.strikethrough()
+            });
+            in_strike = !in_strike;
+            i += 2;
+            continue;
+        }
+
+        // Bold: **...**  (check before single-* italic)
+        if ch == '*' && i + 1 < n && chars[i + 1] == '*' {
+            out.push_str(if in_bold {
+                theme.reset()
+            } else {
+                theme.bold()
+            });
             in_bold = !in_bold;
+            i += 2;
             continue;
         }
+
+        // Italic: *...* (single asterisk)
+        if ch == '*' {
+            out.push_str(if in_italic {
+                theme.reset()
+            } else {
+                theme.italic()
+            });
+            in_italic = !in_italic;
+            i += 1;
+            continue;
+        }
+
+        // Italic: _..._ — only at non-identifier boundaries to avoid `snake_case` false positives
+        if ch == '_' {
+            let prev_word = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+            let next_word =
+                i + 1 < n && (chars[i + 1].is_alphanumeric() || chars[i + 1] == '_');
+            let is_boundary = if in_italic {
+                !next_word
+            } else {
+                !prev_word && !next_word
+            };
+            if is_boundary {
+                out.push_str(if in_italic {
+                    theme.reset()
+                } else {
+                    theme.italic()
+                });
+                in_italic = !in_italic;
+                i += 1;
+                continue;
+            }
+        }
+
         out.push(ch);
+        i += 1;
     }
-    if in_code || in_bold {
+
+    // Close any unclosed spans
+    if in_code || in_bold || in_italic || in_strike {
         out.push_str(theme.reset());
     }
     out
