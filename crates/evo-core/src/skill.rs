@@ -215,7 +215,9 @@ impl Skill {
             std::process::id(),
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
-        tokio::fs::write(&tmp, render_yaml(self)).await?;
+        let yaml_str = render_yaml(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        tokio::fs::write(&tmp, yaml_str).await?;
         tokio::fs::rename(&tmp, &path).await?;
         Ok(path)
     }
@@ -227,8 +229,8 @@ impl Skill {
 }
 
 /// JSON is a subset of YAML so we serialise as JSON for now (Phase 2 keeps deps small).
-pub fn render_yaml(skill: &Skill) -> String {
-    serde_json::to_string_pretty(skill).unwrap_or_default() + "\n"
+pub fn render_yaml(skill: &Skill) -> Result<String, serde_json::Error> {
+    Ok(serde_json::to_string_pretty(skill)? + "\n")
 }
 
 pub fn parse_yaml(text: &str) -> Result<Skill, String> {

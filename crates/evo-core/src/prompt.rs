@@ -10,6 +10,10 @@ pub struct PromptCtx {
     pub workspace: String,
     pub l1_index: String,
     pub tool_names: Vec<String>,
+    /// Channel-specific formatting instruction appended to the system prompt
+    /// when the agent runs inside a messaging channel (Telegram, Slack, etc.).
+    /// `None` for the interactive CLI — no extra instruction is injected.
+    pub channel_hint: Option<String>,
 }
 
 impl PromptCtx {
@@ -20,6 +24,7 @@ impl PromptCtx {
             workspace: workspace.into(),
             l1_index: String::new(),
             tool_names: Vec::new(),
+            channel_hint: None,
         }
     }
 }
@@ -31,7 +36,7 @@ pub fn build_system_prompt(ctx: &PromptCtx) -> String {
         ctx.l1_index.as_str()
     };
     let tools = ctx.tool_names.join(", ");
-    format!(
+    let base = format!(
         "You are EvoClaw. Today: {date}. Workspace: {ws}. Memory L1: {l1}\n\
          Tools: {tools}. Schema sent separately and cached.\n\
          Reply MUST start with <summary>≤30 chars: last result + this intent</summary>.\n\
@@ -42,7 +47,11 @@ pub fn build_system_prompt(ctx: &PromptCtx) -> String {
         ws = ctx.workspace,
         l1 = l1,
         tools = tools,
-    )
+    );
+    match &ctx.channel_hint {
+        Some(hint) => format!("{base}\n{hint}"),
+        None => base,
+    }
 }
 
 #[cfg(test)]
@@ -56,6 +65,7 @@ mod tests {
             workspace: "/tmp/ws".into(),
             l1_index: "user prefers fish shell".into(),
             tool_names: vec!["read_file".into(), "run_shell".into()],
+            channel_hint: None,
         };
         let p = build_system_prompt(&ctx);
         let lines = p.lines().count();
@@ -72,6 +82,7 @@ mod tests {
             workspace: "/Users/x".into(),
             l1_index: "very long indexing line ".repeat(20),
             tool_names: (0..10).map(|i| format!("tool_{i}")).collect(),
+            channel_hint: None,
         };
         let p = build_system_prompt(&ctx);
         assert!(p.len() < 3200, "prompt too long: {} chars", p.len());
@@ -89,5 +100,18 @@ mod tests {
         let ctx = PromptCtx::today_in("/tmp/ws");
         let p = build_system_prompt(&ctx);
         assert!(p.contains("Memory L1: (none)"));
+    }
+
+    #[test]
+    fn channel_hint_appends_seventh_line() {
+        let mut ctx = PromptCtx::today_in("/tmp/ws");
+        ctx.channel_hint = Some("Format: plain text only.".into());
+        let p = build_system_prompt(&ctx);
+        let lines = p.lines().count();
+        assert_eq!(
+            lines, 7,
+            "with channel_hint expect 7 lines, got {lines}\n{p}"
+        );
+        assert!(p.contains("Format: plain text only."));
     }
 }
