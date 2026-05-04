@@ -303,13 +303,14 @@ impl UiState {
 /// │  User block 1                               │
 /// │  Assistant block 1 (done)                   │
 /// └─────────────────────────────────────────────┘  ← cleared & re-anchored each render
-/// ╭─ EvoClaw · streaming ──────────────────────╮  ┐
-/// │  live content lines...                     │  │ bottom zone
-/// │  running: task-xxx     elapsed: 5.2s       │  │ (cleared +
-/// ╰────────────────────────────────────────────╯  │  redrawn on
-/// ╭─ input ─────────────────────────────────────╮ │  every event)
-/// │ ▷ placeholder                               │  │
-/// ╰────────────────────────────────────────────╯  │
+/// ─ EvoClaw · streaming ───────────────────────   ┐
+///   live content lines...                         │ bottom zone
+/// ─ task ──────────────────────────────────────   │ (cleared +
+///   running: task-xxx  ·  elapsed: 5.2s           │  redrawn on
+/// ─────────────────────────────────────────────   │  every event)
+/// ─ input ─────────────────────────────────────
+///   ▷ placeholder                                 │
+/// ─────────────────────────────────────────────   │
 /// Shortcuts: /status /usage ...                   ┘
 /// ```
 ///
@@ -528,22 +529,24 @@ impl UiRenderer {
         term_w.min(120)
     }
 
-    /// Render a finished conversation block.
+    /// Render a finished conversation block — open sides, top/bottom rule only.
     fn render_block(&self, block: &ConversationBlock, term_w: usize) -> String {
         let bw = Self::bw(term_w);
-        let inner = bw.saturating_sub(4);
+        let inner = bw.saturating_sub(2);
         let theme = &self.theme;
 
-        let (tc, bc) = match block.role {
-            Role::User => (theme.ok(), theme.border()),
-            Role::Assistant => (theme.frame(), theme.border()),
-            Role::System => (theme.dim(), theme.border()),
+        // Role colour used for both the opening and closing rules so each
+        // block's pair of separators is visually tied together.
+        let tc = match block.role {
+            Role::User => theme.ok(),
+            Role::Assistant => theme.frame(),
+            Role::System => theme.dim(),
         };
 
         let title_w = tui::display_width(&block.title);
-        let dash = "─".repeat(bw.saturating_sub(4 + title_w));
+        let dash = "─".repeat(bw.saturating_sub(3 + title_w));
         let mut out = format!(
-            "\n{bc}╭─ {tc}{title}{bc} {dash}╮{r}\n",
+            "\n{tc}─ {title} {dash}{r}\n",
             title = &block.title,
             r = theme.reset(),
         );
@@ -556,24 +559,20 @@ impl UiRenderer {
 
         for raw_line in content.lines() {
             let visible = tui::strip_ansi(raw_line);
-            let wrapped = if tui::display_width(&visible) <= inner {
-                vec![visible]
+            if tui::display_width(&visible) <= inner {
+                // Fits — preserve ANSI colour codes from the Markdown renderer
+                out.push_str(&format!("  {raw_line}\n"));
             } else {
-                tui::wrap_text(&visible, inner)
-            };
-            for line in &wrapped {
-                let pad = inner.saturating_sub(tui::display_width(line));
-                out.push_str(&format!(
-                    "{bc}│{r} {line}{p} {bc}│{r}\n",
-                    r = theme.reset(),
-                    p = " ".repeat(pad),
-                ));
+                // Too wide — wrap plain text (colour lost, but layout correct)
+                for line in &tui::wrap_text(&visible, inner) {
+                    out.push_str(&format!("  {line}\n"));
+                }
             }
         }
 
         out.push_str(&format!(
-            "{bc}╰{fill}╯{r}\n",
-            fill = "─".repeat(bw.saturating_sub(2)),
+            "{tc}{fill}{r}\n",
+            fill = "─".repeat(bw),
             r = theme.reset(),
         ));
         out
@@ -586,7 +585,9 @@ impl UiRenderer {
     /// causes the scroll-buffer above it to drift, which the user perceives
     /// as a "jumping" terminal.  Instead we show one in-place status line:
     ///
-    ///     ⠹ generating · openai · 5.2s · 1234 chars   queued: 0
+    /// ```text
+    /// ⠹ generating · openai · 5.2s · 1234 chars   queued: 0
+    /// ```
     ///
     /// The full assistant content is rendered as a normal block when
     /// `AssistantDone` fires (it scrolls in above the bottom zone).
@@ -644,75 +645,58 @@ impl UiRenderer {
     /// Render the task panel when not streaming (tool execution / reflection).
     fn render_task_panel(&self, task: &TaskPanelState, term_w: usize) -> String {
         let bw = Self::bw(term_w);
-        let inner = bw.saturating_sub(4);
         let theme = &self.theme;
         let elapsed = task.elapsed_ms as f32 / 1000.0;
 
         let header = "─ task ";
-        let dash = "─".repeat(bw.saturating_sub(2 + tui::display_width(header)));
+        let dash = "─".repeat(bw.saturating_sub(tui::display_width(header)));
         let mut out = format!(
-            "\n{bc}╭{header}{dash}╮{r}\n",
-            bc = theme.border(),
+            "\n{wn}{header}{dash}{r}\n",
+            wn = theme.warn(),
             r = theme.reset(),
         );
 
         let running_id = task.running_task_id.as_deref().unwrap_or("(processing)");
         let line1 = format!("running: {running_id} · provider: {}", task.provider);
-        let l2 = format!("queued: {}", task.queued_count);
-        let r2 = format!("elapsed: {elapsed:.1}s");
-        let pad1 = inner.saturating_sub(tui::display_width(&line1));
-        let gap2 = inner.saturating_sub(tui::display_width(&l2) + tui::display_width(&r2));
+        let line2 = format!("queued: {}  ·  elapsed: {elapsed:.1}s", task.queued_count);
 
+        out.push_str(&format!("  {dim}{line1}{r}\n", dim = theme.dim(), r = theme.reset()));
+        out.push_str(&format!("  {dim}{line2}{r}\n", dim = theme.dim(), r = theme.reset()));
         out.push_str(&format!(
-            "{bc}│{r} {dim}{line1}{r}{p} {bc}│{r}\n",
-            bc = theme.border(),
-            r = theme.reset(),
-            dim = theme.dim(),
-            p = " ".repeat(pad1),
-        ));
-        out.push_str(&format!(
-            "{bc}│{r} {dim}{l2}{r}{g}{dim}{r2}{r} {bc}│{r}\n",
-            bc = theme.border(),
-            r = theme.reset(),
-            dim = theme.dim(),
-            g = " ".repeat(gap2),
-        ));
-        out.push_str(&format!(
-            "{bc}╰{fill}╯{r}\n",
-            fill = "─".repeat(bw.saturating_sub(2)),
-            bc = theme.border(),
+            "{wn}{fill}{r}\n",
+            wn = theme.warn(),
+            fill = "─".repeat(bw),
             r = theme.reset(),
         ));
         out
     }
 
-    /// Render the bottom input box.
+    /// Render the bottom input box — open sides, top/bottom rule only.
+    ///
+    /// Cursor-column offsets are preserved:
+    ///   placeholder row: "  ▷ …"  → col 2  (matches old "│ " = 2)
+    ///   content row:     "  › …"  → col 4  (matches old "│ › " = 4)
     fn render_input_box(&self, input: &InputState, term_w: usize) -> String {
         let bw = Self::bw(term_w);
-        // Placeholder format:  │ + space + text + space + │  = 4 cols overhead
-        let inner_ph = bw.saturating_sub(4);
-        // Content format:  │ + space + › + space + text + space + │  = 6 cols overhead
-        // Using bw-4 here would make lines bw+2 wide, causing terminal wrap every time.
+        // "  " indent = 2 cols overhead for placeholder
+        // "  › " indent = 4 cols overhead for content (keeps cursor_col = 4 + col_in_wrap)
         let inner = bw.saturating_sub(6);
         let theme = &self.theme;
 
         let header = "─ input ";
-        let dash = "─".repeat(bw.saturating_sub(2 + tui::display_width(header)));
+        let dash = "─".repeat(bw.saturating_sub(tui::display_width(header)));
         let mut out = format!(
-            "\n{bc}╭{header}{dash}╮{r}\n",
-            bc = theme.border(),
+            "\n{ac}{header}{dash}{r}\n",
+            ac = theme.accent(),
             r = theme.reset(),
         );
 
         if input.content.is_empty() {
             let placeholder = "▷ Type your message and press Enter to send  ·  /help for commands";
-            let pad = inner_ph.saturating_sub(tui::display_width(placeholder));
             out.push_str(&format!(
-                "{bc}│{r} {dim}{placeholder}{r}{p} {bc}│{r}\n",
-                bc = theme.border(),
-                r = theme.reset(),
+                "  {dim}{placeholder}{r}\n",
                 dim = theme.dim(),
-                p = " ".repeat(pad),
+                r = theme.reset(),
             ));
         } else {
             let wrapped = if tui::display_width(&input.content) <= inner {
@@ -721,21 +705,18 @@ impl UiRenderer {
                 tui::wrap_text(&input.content, inner)
             };
             for line in &wrapped {
-                let pad = inner.saturating_sub(tui::display_width(line));
                 out.push_str(&format!(
-                    "{bc}│{r} {ac}›{r} {line}{p} {bc}│{r}\n",
-                    bc = theme.border(),
-                    r = theme.reset(),
+                    "  {ac}›{r} {line}\n",
                     ac = theme.accent(),
-                    p = " ".repeat(pad),
+                    r = theme.reset(),
                 ));
             }
         }
 
         out.push_str(&format!(
-            "{bc}╰{fill}╯{r}\n",
-            fill = "─".repeat(bw.saturating_sub(2)),
-            bc = theme.border(),
+            "{ac}{fill}{r}\n",
+            ac = theme.accent(),
+            fill = "─".repeat(bw),
             r = theme.reset(),
         ));
         out
@@ -757,18 +738,125 @@ impl UiRenderer {
 
 // ── Markdown renderer for finished assistant blocks ───────────────────────────
 
-/// Lightweight markdown → ANSI renderer for finished assistant blocks.
+/// Multi-pass GFM table renderer with column-aligned padding.
+/// Separator rows become plain rules; data cells are padded to the widest
+/// value in each column so `│` borders stay vertically aligned (CJK-aware).
+fn render_table(theme: &Theme, rows: &[String]) -> Vec<String> {
+    // Parse: None = separator row, Some(cells) = data row
+    let parsed: Vec<Option<Vec<String>>> = rows
+        .iter()
+        .filter_map(|row| {
+            let t = row.trim();
+            if t.starts_with('|') && t.ends_with('|') && t.len() > 2 {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .map(|t| {
+            let inner = &t[1..t.len() - 1];
+            let is_sep = inner
+                .chars()
+                .all(|c| c == '-' || c == ':' || c == '|' || c == ' ');
+            if is_sep {
+                None
+            } else {
+                Some(inner.split('|').map(|c| c.trim().to_string()).collect())
+            }
+        })
+        .collect();
+
+    // Max display width per column (from plain text, not ANSI-rendered)
+    let mut col_widths: Vec<usize> = Vec::new();
+    for cells in parsed.iter().flatten() {
+        for (ci, cell) in cells.iter().enumerate() {
+            let w = tui::display_width(cell);
+            if ci >= col_widths.len() {
+                col_widths.push(w);
+            } else if w > col_widths[ci] {
+                col_widths[ci] = w;
+            }
+        }
+    }
+
+    let dim = theme.dim();
+    let r = theme.reset();
+    let n = col_widths.len();
+    let mut out = Vec::new();
+    for opt in &parsed {
+        match opt {
+            None => {
+                // Separator: plain horizontal rule aligned to the data row width.
+                // Width = sum(col_widths) + 3*n + 1  (matches "│ cell │ cell │" format)
+                let rule_w = if n == 0 {
+                    32
+                } else {
+                    col_widths.iter().sum::<usize>() + 3 * n + 1
+                };
+                out.push(format!("  {dim}{fill}{r}", fill = "─".repeat(rule_w)));
+            }
+            Some(cells) => {
+                let rendered: Vec<String> = cells
+                    .iter()
+                    .enumerate()
+                    .map(|(ci, cell)| {
+                        let plain_w = tui::display_width(cell);
+                        let col_w = col_widths.get(ci).copied().unwrap_or(plain_w);
+                        let pad = " ".repeat(col_w.saturating_sub(plain_w));
+                        format!("{}{pad}", render_inline(theme, cell))
+                    })
+                    .collect();
+                let sep = format!(" {dim}│{r} ");
+                let row_str = rendered.join(&sep);
+                out.push(format!("  {dim}│{r} {row_str} {dim}│{r}"));
+            }
+        }
+    }
+    out
+}
+
+/// Markdown → ANSI renderer used by both the interactive REPL and one-shot mode.
 ///
-/// Handles: code fences, headings, hr, blockquotes, nested lists, GFM tables,
-/// and delegates inline formatting (bold, italic, strikethrough, links, code)
-/// to `render_inline`.
+/// Handles: code fences, headings (h1–h6), horizontal rules, blockquotes,
+/// nested unordered/ordered lists, GFM tables (column-aligned via `render_table`),
+/// and inline formatting (bold, italic, strikethrough, links, inline code).
 pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
     let mut out = Vec::new();
     let mut in_code = false;
+    let mut table_buf: Vec<String> = Vec::new();
+    // Suppress protocol tags the agent emits for internal bookkeeping.
+    // These must never reach the user's terminal as raw text.
+    let mut in_protocol_tag = false;
 
     for raw_line in text.lines() {
         let line = raw_line.trim_end();
         let trimmed = line.trim();
+
+        // Strip <summary>, <thinking>, <reflection> protocol blocks.
+        // Opening and closing tags may appear on the same line or span lines.
+        if !in_code {
+            if in_protocol_tag {
+                if trimmed.contains("</summary>")
+                    || trimmed.contains("</thinking>")
+                    || trimmed.contains("</reflection>")
+                {
+                    in_protocol_tag = false;
+                }
+                continue;
+            }
+            if trimmed.starts_with("<summary>")
+                || trimmed.starts_with("<thinking>")
+                || trimmed.starts_with("<reflection>")
+            {
+                let same_line = trimmed.contains("</summary>")
+                    || trimmed.contains("</thinking>")
+                    || trimmed.contains("</reflection>");
+                if !same_line {
+                    in_protocol_tag = true;
+                }
+                continue;
+            }
+        }
 
         // Code fence
         if let Some(lang) = trimmed.strip_prefix("```") {
@@ -797,6 +885,11 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
         }
 
         if in_code {
+            // Flush any buffered table before entering code content
+            if !table_buf.is_empty() {
+                out.extend(render_table(theme, &table_buf));
+                table_buf.clear();
+            }
             out.push(format!(
                 "{bc}  │{r} {hl}{line}{r}",
                 bc = theme.border(),
@@ -804,6 +897,18 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
                 r = theme.reset()
             ));
             continue;
+        }
+
+        // Buffer GFM table rows for multi-pass aligned rendering
+        if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 2 {
+            table_buf.push(raw_line.to_string());
+            continue;
+        }
+
+        // Non-table line: flush any pending table buffer first
+        if !table_buf.is_empty() {
+            out.extend(render_table(theme, &table_buf));
+            table_buf.clear();
         }
 
         // Heading
@@ -855,35 +960,6 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
             continue;
         }
 
-        // GFM table row: starts and ends with `|`
-        if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 2 {
-            let inner = &trimmed[1..trimmed.len() - 1];
-            // Separator row (e.g. |---|---| ) — render as thin rule
-            let is_sep = inner
-                .chars()
-                .all(|c| c == '-' || c == ':' || c == '|' || c == ' ');
-            if is_sep {
-                out.push(format!(
-                    "  {dim}├────────────────────────────────┤{r}",
-                    dim = theme.dim(),
-                    r = theme.reset()
-                ));
-                continue;
-            }
-            let sep = format!(" {dim}│{r} ", dim = theme.dim(), r = theme.reset());
-            let row_str = inner
-                .split('|')
-                .map(|c| render_inline(theme, c.trim()))
-                .collect::<Vec<_>>()
-                .join(&sep);
-            out.push(format!(
-                "  {dim}│{r} {row_str} {dim}│{r}",
-                dim = theme.dim(),
-                r = theme.reset()
-            ));
-            continue;
-        }
-
         // Leading-space count for nested list indentation (2 spaces = 1 level)
         let indent_spaces = raw_line.chars().take_while(|&c| c == ' ').count();
         let nest = indent_spaces / 2;
@@ -926,6 +1002,12 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
             out.push(render_inline(theme, trimmed));
         }
     }
+
+    // Flush any table that ends at end-of-text
+    if !table_buf.is_empty() {
+        out.extend(render_table(theme, &table_buf));
+    }
+
     out.join("\n")
 }
 
@@ -970,7 +1052,7 @@ fn parse_inline_link(chars: &[char], start: usize) -> Option<(String, String, us
     }
     // Strip optional title attribute: `url "title"` → keep only the URL token
     let url_clean = url
-        .splitn(2, ' ')
+        .split(' ')
         .next()
         .unwrap_or(url.as_str())
         .to_string();

@@ -214,6 +214,27 @@ pub const PROVIDERS: &[ProviderProfile] = &[
         fallback: &[],
         local: true,
     },
+    // ---- Private / enterprise gateway (私有企业网关) -------------------
+    // These entries share the `prompt_custom` flow but show gateway-specific
+    // guidance so operators know exactly what URL and token to enter.
+    ProviderProfile {
+        id: "litellm",
+        name: "LiteLLM Gateway (self-hosted proxy)",
+        base_url: "",
+        default_model: "",
+        key_url: Some("https://docs.litellm.ai/docs/proxy/quick_start"),
+        fallback: &[],
+        local: false,
+    },
+    ProviderProfile {
+        id: "private-gateway",
+        name: "Private / Enterprise Gateway (OpenAI-compat, Bearer auth)",
+        base_url: "",
+        default_model: "",
+        key_url: None,
+        fallback: &[],
+        local: false,
+    },
     ProviderProfile {
         id: "custom",
         name: "Custom OpenAI-compatible endpoint",
@@ -403,8 +424,8 @@ pub async fn pick_provider() -> Result<ProviderChoice> {
         // Handle quick pick (1-5)
         if (1..=QUICK_PICK_COUNT).contains(&n) {
             let profile = &PROVIDERS[n - 1];
-            if profile.id == "custom" {
-                return prompt_custom();
+            if matches!(profile.id, "custom" | "litellm" | "private-gateway") {
+                return prompt_gateway(profile.id);
             }
             return Ok(ProviderChoice {
                 id: profile.id.into(),
@@ -458,8 +479,8 @@ async fn pick_provider_full_list() -> Result<ProviderChoice> {
         }
 
         if let Some(profile) = PROVIDERS.get(n - 1) {
-            if profile.id == "custom" {
-                return prompt_custom();
+            if matches!(profile.id, "custom" | "litellm" | "private-gateway") {
+                return prompt_gateway(profile.id);
             }
             return Ok(ProviderChoice {
                 id: profile.id.into(),
@@ -544,13 +565,48 @@ async fn pick_acp_agent() -> Result<ProviderChoice> {
     }
 }
 
-fn prompt_custom() -> Result<ProviderChoice> {
-    let id = read_nonempty("provider id (kebab-case, e.g. my-llm)")?;
-    let base_url = read_nonempty("base_url (e.g. https://example.com/v1)")?;
-    let default_model = read_nonempty("default model (e.g. my-model)")?;
+fn prompt_gateway(kind: &str) -> Result<ProviderChoice> {
+    println!();
+    match kind {
+        "litellm" => {
+            println!("  LiteLLM Gateway setup");
+            println!("  ─────────────────────────────────────────────────────────────");
+            println!("  LiteLLM exposes an OpenAI-compatible endpoint at:");
+            println!("    http://<host>:<port>/v1    (default port 4000)");
+            println!("  Enter the base URL — everything before /chat/completions.");
+            println!("  Example:  https://litellm.mycompany.com/v1");
+        }
+        "private-gateway" => {
+            println!("  Private / Enterprise Gateway setup");
+            println!("  ─────────────────────────────────────────────────────────────");
+            println!("  If your gateway curl looks like:");
+            println!("    curl https://gateway.example.com/api/llm/v1/chat/completions \\");
+            println!("         -H \"Authorization: Bearer sk-gw-YOURKEY\"");
+            println!("  Then the base_url is the path before /chat/completions:");
+            println!("    https://gateway.example.com/api/llm/v1");
+            println!();
+            println!("  Supports both OpenAI models and Anthropic Claude models —");
+            println!("  the correct Messages API endpoint is chosen automatically.");
+        }
+        _ => {
+            println!("  Custom OpenAI-compatible endpoint setup");
+            println!("  ─────────────────────────────────────────────────────────────");
+            println!("  Enter the base URL — everything before /chat/completions.");
+            println!("  Example:  https://api.example.com/v1");
+        }
+    }
+    println!();
+    let id = read_nonempty(&format!("provider id (kebab-case, e.g. {kind})"))?;
+    let base_url = read_nonempty("base_url (e.g. https://gateway.example.com/api/llm/v1)")?;
+    let default_model = read_nonempty("default model (e.g. gpt-4o-mini or claude-opus-4-5)")?;
+    let name = match kind {
+        "litellm" => "LiteLLM Gateway".into(),
+        "private-gateway" => "Private Gateway".into(),
+        _ => "Custom".into(),
+    };
     Ok(ProviderChoice {
         id,
-        name: "Custom".into(),
+        name,
         base_url,
         default_model,
         fallback: vec![],
@@ -558,6 +614,7 @@ fn prompt_custom() -> Result<ProviderChoice> {
         local: false,
     })
 }
+
 
 fn read_nonempty(label: &str) -> Result<String> {
     print!("  {label}: ");

@@ -1022,6 +1022,7 @@ async fn print_banner(cfg: &Config, mcp_servers: usize, tool_count: usize, chann
                     reset = theme.reset(),
                 ),
             ],
+            theme.accent(),
         )
     );
 }
@@ -1192,23 +1193,28 @@ impl DisplayTemplate {
         )
     }
 
-    /// Format a section header
+    /// Format a section header — horizontal rule with title, no side borders.
+    /// Uses `accent` (purple) to match the paired footer.
     fn header(theme: &Theme, title: &str) -> String {
+        let plain_title = format!("─ {title} ");
+        let fill = "─".repeat(64usize.saturating_sub(tui::display_width(&plain_title)));
         format!(
-            "\n{border}╭─ {primary}{bold}{title}{reset}{border} ─────────────────────────────────────╮{reset}",
-            border = theme.border(),
-            primary = theme.frame(),
+            "\n{ac}─ {bold}{title}{reset}{ac} {fill}{reset}",
+            ac = theme.accent(),
             bold = theme.bold(),
             title = title,
-            reset = theme.reset()
+            reset = theme.reset(),
+            fill = fill,
         )
     }
 
-    /// Format a section footer
+    /// Format a section footer — bottom horizontal rule only, no side borders.
+    /// Uses `accent` (purple) to match the paired header.
     fn footer(theme: &Theme) -> String {
         format!(
-            "{border}╰──────────────────────────────────────────────────────────────╯{reset}",
-            border = theme.border(),
+            "{ac}{}{reset}",
+            "─".repeat(64),
+            ac = theme.accent(),
             reset = theme.reset()
         )
     }
@@ -1218,10 +1224,6 @@ impl DisplayTemplate {
 struct TerminalUI;
 
 impl TerminalUI {
-    /// Terminal column count via crossterm, re-read on every call for resize.
-    fn width() -> usize {
-        tui::terminal_width()
-    }
 
     fn render_top_status_bar(
         theme: &Theme,
@@ -1253,230 +1255,54 @@ impl TerminalUI {
             dim = theme.dim(),
             r = theme.reset()
         );
-        let row = |content: &str| {
-            let pad = inner_w.saturating_sub(tui::display_width_ansi(content));
-            format!(
-                "{b}│{r} {content}{} {b}│{r}\n",
-                " ".repeat(pad),
-                b = theme.border(),
-                r = theme.reset(),
-            )
-        };
-        format!(
-            "\n{b}╭{}╮{r}\n{}{}{b}╰{}╯{r}\n",
-            "─".repeat(w.saturating_sub(2)),
-            row(&line1),
-            row(&line2),
-            "─".repeat(w.saturating_sub(2)),
-            b = theme.border(),
+        let sep = format!(
+            "{c}{}{r}\n",
+            "─".repeat(w),
+            c = theme.frame(),
             r = theme.reset(),
-        )
+        );
+        format!("\n{sep}  {line1}\n  {line2}\n{sep}")
     }
 
-    fn panel(theme: &Theme, title: &str, lines: &[String]) -> String {
+    /// `color` is an ANSI escape string (e.g. `theme.frame()`) applied to both
+    /// the top title-rule and the bottom closing rule. Pass the same value to
+    /// both calls so the pair always shares one colour.
+    fn panel(theme: &Theme, title: &str, lines: &[String], color: &str) -> String {
         let w = Self::block_width();
-        let inner_w = w.saturating_sub(4);
-        let header = format!("─ {title} ");
-        let fill = "─".repeat(w.saturating_sub(2 + tui::display_width(&header)));
+        let inner_w = w.saturating_sub(2);
+        let title_plain = format!("─ {title} ");
+        let fill = "─".repeat(w.saturating_sub(tui::display_width(&title_plain)));
         let mut out = String::new();
         out.push('\n');
+        // Top separator with title
         out.push_str(&format!(
-            "{b}╭{header}{fill}╮{r}\n",
-            b = theme.border(),
+            "{color}─ {title} {fill}{r}\n",
             r = theme.reset(),
+            fill = fill,
         ));
         for raw in lines {
-            let rendered = raw.as_str();
-            let visible = tui::strip_ansi(rendered);
-            let wrapped = if tui::display_width(&visible) <= inner_w {
-                vec![visible]
+            let visible = tui::strip_ansi(raw.as_str());
+            if tui::display_width(&visible) <= inner_w {
+                // Fits — preserve ANSI colour codes
+                out.push_str(&format!("  {raw}\n"));
             } else {
-                tui::wrap_text(&visible, inner_w)
-            };
-            for line in wrapped {
-                let pad = inner_w.saturating_sub(tui::display_width(&line));
-                out.push_str(&format!(
-                    "{b}│{r} {line}{pad} {b}│{r}\n",
-                    b = theme.border(),
-                    r = theme.reset(),
-                    pad = " ".repeat(pad),
-                ));
+                // Too wide — wrap as plain text
+                for line in tui::wrap_text(&visible, inner_w) {
+                    out.push_str(&format!("  {line}\n"));
+                }
             }
         }
+        // Bottom separator — same colour as top
         out.push_str(&format!(
-            "{b}╰{}╯{r}\n",
-            "─".repeat(w.saturating_sub(2)),
-            b = theme.border(),
+            "{color}{}{r}\n",
+            "─".repeat(w),
             r = theme.reset(),
         ));
         out
     }
 
     fn render_markdown(theme: &Theme, text: &str) -> String {
-        let mut out = Vec::new();
-        let mut in_code_block = false;
-        let mut code_lang = String::new();
-        let block_inner_w = Self::block_width().saturating_sub(4);
-
-        for raw_line in text.lines() {
-            let line = raw_line.trim_end();
-            let trimmed = line.trim();
-
-            if let Some(rest) = trimmed.strip_prefix("```") {
-                if in_code_block {
-                    let closing_fill = "─".repeat(block_inner_w.saturating_sub(3).min(46));
-                    out.push(format!(
-                        "{border}  └{line}{}{reset}",
-                        closing_fill,
-                        border = theme.border(),
-                        line = theme.dim(),
-                        reset = theme.reset(),
-                    ));
-                    in_code_block = false;
-                    code_lang.clear();
-                } else {
-                    code_lang = rest.trim().to_string();
-                    let label = if code_lang.is_empty() {
-                        "code".to_string()
-                    } else {
-                        format!("code: {}", code_lang)
-                    };
-                    let label_w = tui::display_width(&label);
-                    let opening_fill =
-                        "─".repeat(block_inner_w.saturating_sub(6 + label_w).min(46));
-                    out.push(format!(
-                        "{border}  ┌─ {accent}{label}{reset} {border}{}{reset}",
-                        opening_fill,
-                        border = theme.border(),
-                        accent = theme.accent(),
-                        reset = theme.reset(),
-                    ));
-                    in_code_block = true;
-                }
-                continue;
-            }
-
-            if in_code_block {
-                out.push(format!(
-                    "{border}  │ {reset}{value}{line}{reset}",
-                    border = theme.border(),
-                    value = theme.value(),
-                    line = line,
-                    reset = theme.reset(),
-                ));
-                continue;
-            }
-
-            if trimmed.is_empty() {
-                out.push(String::new());
-                continue;
-            }
-
-            if let Some((level, content)) = parse_heading(trimmed) {
-                let color = match level {
-                    1 => theme.frame(),
-                    2 => theme.info(),
-                    _ => theme.highlight(),
-                };
-                out.push(format!(
-                    "{color}{bold}{content}{reset}",
-                    color = color,
-                    bold = theme.bold(),
-                    content = render_inline_markdown(theme, content),
-                    reset = theme.reset(),
-                ));
-                continue;
-            }
-
-            if is_horizontal_rule(trimmed) {
-                out.push(format!(
-                    "{border}{}{reset}",
-                    "─".repeat(Self::width().saturating_sub(4).min(72)),
-                    border = theme.border(),
-                    reset = theme.reset(),
-                ));
-                continue;
-            }
-
-            if let Some(content) = trimmed.strip_prefix("> ") {
-                out.push(format!(
-                    "{dim}│{reset} {}",
-                    render_inline_markdown(theme, content),
-                    dim = theme.dim(),
-                    reset = theme.reset(),
-                ));
-                continue;
-            }
-
-            // GFM table row: | col | col |
-            if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 2 {
-                let inner = &trimmed[1..trimmed.len() - 1];
-                let is_sep = inner
-                    .chars()
-                    .all(|c| c == '-' || c == ':' || c == '|' || c == ' ');
-                if is_sep {
-                    out.push(format!(
-                        "  {dim}├────────────────────────────────┤{reset}",
-                        dim = theme.dim(),
-                        reset = theme.reset(),
-                    ));
-                    continue;
-                }
-                let sep = format!(" {dim}│{reset} ", dim = theme.dim(), reset = theme.reset());
-                let row_str = inner
-                    .split('|')
-                    .map(|c| render_inline_markdown(theme, c.trim()))
-                    .collect::<Vec<_>>()
-                    .join(&sep);
-                out.push(format!(
-                    "  {dim}│{reset} {row_str} {dim}│{reset}",
-                    dim = theme.dim(),
-                    reset = theme.reset(),
-                ));
-                continue;
-            }
-
-            let indent_spaces = raw_line.chars().take_while(|&c| c == ' ').count();
-            let nest = indent_spaces / 2;
-
-            if let Some(content) = parse_unordered_list_item(trimmed) {
-                let pad = "  ".repeat(nest);
-                let bullet = if nest == 0 { "•" } else { "◦" };
-                out.push(format!(
-                    "{pad}{accent}{bullet}{reset} {}",
-                    render_inline_markdown(theme, content),
-                    accent = theme.accent(),
-                    reset = theme.reset(),
-                ));
-                continue;
-            }
-
-            if let Some((n, content)) = parse_ordered_list_item(trimmed) {
-                let pad = "  ".repeat(nest);
-                out.push(format!(
-                    "{pad}{accent}{n}.{reset} {}",
-                    render_inline_markdown(theme, content),
-                    accent = theme.accent(),
-                    reset = theme.reset(),
-                ));
-                continue;
-            }
-
-            out.push(render_inline_markdown(theme, line));
-        }
-
-        if in_code_block {
-            let closing_fill = "─".repeat(block_inner_w.saturating_sub(3).min(46));
-            out.push(format!(
-                "{border}  └{line}{}{reset}",
-                closing_fill,
-                border = theme.border(),
-                line = theme.dim(),
-                reset = theme.reset(),
-            ));
-        }
-
-        out.join("\n")
+        crate::ui::render_markdown_plain(theme, text)
     }
 
     /// Width for the answer / status / usage boxes. Uses the full terminal
@@ -1509,7 +1335,7 @@ impl TerminalUI {
             conversation.push(line.to_string());
         }
 
-        let mut out = Self::panel(theme, "会话历史区", &conversation);
+        let mut out = Self::panel(theme, "会话历史区", &conversation, theme.frame());
         out.push_str(&Self::panel(
             theme,
             "任务状态区",
@@ -1518,6 +1344,7 @@ impl TerminalUI {
                 "状态: 已完成".to_string(),
                 format!("已用时: {elapsed_secs:.1}s"),
             ],
+            theme.ok(),
         ));
         out.push_str(&Self::panel(
             theme,
@@ -1528,189 +1355,10 @@ impl TerminalUI {
                 format!("usage: {usage_summary}"),
                 "30d 总计: 查看 /usage 获取完整汇总".to_string(),
             ],
+            theme.info(),
         ));
         out
     }
-}
-
-fn parse_heading(s: &str) -> Option<(usize, &str)> {
-    let hashes = s.chars().take_while(|&c| c == '#').count();
-    if hashes == 0 || hashes > 6 {
-        return None;
-    }
-    let rest = s[hashes..].trim_start();
-    if rest.is_empty() {
-        return None;
-    }
-    Some((hashes, rest))
-}
-
-fn is_horizontal_rule(s: &str) -> bool {
-    if s.len() < 3 {
-        return false;
-    }
-    s.chars().all(|c| c == '-' || c == '*' || c == '_')
-}
-
-fn parse_unordered_list_item(s: &str) -> Option<&str> {
-    ["- ", "* ", "+ "]
-        .into_iter()
-        .find_map(|prefix| s.strip_prefix(prefix))
-}
-
-fn parse_ordered_list_item(s: &str) -> Option<(&str, &str)> {
-    let dot = s.find(". ")?;
-    if dot == 0 || !s[..dot].chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    Some((&s[..dot], &s[dot + 2..]))
-}
-
-fn render_inline_markdown(theme: &Theme, text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let mut out = String::new();
-    let mut i = 0;
-    let mut in_code = false;
-    let mut in_bold = false;
-    let mut in_italic = false;
-    let mut in_strike = false;
-
-    while i < n {
-        let ch = chars[i];
-
-        // Inline code
-        if ch == '`' {
-            out.push_str(if in_code {
-                theme.reset()
-            } else {
-                theme.highlight()
-            });
-            in_code = !in_code;
-            i += 1;
-            continue;
-        }
-
-        if in_code {
-            out.push(ch);
-            i += 1;
-            continue;
-        }
-
-        // Link: [text](url)
-        if ch == '[' {
-            let mut label = String::new();
-            let mut j = i + 1;
-            let mut depth = 1usize;
-            while j < n {
-                match chars[j] {
-                    '[' => {
-                        depth += 1;
-                        label.push('[');
-                    }
-                    ']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                        label.push(']');
-                    }
-                    c => label.push(c),
-                }
-                j += 1;
-            }
-            if j < n && j + 1 < n && chars[j + 1] == '(' {
-                let mut url = String::new();
-                let mut k = j + 2;
-                let mut closed = false;
-                while k < n {
-                    if chars[k] == ')' {
-                        closed = true;
-                        k += 1;
-                        break;
-                    }
-                    url.push(chars[k]);
-                    k += 1;
-                }
-                if closed {
-                    out.push_str(theme.info());
-                    out.push_str(&label);
-                    out.push_str(theme.reset());
-                    out.push_str(theme.dim());
-                    out.push_str(&format!(" ({url})"));
-                    out.push_str(theme.reset());
-                    i = k;
-                    continue;
-                }
-            }
-        }
-
-        // Strikethrough: ~~...~~
-        if ch == '~' && i + 1 < n && chars[i + 1] == '~' {
-            out.push_str(if in_strike {
-                theme.reset()
-            } else {
-                theme.strikethrough()
-            });
-            in_strike = !in_strike;
-            i += 2;
-            continue;
-        }
-
-        // Bold: **...**
-        if ch == '*' && i + 1 < n && chars[i + 1] == '*' {
-            out.push_str(if in_bold {
-                theme.reset()
-            } else {
-                theme.bold()
-            });
-            in_bold = !in_bold;
-            i += 2;
-            continue;
-        }
-
-        // Italic: *...* (single asterisk)
-        if ch == '*' {
-            out.push_str(if in_italic {
-                theme.reset()
-            } else {
-                theme.italic()
-            });
-            in_italic = !in_italic;
-            i += 1;
-            continue;
-        }
-
-        // Italic: _..._ — skip at identifier boundaries to avoid snake_case issues
-        if ch == '_' {
-            let prev_word = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
-            let next_word =
-                i + 1 < n && (chars[i + 1].is_alphanumeric() || chars[i + 1] == '_');
-            let is_boundary = if in_italic {
-                !next_word
-            } else {
-                !prev_word && !next_word
-            };
-            if is_boundary {
-                out.push_str(if in_italic {
-                    theme.reset()
-                } else {
-                    theme.italic()
-                });
-                in_italic = !in_italic;
-                i += 1;
-                continue;
-            }
-        }
-
-        out.push(ch);
-        i += 1;
-    }
-
-    if in_code || in_bold || in_italic || in_strike {
-        out.push_str(theme.reset());
-    }
-    out
 }
 
 /// REPL history file. Persisted across sessions so arrow-up resurfaces
@@ -2835,7 +2483,8 @@ async fn doctor_tokens() -> Result<()> {
             TerminalUI::panel(
                 &theme,
                 "使用信息区",
-                &["no cost events recorded yet".to_string()]
+                &["no cost events recorded yet".to_string()],
+                theme.info(),
             )
         );
         return Ok(());
@@ -2887,6 +2536,7 @@ async fn doctor_tokens() -> Result<()> {
                     engine.cfg().per_month_usd
                 ),
             ],
+            theme.info(),
         )
     );
     Ok(())
@@ -3291,6 +2941,7 @@ async fn status_cmd() -> Result<()> {
                 format!("auth: {} · {status_text}", auth_method.as_str()),
                 format!("account: {account_info}"),
             ],
+            theme.frame(),
         )
     );
     print!(
@@ -3310,6 +2961,7 @@ async fn status_cmd() -> Result<()> {
                 ),
                 format!("session log: {session_log}"),
             ],
+            theme.ok(),
         )
     );
     print!(
@@ -3324,6 +2976,7 @@ async fn status_cmd() -> Result<()> {
                 format!("skills: {skill_count} learned"),
                 "运行 /usage 查看 7d 和 30d token / cost 汇总".to_string(),
             ],
+            theme.info(),
         )
     );
 
@@ -4752,8 +4405,7 @@ mod ui_tests {
 
     #[test]
     fn test_terminal_width_detection() {
-        // Should return a reasonable width (100 default or from COLUMNS env)
-        let width = TerminalUI::width();
+        let width = tui::terminal_width();
         assert!(width >= 40, "Terminal width should be at least 40 columns");
         assert!(width <= 500, "Terminal width should be reasonable (<= 500)");
     }
@@ -4771,19 +4423,20 @@ mod ui_tests {
                 "skills: 0 learned  ·  mcp: none attached".to_string(),
                 "Type a question or /help for commands · Ctrl-D to exit".to_string(),
             ],
+            theme.accent(),
         );
         assert!(out.contains("evoclaw"));
         assert!(out.contains("auth: ok"));
         assert!(out.contains("vault:"));
         assert!(out.contains("skills:"));
         assert!(out.contains("Ctrl-D to exit"));
-        assert!(out.contains('╭'));
-        assert!(out.contains('╯'));
+        assert!(out.contains('─'));
+        assert!(!out.contains('╭'), "panel must not use side-border corners");
     }
 
     #[test]
     fn test_width_is_reasonable() {
-        let width = TerminalUI::width();
+        let width = tui::terminal_width();
         assert!(width >= 60);
         assert!(width <= 220);
     }
@@ -4806,8 +4459,10 @@ mod ui_tests {
     #[test]
     fn test_render_inline_markdown_formats_links_and_code() {
         let theme = Theme { enabled: false };
-        let rendered =
-            render_inline_markdown(&theme, "See [docs](https://example.com) and `cargo test`");
+        let rendered = TerminalUI::render_markdown(
+            &theme,
+            "See [docs](https://example.com) and `cargo test`",
+        );
         assert!(rendered.contains("docs (https://example.com)"));
         assert!(rendered.contains("cargo test"));
         assert!(!rendered.contains('`'));
@@ -4826,10 +4481,10 @@ mod ui_tests {
             "acp:codex",
             "unavailable",
         );
-        assert!(out.contains("╭"), "missing top-left corner: {out}");
-        assert!(out.contains("╮"), "missing top-right corner: {out}");
-        assert!(out.contains("╰"), "missing bottom-left corner: {out}");
-        assert!(out.contains("╯"), "missing bottom-right corner: {out}");
+        // Panels now use only top/bottom ─ separators — no side-border corners
+        assert!(!out.contains('╭'), "panel must not use ╭ corner");
+        assert!(!out.contains('╯'), "panel must not use ╯ corner");
+        assert!(out.contains('─'), "panel must have horizontal separators");
         assert!(out.contains("会话历史区"));
         assert!(out.contains("EvoClaw (acp:codex)"));
         assert!(out.contains("12.4s"));
@@ -4870,15 +4525,8 @@ mod ui_tests {
         assert!(out.contains("acp:codex"));
         assert!(out.contains("workspace: ~/devops/gptcli/agent/EvoClaw"));
         assert!(out.contains("2026-05-03 17:22:48"));
-        let visible_widths: Vec<usize> = out
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(tui::display_width_ansi)
-            .collect();
-        assert!(
-            visible_widths.windows(2).all(|pair| pair[0] == pair[1]),
-            "top status bar rows must align: {visible_widths:?}\n{out}"
-        );
+        assert!(out.contains('─'), "status bar must have horizontal separators");
+        assert!(!out.contains('╭'), "status bar must not use side-border corners");
     }
 
     #[test]
@@ -4902,7 +4550,7 @@ mod ui_tests {
         // one wrap continuation.
         let body_lines = out
             .lines()
-            .filter(|l| l.starts_with('│') && l.contains('a'))
+            .filter(|l| l.contains('a'))
             .count();
         assert!(
             body_lines >= 2,
@@ -4948,7 +4596,7 @@ mod ui_tests {
     #[test]
     fn test_render_inline_markdown_italic_single_asterisk() {
         let theme = Theme { enabled: false };
-        let rendered = render_inline_markdown(&theme, "This is *italic* text");
+        let rendered = TerminalUI::render_markdown(&theme, "This is *italic* text");
         assert!(rendered.contains("italic"), "italic text should pass through");
         assert!(!rendered.contains('*'), "asterisks should be consumed");
     }
@@ -4956,7 +4604,7 @@ mod ui_tests {
     #[test]
     fn test_render_inline_markdown_strikethrough() {
         let theme = Theme { enabled: false };
-        let rendered = render_inline_markdown(&theme, "~~deleted~~ text");
+        let rendered = TerminalUI::render_markdown(&theme, "~~deleted~~ text");
         assert!(rendered.contains("deleted"));
         assert!(!rendered.contains("~~"), "tildes should be consumed");
     }
@@ -4970,7 +4618,8 @@ mod ui_tests {
         assert!(rendered.contains("Age"), "header cell should appear");
         assert!(rendered.contains("Alice"), "data cell should appear");
         assert!(rendered.contains('│'), "table columns should have separator");
-        assert!(rendered.contains('├'), "separator row should render as rule");
+        assert!(rendered.contains('─'), "separator row should render as horizontal rule");
+        assert!(!rendered.contains('├'), "separator row must not use corner chars");
     }
 
     #[test]
@@ -4994,7 +4643,7 @@ mod ui_tests {
     #[test]
     fn test_render_inline_markdown_snake_case_not_italic() {
         let theme = Theme { enabled: false };
-        let rendered = render_inline_markdown(&theme, "use snake_case here");
+        let rendered = TerminalUI::render_markdown(&theme, "use snake_case here");
         assert!(rendered.contains("snake_case"), "underscore in identifier should not trigger italic");
     }
 }
