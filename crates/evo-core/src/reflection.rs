@@ -26,6 +26,10 @@ pub struct ReflectionRecord {
     #[serde(default)]
     pub verification: String,
     pub skill_update_decision: SkillUpdateDecision,
+    /// For update/merge/deprecate: the ID of the existing skill to act on.
+    /// Omit (or set null) when decision is create or none.
+    #[serde(default)]
+    pub target_skill_id: Option<String>,
     pub confidence: f32,
     #[serde(default)]
     pub safety_notes: Vec<String>,
@@ -37,23 +41,37 @@ pub struct ReflectionRecord {
 pub struct ReflectionCtx {
     pub task_id: String,
     pub final_result_truncated: String,
+    /// Truncated tool-call trajectory so the model can identify reusable steps.
+    pub trajectory_truncated: String,
+    /// IDs of currently active skills — lets the model decide update vs. create.
+    pub active_skill_ids: Vec<String>,
 }
 
 pub fn build_reflection_prompt(ctx: &ReflectionCtx) -> String {
+    let active = if ctx.active_skill_ids.is_empty() {
+        "(none)".to_string()
+    } else {
+        ctx.active_skill_ids.join(", ")
+    };
     format!(
         "The task has finished. Reflect strictly in JSON. Do NOT include any prose.\n\
 \n\
 Schema:\n\
-{{\n  \"success\": true|false,\n  \"summary\": \"<≤60 chars>\",\n  \"user_real_goal\": \"<≤120 chars>\",\n  \"reusable_steps\": [\"...\"],\n  \"mistakes\": [\"...\"],\n  \"failure_patterns\": [\"...\"],\n  \"verification\": \"<≤80 chars>\",\n  \"skill_update_decision\": \"create|update|merge|deprecate|none\",\n  \"confidence\": 0.0..1.0,\n  \"safety_notes\": [\"...\"],\n  \"next_recommendation\": \"<≤80 chars>\"\n}}\n\
+{{\n  \"success\": true|false,\n  \"summary\": \"<≤60 chars>\",\n  \"user_real_goal\": \"<≤120 chars>\",\n  \"reusable_steps\": [\"...\"],\n  \"mistakes\": [\"...\"],\n  \"failure_patterns\": [\"...\"],\n  \"verification\": \"<≤80 chars>\",\n  \"skill_update_decision\": \"create|update|merge|deprecate|none\",\n  \"target_skill_id\": \"<existing skill id, or null>\",\n  \"confidence\": 0.0..1.0,\n  \"safety_notes\": [\"...\"],\n  \"next_recommendation\": \"<≤80 chars>\"\n}}\n\
 \n\
 Rules:\n\
 - If success=false, still fill all fields; failure_patterns must be non-empty.\n\
 - skill_update_decision=none only if the task is one-off and unlikely to recur.\n\
+- If update/merge/deprecate: set target_skill_id to the matching ID from active_skills.\n\
 - Do NOT leak any secret, cookie, key, or path under ~/.evoclaw/secrets.\n\
 \n\
 Task ID: {task}\n\
+Active skills: {active}\n\
+Trajectory: {traj}\n\
 Final result: {res}\n",
         task = ctx.task_id,
+        active = active,
+        traj = ctx.trajectory_truncated,
         res = ctx.final_result_truncated
     )
 }
@@ -63,7 +81,7 @@ pub fn parse_reflection(model_text: &str) -> Result<ReflectionRecord, String> {
     serde_json::from_str(trimmed).map_err(|e| e.to_string())
 }
 
-fn strip_code_fence(s: &str) -> &str {
+pub(crate) fn strip_code_fence(s: &str) -> &str {
     let t = s.trim();
     if let Some(rest) = t.strip_prefix("```json") {
         return rest.trim_end_matches("```").trim();
@@ -83,6 +101,8 @@ mod tests {
         let p = build_reflection_prompt(&ReflectionCtx {
             task_id: "task-abc".into(),
             final_result_truncated: "ok".into(),
+            trajectory_truncated: String::new(),
+            active_skill_ids: Vec::new(),
         });
         assert!(p.contains("Task ID: task-abc"));
         assert!(p.contains("skill_update_decision"));

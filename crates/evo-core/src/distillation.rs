@@ -1,7 +1,7 @@
 //! Distillation — turn a reflection record + trajectory into a Skill DRAFT.
 //! Implements PROMPTS §5.
 
-use crate::reflection::ReflectionRecord;
+use crate::reflection::{strip_code_fence, ReflectionRecord};
 use crate::skill::{Skill, SkillKind};
 
 #[derive(Debug, Clone)]
@@ -143,17 +143,6 @@ fn trigger_keywords(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn strip_code_fence(s: &str) -> &str {
-    let t = s.trim();
-    if let Some(rest) = t.strip_prefix("```json") {
-        return rest.trim_end_matches("```").trim();
-    }
-    if let Some(rest) = t.strip_prefix("```") {
-        return rest.trim_end_matches("```").trim();
-    }
-    t
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +158,7 @@ mod tests {
             failure_patterns: vec!["timeout".into()],
             verification: "ssh exit 0".into(),
             skill_update_decision: SkillUpdateDecision::Create,
+            target_skill_id: None,
             confidence: 0.8,
             safety_notes: vec![],
             next_recommendation: "verify hostname".into(),

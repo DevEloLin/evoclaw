@@ -7,7 +7,6 @@ pub mod ui;
 
 use clap::{Parser, Subcommand};
 use directories::BaseDirs;
-use evo_core::channel::ChannelAdapter;
 use evo_core::{ConversationRuntime, Memory, MemoryLayer, Session, Skill, SkillTree};
 use evo_policy::{default_vault_path, BudgetCfg, CostEngine, Redactor, Vault};
 use evo_providers::{
@@ -88,9 +87,15 @@ enum Cmd {
 enum ChannelCmd {
     /// List built-in adapters and any external `~/.evoclaw/channels/*.toml`.
     List,
+    /// Show which channel tokens are configured (token present = ready to run).
+    Status,
+    /// Save a bot token for a channel adapter (persists across restarts).
+    /// Supported: telegram, slack, discord.
+    Add { kind: String },
+    /// Remove a previously saved channel token.
+    Remove { kind: String },
     /// Run a single adapter, fan inbound messages through the agent loop,
-    /// and post replies back. Currently only `--kind local-pipe` ships
-    /// in-tree; Telegram/Slack/Discord transports land in v0.6.
+    /// and post replies back. Supported: local-pipe, telegram.
     Run {
         #[arg(long)]
         kind: String,
@@ -349,6 +354,11 @@ async fn ensure_layout() -> Result<()> {
         "secrets",
         "plugins",
         "cache",
+        "mcp",
+        "channels",
+        "agents",
+        "memory",
+        "gateway",
     ] {
         tokio::fs::create_dir_all(evoclaw_dir()?.join(sub))
             .await
@@ -473,6 +483,7 @@ async fn interactive() -> Result<()> {
     let mut registry = evo_tools::ToolRegistry::with_builtins();
     let mcp_count = mcp_tools::install_all(&mut registry).await;
     let tool_count = registry.names().len();
+    let channel_count = count_channels().await;
 
     // ── Fresh-terminal effect ─────────────────────────────────────────────
     // Clear visible screen + scrollback + reset cursor.  This is the same
@@ -490,7 +501,7 @@ async fn interactive() -> Result<()> {
     }
 
     // Print banner BEFORE enabling raw mode (banner uses println!).
-    print_banner(&cfg, mcp_count, tool_count).await;
+    print_banner(&cfg, mcp_count, tool_count, channel_count).await;
 
     // Build the provider once for the entire shell session.
     let (mut provider, mut is_acp) = match build_provider(&cfg).await {
@@ -509,8 +520,7 @@ async fn interactive() -> Result<()> {
     let history_file = history_path()?;
 
     // ── Enable raw mode ────────────────────────────────────────────────────
-    crossterm::terminal::enable_raw_mode()
-        .wrap_err("failed to enable raw terminal mode")?;
+    crossterm::terminal::enable_raw_mode().wrap_err("failed to enable raw terminal mode")?;
 
     // Ensure raw mode is disabled on all exit paths.
     let _raw_guard = RawModeGuard;
@@ -537,8 +547,7 @@ async fn interactive() -> Result<()> {
     // ── Status-tick timer (updates elapsed display every 500 ms) ──────────
     let tick_tx = ui_tx.clone();
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_millis(500));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
         loop {
             interval.tick().await;
             if tick_tx.send(ui::UiEvent::StatusTick).await.is_err() {
@@ -577,7 +586,11 @@ async fn interactive() -> Result<()> {
             }
 
             // ── User submitted input ───────────────────────────────────────
-            ui::UiEvent::InputSubmitted { task_id, content, timestamp } => {
+            ui::UiEvent::InputSubmitted {
+                task_id,
+                content,
+                timestamp,
+            } => {
                 let task_id = task_id.clone();
                 let content = content.clone();
                 let timestamp = timestamp.clone();
@@ -774,8 +787,7 @@ fn spawn_task(
         let started = std::time::Instant::now();
 
         // Create a delta forwarding channel.
-        let (delta_raw_tx, mut delta_raw_rx) =
-            tokio::sync::mpsc::unbounded_channel::<String>();
+        let (delta_raw_tx, mut delta_raw_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let fwd_task_id = task_id.clone();
         let fwd_tx = ui_tx.clone();
         tokio::spawn(async move {
@@ -789,15 +801,9 @@ fn spawn_task(
             }
         });
 
-        let result = run_task_interactive(
-            &content,
-            provider,
-            is_acp,
-            &cfg,
-            &session_log,
-            delta_raw_tx,
-        )
-        .await;
+        let result =
+            run_task_interactive(&content, provider, is_acp, &cfg, &session_log, delta_raw_tx)
+                .await;
 
         let elapsed = started.elapsed().as_secs_f32();
 
@@ -897,7 +903,7 @@ async fn run_task_interactive(
     Ok((usage_summary, cfg.model.default.clone()))
 }
 
-async fn print_banner(cfg: &Config, mcp_servers: usize, tool_count: usize) {
+async fn print_banner(cfg: &Config, mcp_servers: usize, tool_count: usize, channel_count: usize) {
     let theme = Theme::detect();
     let provider_id = cfg
         .model
@@ -977,6 +983,16 @@ async fn print_banner(cfg: &Config, mcp_servers: usize, tool_count: usize) {
     } else {
         "mcp: none attached".to_string()
     };
+    let channel_line = if channel_count > 0 {
+        let names: Vec<&str> = KNOWN_CHANNELS
+            .iter()
+            .filter(|(kind, env_var, _)| channel_token_source(kind, env_var).0 == "configured")
+            .map(|(kind, _, _)| *kind)
+            .collect();
+        format!("channels: {}", names.join(", "))
+    } else {
+        "channels: none (evo channel add <kind>)".to_string()
+    };
 
     print!(
         "{}",
@@ -999,6 +1015,7 @@ async fn print_banner(cfg: &Config, mcp_servers: usize, tool_count: usize) {
                 format!("account: {}", truncate_to(&account_status, 54)),
                 format!("vault: {vault_state}"),
                 format!("skills: {skill_count} learned  ·  {mcp_line}"),
+                channel_line,
                 format!(
                     "{dim}Type a question or /help for commands · Ctrl-D to exit{reset}",
                     dim = theme.dim(),
@@ -4211,6 +4228,9 @@ async fn most_recent_session() -> Result<PathBuf> {
 async fn channel_handler(sub: ChannelCmd) -> Result<()> {
     match sub {
         ChannelCmd::List => channel_list().await,
+        ChannelCmd::Status => channel_status().await,
+        ChannelCmd::Add { kind } => channel_add(&kind).await,
+        ChannelCmd::Remove { kind } => channel_remove(&kind).await,
         ChannelCmd::Run { kind } => channel_run(&kind).await,
     }
 }
@@ -4226,6 +4246,10 @@ async fn channel_list() -> Result<()> {
     println!(
         "  {:<14} stdin/stdout JSON (reference adapter)",
         "local-pipe"
+    );
+    println!(
+        "  {:<14} Telegram Bot API long-polling  (token: TELEGRAM_BOT_TOKEN or vault)",
+        "telegram"
     );
     println!();
 
@@ -4250,7 +4274,7 @@ async fn channel_list() -> Result<()> {
     if external.is_empty() {
         println!("external (~/.evoclaw/channels/*.toml): (none yet)");
         println!();
-        println!("v0.6 plan: telegram, slack, discord — see docs/channels.md");
+        println!("planned: slack, discord, line, messenger — see docs/channels.md");
     } else {
         println!("external (~/.evoclaw/channels/*.toml):");
         for (name, path) in external {
@@ -4260,36 +4284,177 @@ async fn channel_list() -> Result<()> {
     Ok(())
 }
 
+/// (kind, env-var, setup instructions)
+const KNOWN_CHANNELS: &[(&str, &str, &str)] = &[
+    (
+        "telegram",
+        "TELEGRAM_BOT_TOKEN",
+        "Create a bot via @BotFather on Telegram and copy the token it gives you.",
+    ),
+    (
+        "slack",
+        "SLACK_BOT_TOKEN",
+        "Create an app at api.slack.com/apps, add Bot Token Scopes, install to workspace.",
+    ),
+    (
+        "discord",
+        "DISCORD_BOT_TOKEN",
+        "Create an application at discord.com/developers/applications, add a Bot, copy token.",
+    ),
+];
+
+/// Show which channel tokens are currently saved (env var or key file).
+async fn channel_status() -> Result<()> {
+    println!("== channel token status ==");
+    println!();
+    println!("{:<12} {:<12} SOURCE", "KIND", "STATUS");
+    println!("{}", "-".repeat(60));
+    for (kind, env_var, _) in KNOWN_CHANNELS {
+        let (status, source) = channel_token_source(kind, env_var);
+        println!("{:<12} {:<12} {}", kind, status, source);
+    }
+    println!();
+    println!("To add:    evo channel add <kind>");
+    println!("To remove: evo channel remove <kind>");
+    println!("To start:  evo channel run --kind <kind>");
+    Ok(())
+}
+
+/// Save a bot token for a channel adapter to `~/.evoclaw/secrets/<kind>_bot_token.key`.
+async fn channel_add(kind: &str) -> Result<()> {
+    ensure_layout().await?;
+    let kind_lower = kind.to_lowercase();
+    let entry = KNOWN_CHANNELS
+        .iter()
+        .find(|(k, _, _)| *k == kind_lower.as_str())
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "unknown channel '{kind}'. Supported: {}",
+                KNOWN_CHANNELS
+                    .iter()
+                    .map(|(k, _, _)| *k)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+    let (_, env_var, instructions) = entry;
+
+    println!();
+    println!("  Register {} bot token.", kind_lower);
+    println!("  {instructions}");
+    println!("  (alternatively, set env var {env_var} — it takes precedence over the file)");
+    println!();
+    print!("  Token (input visible — clear scrollback after): ");
+    std::io::stdout().flush().ok();
+    let mut buf = String::new();
+    std::io::stdin().read_line(&mut buf)?;
+    let token = buf.trim().to_string();
+    if token.is_empty() {
+        return Err(eyre::eyre!("empty token — aborted"));
+    }
+
+    let secret_name = format!("{kind_lower}_bot_token");
+    let path = evoclaw_dir()?
+        .join("secrets")
+        .join(format!("{secret_name}.key"));
+    tokio::fs::write(&path, format!("{token}\n")).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    println!();
+    println!("  ✓ {} token saved ({})", kind_lower, path.display());
+    println!("  Run `evo channel run --kind {kind_lower}` to start the adapter.");
+    Ok(())
+}
+
+/// Remove a previously saved channel bot token.
+async fn channel_remove(kind: &str) -> Result<()> {
+    let kind_lower = kind.to_lowercase();
+    let secret_name = format!("{kind_lower}_bot_token");
+    let path = evoclaw_dir()?
+        .join("secrets")
+        .join(format!("{secret_name}.key"));
+    if path.exists() {
+        tokio::fs::remove_file(&path).await?;
+        println!("✓ {kind_lower} token removed.");
+    } else {
+        println!("{kind_lower} token not found — nothing to remove.");
+    }
+    Ok(())
+}
+
+/// Return (status_label, source_description) for a channel's token.
+fn channel_token_source(kind: &str, env_var: &str) -> (&'static str, String) {
+    if std::env::var(env_var)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return ("configured", format!("env: {env_var}"));
+    }
+    let secret_name = format!("{kind}_bot_token");
+    let path = evoclaw_dir()
+        .ok()
+        .map(|d| d.join("secrets").join(format!("{secret_name}.key")));
+    match path {
+        Some(p) if p.exists() => (
+            "configured",
+            format!("file: ~/.evoclaw/secrets/{secret_name}.key"),
+        ),
+        _ => ("missing", format!("run: evo channel add {kind}")),
+    }
+}
+
+/// Count how many channel tokens are available (env var or key file).
+async fn count_channels() -> usize {
+    KNOWN_CHANNELS
+        .iter()
+        .filter(|(kind, env_var, _)| {
+            let (status, _) = channel_token_source(kind, env_var);
+            status == "configured"
+        })
+        .count()
+}
+
 async fn channel_run(kind: &str) -> Result<()> {
-    use evo_core::channel::{OutboundKind, OutboundMessage};
+    use evo_core::channel::{ChannelAdapter, ChannelKind, OutboundKind, OutboundMessage};
     use evo_core::channel_router::{self, ChannelRouter};
     use evo_core::local_pipe::LocalPipe;
-
-    if kind != "local-pipe" {
-        return Err(eyre::eyre!(
-            "unknown adapter '{kind}'. Built-in adapters: local-pipe. \
-             Telegram/Slack/Discord ship in v0.6 — see docs/channels.md."
-        ));
-    }
+    use evo_core::telegram::TelegramAdapter;
 
     ensure_layout().await?;
     tokio::fs::create_dir_all(channels_dir()?).await.ok();
 
-    let adapter = Arc::new(LocalPipe);
+    // Resolve adapter + channel kind from the `--kind` argument.
+    // Add a new match arm here when adding the next adapter (slack, discord…).
+    let (adapter, channel_kind): (Arc<dyn ChannelAdapter>, ChannelKind) = match kind {
+        "local-pipe" => {
+            eprintln!(
+                "→ channel: local-pipe adapter ready. Send line-delimited \
+                 InboundMessage JSON on stdin; replies stream to stdout."
+            );
+            (Arc::new(LocalPipe), ChannelKind::LocalPipe)
+        }
+        "telegram" => {
+            let token = resolve_channel_token("telegram", "TELEGRAM_BOT_TOKEN").await?;
+            eprintln!("→ channel: telegram adapter ready (long-polling).");
+            (Arc::new(TelegramAdapter::new(token)), ChannelKind::Telegram)
+        }
+        other => {
+            return Err(eyre::eyre!(
+                "unknown adapter '{other}'. Built-in: local-pipe, telegram. \
+                 Slack/Discord planned — see docs/channels.md."
+            ));
+        }
+    };
+
     let mut router = ChannelRouter::new();
     router.register(adapter.clone());
 
     let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel(64);
-
-    // Adapters run in the background. We keep a separate `Arc<LocalPipe>`
-    // for outbound replies so the dispatch loop doesn't have to round-trip
-    // through `router.send_via`.
     let router_handle = tokio::spawn(router.run_all(inbound_tx));
-
-    eprintln!(
-        "→ channel: local-pipe adapter ready. Send line-delimited \
-         InboundMessage JSON on stdin; replies stream to stdout."
-    );
 
     while let Some(msg) = inbound_rx.recv().await {
         if !channel_router::should_handle(&msg) {
@@ -4300,7 +4465,8 @@ async fn channel_run(kind: &str) -> Result<()> {
             continue;
         }
         let conv_id = msg.conversation_id.clone();
-        let reply = match channel_run_one_shot_text(&msg.text).await {
+        let ck = channel_kind.clone();
+        let reply = match channel_run_one_shot_text(&msg.text, &ck).await {
             Ok(text) => OutboundMessage {
                 conversation_id: conv_id,
                 text,
@@ -4321,10 +4487,66 @@ async fn channel_run(kind: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a channel bot token from environment or the EvoClaw vault.
+///
+/// Resolution order:
+///   1. Environment variable `env_var` (e.g. `TELEGRAM_BOT_TOKEN`)
+///   2. `~/.evoclaw/secrets/<kind>_bot_token.key`
+async fn resolve_channel_token(kind: &str, env_var: &str) -> Result<String> {
+    if let Ok(v) = std::env::var(env_var) {
+        if !v.trim().is_empty() {
+            return Ok(v.trim().to_string());
+        }
+    }
+    let secret_name = format!("{kind}_bot_token");
+    let path = evoclaw_dir()?
+        .join("secrets")
+        .join(format!("{secret_name}.key"));
+    if path.exists() {
+        let token = tokio::fs::read_to_string(&path).await?.trim().to_string();
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+    Err(eyre::eyre!(
+        "No token found for '{kind}' channel.\n\
+         Set env var {env_var}, or store it in the vault:\n  \
+         evoclaw secret add {secret_name}"
+    ))
+}
+
+/// Per-channel Markdown formatting instruction injected into the system prompt
+/// so the model layouts its reply for the target platform automatically.
+fn channel_format_hint(kind: &evo_core::channel::ChannelKind) -> String {
+    use evo_core::channel::ChannelKind;
+    match kind {
+        ChannelKind::Telegram => concat!(
+            "Output format (Telegram Markdown): use *bold* for key terms and headings, ",
+            "`inline code` for commands/paths/values, triple-backtick blocks for code. ",
+            "Bullet points with - for lists. Keep answers concise and well-structured. ",
+            "Do NOT include the <summary> XML tag in your reply — output the answer directly."
+        )
+        .into(),
+        ChannelKind::Slack | ChannelKind::Discord => concat!(
+            "Output format (Slack/Discord Markdown): use **bold** for headings, ",
+            "`inline code`, and triple-backtick code blocks. Bullet points with -."
+        )
+        .into(),
+        _ => concat!(
+            "Output format: clear Markdown with bold headings, bullet points, ",
+            "and code blocks where appropriate. Keep answers focused and structured."
+        )
+        .into(),
+    }
+}
+
 /// Thin wrapper around the conversation runtime that returns the final
 /// text instead of printing it. Used by the channel dispatch loop so the
 /// reply travels through the adapter rather than stdout-as-CLI.
-async fn channel_run_one_shot_text(input: &str) -> Result<String> {
+async fn channel_run_one_shot_text(
+    input: &str,
+    channel_kind: &evo_core::channel::ChannelKind,
+) -> Result<String> {
     let cfg = load_config().await?;
     ensure_layout().await?;
     let provider_id = cfg
@@ -4399,6 +4621,7 @@ async fn channel_run_one_shot_text(input: &str) -> Result<String> {
             model: cfg.model.default.clone(),
             provider_id: cfg.model.provider.clone(),
             mcp_servers: get_active_mcp_servers().await.unwrap_or_default(),
+            channel_hint: Some(channel_format_hint(channel_kind)),
             ..Default::default()
         },
     )

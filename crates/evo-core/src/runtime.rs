@@ -13,6 +13,7 @@ use crate::session::{
     EndRecord, RecordedToolCall, RecordedUsage, Session, SessionRecord, TaskRecord, TurnRecord,
 };
 use crate::skill::Skill;
+use crate::skill_tree::SkillTree;
 use crate::summary::SummaryParser;
 use chrono::Utc;
 use evo_policy::{
@@ -140,6 +141,9 @@ pub struct RuntimeConfig {
     pub provider_id: Option<String>,
     /// Active MCP server names for logging
     pub mcp_servers: Vec<String>,
+    /// Channel-specific formatting instruction forwarded to the system prompt.
+    /// Set by `channel_run_one_shot_text` based on the inbound channel kind.
+    pub channel_hint: Option<String>,
 }
 
 impl Default for RuntimeConfig {
@@ -152,6 +156,7 @@ impl Default for RuntimeConfig {
             reflection_enabled: true,
             provider_id: None,
             mcp_servers: Vec::new(),
+            channel_hint: None,
         }
     }
 }
@@ -188,6 +193,7 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
     ) -> Self {
         let mut prompt_ctx = PromptCtx::today_in(tool_ctx.workspace.display().to_string());
         prompt_ctx.tool_names = registry.names();
+        prompt_ctx.channel_hint = config.channel_hint.clone();
         Self {
             provider,
             registry,
@@ -210,10 +216,7 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
     /// Attach a streaming-delta channel. Every assistant text chunk produced
     /// during `run()` is forwarded to this sender before buffering internally.
     /// Used by the interactive UI renderer (`prd/plan/ui.md` §3 / §6).
-    pub fn with_delta_sender(
-        mut self,
-        tx: tokio::sync::mpsc::UnboundedSender<String>,
-    ) -> Self {
+    pub fn with_delta_sender(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
         self.delta_tx = Some(tx);
         self
     }
@@ -391,6 +394,25 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             path: self.session.path().to_path_buf(),
             end_written: end_written.clone(),
         };
+
+        // C3: load active skills into L1 index so every turn sees current skill context.
+        if let Some(ref dir) = self.skills_dir {
+            if let Ok(tree) = SkillTree::rebuild_from_dir(dir).await {
+                let active = tree.active();
+                if !active.is_empty() {
+                    let mut index = active
+                        .iter()
+                        .map(|n| format!("{}: {}", n.id, n.name))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    if index.len() > 500 {
+                        index.truncate(497);
+                        index.push_str("...");
+                    }
+                    self.prompt_ctx.l1_index = index;
+                }
+            }
+        }
 
         let system_msg = Message::system(build_system_prompt(&self.prompt_ctx));
         let mut history: Vec<Message> = vec![system_msg];
@@ -692,10 +714,22 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         completed: bool,
         tool_error_count: u32,
     ) -> Option<ReflectionRecord> {
+        // Collect active skill IDs so the LLM can decide update vs. create.
+        let active_skill_ids = if let Some(ref dir) = self.skills_dir {
+            SkillTree::rebuild_from_dir(dir)
+                .await
+                .map(|t| t.active().iter().map(|n| n.id.clone()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         // Build a reflection-only ChatRequest (no tools).
         let prompt = build_reflection_prompt(&ReflectionCtx {
             task_id: task_id.into(),
-            final_result_truncated: head_tail(final_text, 4000),
+            final_result_truncated: head_tail(final_text, 2000),
+            trajectory_truncated: head_tail(final_text, 2000),
+            active_skill_ids,
         });
         let messages = vec![
             Message::system(build_system_prompt(&self.prompt_ctx)),
@@ -739,7 +773,10 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
 
         let refl = match parse_reflection(&text) {
             Ok(r) => r,
-            Err(_) => return None,
+            Err(e) => {
+                tracing::warn!(task_id, error = %e, "reflection parse failed; skipping distillation");
+                return None;
+            }
         };
 
         // Memory L3 write (PRD §33). The body lands on disk, so re-scrub
@@ -765,24 +802,95 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 "reflection".into(),
                 if refl.success { "success" } else { "failure" }.into(),
             ];
-            let _ = mem.write(record).await;
+            if let Err(e) = mem.write(record).await {
+                tracing::warn!(task_id, error = %e, "failed to persist L3 memory record");
+            }
         }
 
-        // Distillation → Skill DRAFT (PRD §11.3) plus sandbox FSM advancement
-        // (Fix 5: a Draft skill that never gets a sandbox verdict is stuck —
-        // Active promotion can never trigger).
+        // Distillation → Skill (PRD §11.3). Branches on skill_update_decision so
+        // Update/Merge/Deprecate act on the existing target rather than creating
+        // a parallel duplicate.
         if let Some(dir) = self.skills_dir.clone() {
-            if !matches!(refl.skill_update_decision, SkillUpdateDecision::None) {
-                let skill = self
-                    .distil_skill(task_id, &refl, user_input, final_text)
-                    .await;
-                if let Some(mut sk) = skill {
-                    if completed && tool_error_count == 0 {
-                        sk.record_sandbox_pass();
-                    } else {
-                        sk.record_sandbox_fail();
+            match refl.skill_update_decision {
+                SkillUpdateDecision::None => {}
+
+                SkillUpdateDecision::Deprecate => {
+                    if let Some(ref target_id) = refl.target_skill_id {
+                        let path = dir.join(format!("{target_id}.yaml"));
+                        match Skill::load_yaml(&path).await {
+                            Ok(mut sk) => {
+                                let old_state = sk.state;
+                                sk.state = crate::skill::SkillState::Deprecated;
+                                sk.updated_at = Utc::now();
+                                sk.changelog.push(format!(
+                                    "v{} {old_state:?} → Deprecated (model requested)",
+                                    sk.version
+                                ));
+                                if let Err(e) = sk.save_yaml(&dir).await {
+                                    tracing::warn!(task_id, skill_id = %target_id, error = %e, "failed to save deprecated skill");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(task_id, skill_id = %target_id, error = %e, "deprecate: target skill not found");
+                            }
+                        }
                     }
-                    let _ = sk.save_yaml(&dir).await;
+                }
+
+                SkillUpdateDecision::Update | SkillUpdateDecision::Merge => {
+                    let skill = self
+                        .distil_skill(task_id, &refl, user_input, final_text)
+                        .await;
+                    if let Some(mut sk) = skill {
+                        // If the model named a target, merge identity and content.
+                        if let Some(ref target_id) = refl.target_skill_id {
+                            let path = dir.join(format!("{target_id}.yaml"));
+                            if let Ok(existing) = Skill::load_yaml(&path).await {
+                                sk.id = existing.id.clone();
+                                sk.version = existing.version + 1;
+                                sk.parent = Some(existing.id.clone());
+                                // Union of triggers, capped at 12.
+                                let mut merged = existing.triggers.clone();
+                                for t in &sk.triggers {
+                                    if !merged.contains(t) {
+                                        merged.push(t.clone());
+                                    }
+                                }
+                                merged.truncate(12);
+                                sk.triggers = merged;
+                                // Prepend existing steps not already covered.
+                                for step in existing.steps.iter().rev() {
+                                    if !sk.steps.iter().any(|s| s.tool == step.tool) {
+                                        sk.steps.insert(0, step.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if completed && tool_error_count == 0 {
+                            sk.record_sandbox_pass();
+                        } else {
+                            sk.record_sandbox_fail();
+                        }
+                        if let Err(e) = sk.save_yaml(&dir).await {
+                            tracing::warn!(task_id, skill_id = %sk.id, error = %e, "failed to save updated skill");
+                        }
+                    }
+                }
+
+                SkillUpdateDecision::Create => {
+                    let skill = self
+                        .distil_skill(task_id, &refl, user_input, final_text)
+                        .await;
+                    if let Some(mut sk) = skill {
+                        if completed && tool_error_count == 0 {
+                            sk.record_sandbox_pass();
+                        } else {
+                            sk.record_sandbox_fail();
+                        }
+                        if let Err(e) = sk.save_yaml(&dir).await {
+                            tracing::warn!(task_id, skill_id = %sk.id, error = %e, "failed to save distilled skill");
+                        }
+                    }
                 }
             }
         }

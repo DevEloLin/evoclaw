@@ -36,10 +36,7 @@ use crate::Theme;
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     /// User edited the input field (every keystroke).
-    InputChanged {
-        content: String,
-        cursor_char: usize,
-    },
+    InputChanged { content: String, cursor_char: usize },
     /// User pressed Enter; `content` may be a slash command or a task prompt.
     InputSubmitted {
         task_id: String,
@@ -66,10 +63,7 @@ pub enum UiEvent {
         timestamp: String,
     },
     /// One streaming chunk arrived from the model.
-    AssistantDelta {
-        task_id: String,
-        delta: String,
-    },
+    AssistantDelta { task_id: String, delta: String },
     /// Streaming finished; final usage/timing metadata attached.
     AssistantDone {
         task_id: String,
@@ -81,10 +75,7 @@ pub enum UiEvent {
     /// Timer tick — re-render elapsed time in the task panel.
     StatusTick,
     /// A slash command produced output for the conversation area.
-    SlashCommandOutput {
-        title: String,
-        lines: Vec<String>,
-    },
+    SlashCommandOutput { title: String, lines: Vec<String> },
     /// An error from a task or provider.
     Error { message: String },
     /// Terminal was resized.
@@ -172,7 +163,10 @@ impl UiState {
     /// Apply a `UiEvent`. Returns `true` when a redraw is warranted.
     pub fn apply(&mut self, event: &UiEvent) -> bool {
         match event {
-            UiEvent::InputChanged { content, cursor_char } => {
+            UiEvent::InputChanged {
+                content,
+                cursor_char,
+            } => {
                 self.input.content.clone_from(content);
                 self.input.cursor_char = *cursor_char;
                 true
@@ -201,7 +195,10 @@ impl UiState {
                 });
                 true
             }
-            UiEvent::TaskQueued { task_id, queued_count } => {
+            UiEvent::TaskQueued {
+                task_id,
+                queued_count,
+            } => {
                 self.task.queued_count = *queued_count;
                 for block in &mut self.messages {
                     if block.task_id.as_deref() == Some(task_id.as_str()) {
@@ -250,10 +247,8 @@ impl UiState {
                 if let Some(mut block) = self.streaming.take() {
                     if block.task_id.as_deref() == Some(task_id.as_str()) {
                         block.status = BlockStatus::Done;
-                        block.title = format!(
-                            "{} · {elapsed_secs:.1}s · {usage_summary}",
-                            block.title
-                        );
+                        block.title =
+                            format!("{} · {elapsed_secs:.1}s · {usage_summary}", block.title);
                         self.messages.push(block);
                     } else {
                         self.streaming = Some(block);
@@ -614,9 +609,7 @@ impl UiRenderer {
         const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let frame = FRAMES[((task.elapsed_ms / 80) as usize) % FRAMES.len()];
 
-        let mut left = format!(
-            "generating · {provider} · {elapsed:.1}s · {chars} chars"
-        );
+        let mut left = format!("generating · {provider} · {elapsed:.1}s · {chars} chars");
         let right = if task.queued_count > 0 {
             format!("queued: {}", task.queued_count)
         } else {
@@ -751,9 +744,14 @@ impl UiRenderer {
     /// Single-line shortcut hint below the input box.
     fn render_shortcut_line(&self, term_w: usize) -> String {
         let bw = Self::bw(term_w);
-        let hint = "Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit";
+        let hint =
+            "Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit";
         let truncated = truncate_display(hint, bw);
-        format!("{dim}{truncated}{r}", dim = self.theme.dim(), r = self.theme.reset())
+        format!(
+            "{dim}{truncated}{r}",
+            dim = self.theme.dim(),
+            r = self.theme.reset()
+        )
     }
 }
 
@@ -822,19 +820,34 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
 
         // Horizontal rule
         if trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == '*' || c == '_') {
-            out.push(format!("{dim}────────────────────────────────{r}", dim = theme.dim(), r = theme.reset()));
+            out.push(format!(
+                "{dim}────────────────────────────────{r}",
+                dim = theme.dim(),
+                r = theme.reset()
+            ));
             continue;
         }
 
         // Blockquote
         if let Some(rest) = trimmed.strip_prefix("> ") {
-            out.push(format!("{dim}│{r} {rest}", dim = theme.dim(), r = theme.reset()));
+            out.push(format!(
+                "{dim}│{r} {rest}",
+                dim = theme.dim(),
+                r = theme.reset()
+            ));
             continue;
         }
 
         // Unordered list
-        if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
-            out.push(format!("  {ok}•{r} {rest}", ok = theme.ok(), r = theme.reset()));
+        if let Some(rest) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            out.push(format!(
+                "  {ok}•{r} {rest}",
+                ok = theme.ok(),
+                r = theme.reset()
+            ));
             continue;
         }
 
@@ -843,7 +856,11 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str) -> String {
             if dot > 0 && trimmed[..dot].chars().all(|c| c.is_ascii_digit()) {
                 let num = &trimmed[..dot];
                 let rest = &trimmed[dot + 2..];
-                out.push(format!("  {ok}{num}.{r} {rest}", ok = theme.ok(), r = theme.reset()));
+                out.push(format!(
+                    "  {ok}{num}.{r} {rest}",
+                    ok = theme.ok(),
+                    r = theme.reset()
+                ));
                 continue;
             }
         }
@@ -864,7 +881,11 @@ fn render_inline(theme: &Theme, text: &str) -> String {
     let mut in_bold = false;
     while let Some(ch) = chars.next() {
         if ch == '`' {
-            out.push_str(if in_code { theme.reset() } else { theme.highlight() });
+            out.push_str(if in_code {
+                theme.reset()
+            } else {
+                theme.highlight()
+            });
             in_code = !in_code;
             continue;
         }
@@ -951,10 +972,8 @@ pub fn run_input_task_sync(
                         cursor_char = 0;
 
                         let ts = chrono::Local::now().format("%H:%M:%S").to_string();
-                        let task_id = format!(
-                            "task-{}",
-                            chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
-                        );
+                        let task_id =
+                            format!("task-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ"));
                         if tx
                             .blocking_send(UiEvent::InputSubmitted {
                                 task_id,
@@ -984,29 +1003,46 @@ pub fn run_input_task_sync(
                     // ── Ctrl line-editing ────────────────────────────────────
                     KeyCode::Char('a') if mods.contains(KeyModifiers::CONTROL) => {
                         cursor_char = 0;
-                        let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
                     KeyCode::Char('e') if mods.contains(KeyModifiers::CONTROL) => {
                         cursor_char = input.chars().count();
-                        let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
                     KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => {
                         input.drain(..char_to_byte(&input, cursor_char));
                         cursor_char = 0;
-                        let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
                     KeyCode::Char('k') if mods.contains(KeyModifiers::CONTROL) => {
                         input.truncate(char_to_byte(&input, cursor_char));
-                        let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
                     KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
                         let end = char_to_byte(&input, cursor_char);
                         let trimmed = input[..end].trim_end();
-                        let word_start = trimmed.rfind(|c: char| c.is_whitespace())
-                            .map(|i| i + 1).unwrap_or(0);
+                        let word_start = trimmed
+                            .rfind(|c: char| c.is_whitespace())
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
                         input.replace_range(word_start..end, "");
                         cursor_char = input[..word_start].chars().count();
-                        let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
 
                     // ── Printable characters ─────────────────────────────────
@@ -1016,40 +1052,57 @@ pub fn run_input_task_sync(
                         let byte_pos = char_to_byte(&input, cursor_char);
                         input.insert(byte_pos, c);
                         cursor_char += 1;
-                        let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
 
                     // ── Editing ──────────────────────────────────────────────
-                    KeyCode::Backspace
-                        if cursor_char > 0 => {
-                            cursor_char -= 1;
-                            input.remove(char_to_byte(&input, cursor_char));
-                            let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
-                        }
-                    KeyCode::Delete
-                        if cursor_char < input.chars().count() => {
-                            input.remove(char_to_byte(&input, cursor_char));
-                            let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
-                        }
+                    KeyCode::Backspace if cursor_char > 0 => {
+                        cursor_char -= 1;
+                        input.remove(char_to_byte(&input, cursor_char));
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
+                    }
+                    KeyCode::Delete if cursor_char < input.chars().count() => {
+                        input.remove(char_to_byte(&input, cursor_char));
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
+                    }
 
                     // ── Cursor movement ──────────────────────────────────────
-                    KeyCode::Left
-                        if cursor_char > 0 => {
-                            cursor_char -= 1;
-                            let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
-                        }
-                    KeyCode::Right
-                        if cursor_char < input.chars().count() => {
-                            cursor_char += 1;
-                            let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
-                        }
+                    KeyCode::Left if cursor_char > 0 => {
+                        cursor_char -= 1;
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
+                    }
+                    KeyCode::Right if cursor_char < input.chars().count() => {
+                        cursor_char += 1;
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
+                    }
                     KeyCode::Home => {
                         cursor_char = 0;
-                        let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
                     KeyCode::End => {
                         cursor_char = input.chars().count();
-                        let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
 
                     // ── History ──────────────────────────────────────────────
@@ -1061,20 +1114,25 @@ pub fn run_input_task_sync(
                             hist_idx -= 1;
                             input.clone_from(&history[hist_idx]);
                             cursor_char = input.chars().count();
-                            let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
+                            let _ = tx.blocking_send(UiEvent::InputChanged {
+                                content: input.clone(),
+                                cursor_char,
+                            });
                         }
                     }
-                    KeyCode::Down
-                        if hist_idx < history.len() => {
-                            hist_idx += 1;
-                            input = if hist_idx == history.len() {
-                                hist_snapshot.clone()
-                            } else {
-                                history[hist_idx].clone()
-                            };
-                            cursor_char = input.chars().count();
-                            let _ = tx.blocking_send(UiEvent::InputChanged { content: input.clone(), cursor_char });
-                        }
+                    KeyCode::Down if hist_idx < history.len() => {
+                        hist_idx += 1;
+                        input = if hist_idx == history.len() {
+                            hist_snapshot.clone()
+                        } else {
+                            history[hist_idx].clone()
+                        };
+                        cursor_char = input.chars().count();
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
+                    }
 
                     _ => {}
                 }
