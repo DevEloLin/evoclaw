@@ -39,7 +39,9 @@ pub(crate) const KNOWN_CHANNELS: &[(&str, &str, &str)] = &[
     (
         "slack",
         "SLACK_BOT_TOKEN",
-        "Create an app at api.slack.com/apps, add Bot Token Scopes, install to workspace.",
+        "Create an app at api.slack.com/apps, enable Socket Mode, add Bot Token Scopes \
+         (chat:write, channels:history, im:history), install to workspace. \
+         Also store SLACK_APP_TOKEN (xapp-): `evo channel add slack` again with the app-level token.",
     ),
     (
         "discord",
@@ -105,8 +107,6 @@ pub(crate) async fn channel_list() -> Result<()> {
 
     if external.is_empty() {
         println!("external (~/.evoclaw/channels/*.toml): (none yet)");
-        println!();
-        println!("planned: slack, discord, line, messenger — see docs/channels.md");
     } else {
         println!("external (~/.evoclaw/channels/*.toml):");
         for (name, path) in external {
@@ -221,6 +221,8 @@ pub(crate) async fn channel_run(kind: &str) -> Result<()> {
     use evo_core::channel::{ChannelAdapter, ChannelKind, OutboundKind, OutboundMessage};
     use evo_core::channel_router::{self, ChannelRouter};
     use evo_core::local_pipe::LocalPipe;
+    use evo_core::discord::DiscordAdapter;
+    use evo_core::slack::SlackAdapter;
     use evo_core::telegram::TelegramAdapter;
 
     ensure_layout().await?;
@@ -239,10 +241,23 @@ pub(crate) async fn channel_run(kind: &str) -> Result<()> {
             eprintln!("→ channel: telegram adapter ready (long-polling).");
             (Arc::new(TelegramAdapter::new(token)), ChannelKind::Telegram)
         }
+        "slack" => {
+            let bot_token = resolve_channel_token("slack", "SLACK_BOT_TOKEN").await?;
+            let app_token = resolve_channel_token("slack", "SLACK_APP_TOKEN").await?;
+            eprintln!("→ channel: slack adapter ready (Socket Mode).");
+            (
+                Arc::new(SlackAdapter::new(bot_token, app_token)),
+                ChannelKind::Slack,
+            )
+        }
+        "discord" => {
+            let token = resolve_channel_token("discord", "DISCORD_BOT_TOKEN").await?;
+            eprintln!("→ channel: discord adapter ready (Gateway WebSocket).");
+            (Arc::new(DiscordAdapter::new(token)), ChannelKind::Discord)
+        }
         other => {
             return Err(eyre::eyre!(
-                "unknown adapter '{other}'. Built-in: local-pipe, telegram. \
-                 Slack/Discord planned — see docs/channels.md."
+                "unknown adapter '{other}'. Built-in: local-pipe, telegram, slack, discord."
             ));
         }
     };
