@@ -255,6 +255,7 @@ async fn run_task_interactive(
         workspace: workspace_dir()?,
         allow_user_prompt: true,
         ask_tx: Some(ask_tx),
+        vault_path: vault_path().ok(),
         ..Default::default()
     };
     let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
@@ -330,6 +331,7 @@ pub(crate) async fn run_task_with_provider(
     let tool_ctx = ToolContext {
         workspace: workspace_dir()?,
         allow_user_prompt: true,
+        vault_path: vault_path().ok(),
         ..Default::default()
     };
     let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));

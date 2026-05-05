@@ -19,5 +19,7 @@ tracing       = { workspace = true }
 reqwest         = { workspace = true }
 futures         = { workspace = true }
 chromiumoxide   = { workspace = true }
+sha1            = { workspace = true }
+hmac            = { workspace = true }
 evo-policy      = { workspace = true }
 evo-providers   = { workspace = true }
