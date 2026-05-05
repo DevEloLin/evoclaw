@@ -119,57 +119,69 @@ All five are wired and unit-tested. You can `evoclaw doctor-of tokens` to see th
 
 Download the pre-built binary for your platform from the **[Releases page](https://github.com/DevEloLin/evoclaw/releases)**.
 
-### macOS
+### macOS (Apple Silicon — M1/M2/M3/M4)
+
+**Option A — Homebrew (stable releases only):**
 
 ```bash
-# Apple Silicon (M1/M2/M3/M4)
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-aarch64-apple-darwin.tar.gz
-shasum -a 256 -c evoclaw-aarch64-apple-darwin.tar.gz.sha256
-tar -xzf evoclaw-aarch64-apple-darwin.tar.gz
+brew install develolin/tap/evoclaw
+```
+
+**Option B — Direct download:**
+
+```bash
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-macos-arm64.dmg
+shasum -a 256 -c evoclaw-macos-arm64.dmg.sha256
+open evoclaw-macos-arm64.dmg
+# Drag evoclaw to /usr/local/bin or any directory in your PATH
+evoclaw
+```
+
+### Linux (x86_64)
+
+**Debian / Ubuntu — .deb:**
+
+```bash
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-linux-amd64.deb
+sha256sum -c evoclaw-linux-amd64.deb.sha256
+sudo dpkg -i evoclaw-linux-amd64.deb
+evoclaw
+```
+
+**RHEL / Fedora / CentOS — .rpm:**
+
+```bash
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-linux-x86_64.rpm
+sha256sum -c evoclaw-linux-x86_64.rpm.sha256
+sudo rpm -i evoclaw-linux-x86_64.rpm
+evoclaw
+```
+
+**Universal tarball (Alpine, containers, any distro):**
+
+```bash
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-linux-x86_64.tar.gz
+sha256sum -c evoclaw-linux-x86_64.tar.gz.sha256
+tar -xzf evoclaw-linux-x86_64.tar.gz
 chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
 evoclaw
 ```
 
-### Linux
-
-```bash
-# x86_64
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-x86_64-unknown-linux-gnu.tar.gz
-shasum -a 256 -c evoclaw-x86_64-unknown-linux-gnu.tar.gz.sha256
-tar -xzf evoclaw-x86_64-unknown-linux-gnu.tar.gz
-chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
-evoclaw
-```
-
-```bash
-# ARM64 (Raspberry Pi 4, AWS Graviton, etc.)
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-aarch64-unknown-linux-gnu.tar.gz
-shasum -a 256 -c evoclaw-aarch64-unknown-linux-gnu.tar.gz.sha256
-tar -xzf evoclaw-aarch64-unknown-linux-gnu.tar.gz
-chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
-evoclaw
-```
-
-```bash
-# x86_64 static (musl) — containers, Alpine, cross-distro
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-x86_64-unknown-linux-musl.tar.gz
-shasum -a 256 -c evoclaw-x86_64-unknown-linux-musl.tar.gz.sha256
-tar -xzf evoclaw-x86_64-unknown-linux-musl.tar.gz
-chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
-evoclaw
-```
-
-### Windows
+### Windows (x64)
 
 ```powershell
-# x86_64 — run in PowerShell
-Invoke-WebRequest -Uri "https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-x86_64-pc-windows-msvc.zip" -OutFile evoclaw.zip
-Expand-Archive evoclaw.zip -DestinationPath "$env:LOCALAPPDATA\evoclaw"
-$env:PATH += ";$env:LOCALAPPDATA\evoclaw"
-evoclaw.exe
+# Download and run the installer — installs to %LOCALAPPDATA%\Programs\EvoClaw
+Invoke-WebRequest -Uri "https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-windows-x64-setup.exe" -OutFile evoclaw-setup.exe
+# Verify checksum
+$expected = (Invoke-WebRequest "https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-windows-x64-setup.exe.sha256").Content.Trim().Split()[0]
+$actual = (Get-FileHash evoclaw-setup.exe -Algorithm SHA256).Hash.ToLower()
+if ($expected -ne $actual) { throw "Checksum mismatch" }
+Start-Process evoclaw-setup.exe
 ```
 
-Each archive includes a `README.md` and a `.sha256` checksum file. Verify the checksum before running.
+After installation, open a new terminal and run `evoclaw`.
+
+Each release includes a `.sha256` checksum file alongside every artifact. Verify before running.
 
 ### Build from source
 
