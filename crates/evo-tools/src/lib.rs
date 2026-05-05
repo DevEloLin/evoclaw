@@ -76,6 +76,10 @@ pub struct ToolContext {
     /// When `None`, `ask_user` falls back to direct stdin (non-TUI / one-shot).
     pub ask_tx:
         Option<tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<String>)>>,
+    /// Path to `vault.json` used by `browser_type` to resolve `${SECRET:name}`
+    /// and `${TOTP:name}` placeholders at tool-execution time.
+    /// When `None`, placeholder syntax passes through unchanged.
+    pub vault_path: Option<PathBuf>,
 }
 
 impl Default for ToolContext {
@@ -92,6 +96,7 @@ impl Default for ToolContext {
             max_permission: Permission::P2,
             self_exe,
             ask_tx: None,
+            vault_path: None,
         }
     }
 }

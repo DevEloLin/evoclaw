@@ -4,12 +4,13 @@
 //! all subsequent tool calls. Requires Chrome or Chromium on the host system.
 //! All five tools require P3 permission (same as web_fetch).
 
+use crate::tools::secret_inject::{resolve, Resolved};
 use crate::{smart_format, Tool, ToolContext, ToolError, ToolFactory};
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::page::ScreenshotParams;
-use evo_policy::Permission;
+use evo_policy::{Permission, Vault};
 use futures::StreamExt as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -346,9 +347,30 @@ impl Tool for BrowserType {
             "additionalProperties": false,
         })
     }
-    async fn run(&self, _ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
+    async fn run(&self, ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         let a: TypeArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
+
+        // Resolve ${SECRET:name} / ${TOTP:name} at execution boundary.
+        // The real value is used only here and never returned in the observation.
+        let real_text = if let Some(vault_path) = &ctx.vault_path {
+            let vault = Vault::load(vault_path)
+                .await
+                .map_err(|e| ToolError::Internal(format!("vault load: {e}")))?;
+            match resolve(&a.text, &vault) {
+                Resolved::Plain => a.text.clone(),
+                Resolved::Value(v) => v,
+                Resolved::Missing { key } => {
+                    return Err(ToolError::Denied(format!(
+                        "secret '{key}' not found in vault — \
+                         run: evoclaw secret add {key} <value>"
+                    )));
+                }
+            }
+        } else {
+            a.text.clone()
+        };
+
         let mut guard = SESSION.lock().await;
         ensure_session(&mut guard).await?;
         let session = guard.as_ref().unwrap();
@@ -367,9 +389,10 @@ impl Tool for BrowserType {
             .find_element(a.selector.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("find '{}': {e}", a.selector)))?
-            .type_str(a.text.as_str())
+            .type_str(real_text.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("type: {e}")))?;
+        // Never echo real_text — observation only names the selector.
         Ok(format!("typed into: {}", a.selector))
     }
 }

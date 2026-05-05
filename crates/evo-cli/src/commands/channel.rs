@@ -367,6 +367,7 @@ pub(crate) async fn channel_run_one_shot_text(
     let tool_ctx = ToolContext {
         workspace: workspace_dir()?,
         allow_user_prompt: false,
+        vault_path: vault_path().ok(),
         ..Default::default()
     };
     let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
