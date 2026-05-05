@@ -1,8 +1,8 @@
 //! Slash-command dispatcher and related helpers.
 
 use crate::config::{evoclaw_dir, skills_dir, vault_path};
-use eyre::Result;
 use evo_policy::Vault;
+use eyre::Result;
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
@@ -24,8 +24,8 @@ pub(crate) enum SlashOutcome {
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn handle_slash(rest: &str) -> Result<SlashOutcome> {
-    use crate::commands::{agent, channel, config, diag, mcp, model, profile, secret, skill};
     use crate::commands::onboard::login_cmd;
+    use crate::commands::{agent, channel, config, diag, mcp, model, profile, secret, skill};
 
     let mut parts = rest.split_whitespace();
     let cmd = parts.next().unwrap_or("");

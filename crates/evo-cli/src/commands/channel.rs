@@ -6,7 +6,6 @@ use crate::config::{
 };
 use crate::mcp_tools;
 use crate::onboard;
-use eyre::{Result, WrapErr};
 use evo_core::{ConversationRuntime, Memory, Session};
 use evo_policy::{BudgetCfg, CostEngine, Redactor, Vault};
 use evo_providers::{
@@ -14,6 +13,7 @@ use evo_providers::{
     OpenAiCompatProvider, Provider,
 };
 use evo_tools::{ToolContext, ToolRegistry};
+use eyre::{Result, WrapErr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -333,9 +333,7 @@ pub(crate) async fn channel_run_one_shot_text(
                         Arc::new(AnthropicProvider::new(api_key, cfg.model.default.clone()))
                             as Arc<dyn Provider>
                     }
-                    "copilot" => {
-                        Arc::new(CopilotProvider::new(api_key, cfg.model.default.clone()))
-                    }
+                    "copilot" => Arc::new(CopilotProvider::new(api_key, cfg.model.default.clone())),
                     _ => Arc::new(OpenAiCompatProvider::new(
                         cfg.model.base_url.clone(),
                         api_key,

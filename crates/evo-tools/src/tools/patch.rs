@@ -148,6 +148,9 @@ mod tests {
             .await
             .expect_err("must deny patch to own exe");
         assert!(matches!(err, ToolError::Denied(_)), "got {err:?}");
-        assert_eq!(std::fs::read_to_string(dir.join("evoclaw")).unwrap(), "original");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("evoclaw")).unwrap(),
+            "original"
+        );
     }
 }

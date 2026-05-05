@@ -1,13 +1,13 @@
 //! Diagnostic, usage, and replay commands.
 
 use crate::commands::secret::most_recent_session;
-use crate::config::{config_path, cost_log_path, logs_dir, load_config, workspace_dir};
+use crate::config::{config_path, cost_log_path, load_config, logs_dir, workspace_dir};
 use crate::terminal_ui::TerminalUI;
 use crate::theme::Theme;
-use eyre::Result;
 use evo_core::Session;
 use evo_policy::{BudgetCfg, CostEngine};
 use evo_providers::AuthMethod;
+use eyre::Result;
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
@@ -194,7 +194,11 @@ pub(crate) async fn doctor_tokens() -> Result<()> {
         }
     }
     let hr = |c: u64, t: u64| -> f64 {
-        if t == 0 { 0.0 } else { c as f64 / t as f64 }
+        if t == 0 {
+            0.0
+        } else {
+            c as f64 / t as f64
+        }
     };
     print!(
         "{}",

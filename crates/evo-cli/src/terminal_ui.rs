@@ -1,7 +1,7 @@
 //! TerminalUI rendering, Spinner, and history path helper.
 
 use crate::config::logs_dir;
-use crate::theme::{Theme, truncate_to};
+use crate::theme::{truncate_to, Theme};
 use crate::tui;
 use eyre::Result;
 use std::path::PathBuf;
@@ -82,11 +82,7 @@ impl TerminalUI {
             }
         }
         // Bottom separator — same colour as top
-        out.push_str(&format!(
-            "{color}{}{r}\n",
-            "─".repeat(w),
-            r = theme.reset(),
-        ));
+        out.push_str(&format!("{color}{}{r}\n", "─".repeat(w), r = theme.reset(),));
         out
     }
 
@@ -128,13 +124,13 @@ impl TerminalUI {
         // Every line is exactly 13 display columns; all rows are mirror-symmetric
         // around the centre column (position 7).
         let mascot: &[&str] = &[
-            r"\\  ▄   ▄  //",   // top legs (\\,//) + antennae (▄ at 5,9)
-            r"  ▄███████▄  ",   // head arch
-            r"  █       █  ",   // blank forehead
-            r"  █ ▀▀ ▀▀ █  ",  // eyes: ▀▀ at 5-6 and 8-9 (symmetric)
-            r"  ▀█▄▄▄▄▄█▀  ",  // jaw: hollow mouth + lower teeth
-            r"    ▄▄ ▄▄    ",   // chin nubs aligned under eyes (▄▄ at 5-6, 8-9)
-            r"//  ██ ██  \\",  // bottom legs: full blocks under chin + spider legs
+            r"\\  ▄   ▄  //", // top legs (\\,//) + antennae (▄ at 5,9)
+            r"  ▄███████▄  ", // head arch
+            r"  █       █  ", // blank forehead
+            r"  █ ▀▀ ▀▀ █  ", // eyes: ▀▀ at 5-6 and 8-9 (symmetric)
+            r"  ▀█▄▄▄▄▄█▀  ", // jaw: hollow mouth + lower teeth
+            r"    ▄▄ ▄▄    ", // chin nubs aligned under eyes (▄▄ at 5-6, 8-9)
+            r"//  ██ ██  \\", // bottom legs: full blocks under chin + spider legs
         ];
         let mascot_colors = [d, c, c, c, c, c, d];
 

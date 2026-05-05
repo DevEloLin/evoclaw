@@ -9,9 +9,9 @@ pub(crate) mod tools;
 use async_trait::async_trait;
 use evo_policy::Permission;
 use evo_providers::ToolSpec;
-use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
+use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,7 +74,8 @@ pub struct ToolContext {
     /// Channel for routing `ask_user` prompts to the TUI event loop instead of
     /// directly reading stdin (which conflicts with raw-mode input handling).
     /// When `None`, `ask_user` falls back to direct stdin (non-TUI / one-shot).
-    pub ask_tx: Option<tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<String>)>>,
+    pub ask_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<String>)>>,
 }
 
 impl Default for ToolContext {

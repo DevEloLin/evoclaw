@@ -99,9 +99,18 @@ mod tests {
     fn includes_self_learning_description() {
         let ctx = PromptCtx::today_in("/tmp/ws");
         let p = build_system_prompt(&ctx);
-        assert!(p.contains("self-evolving"), "prompt must describe EvoClaw as self-evolving");
-        assert!(p.contains("reflection"), "prompt must mention reflection step");
-        assert!(p.contains("skill"), "prompt must mention skill distillation");
+        assert!(
+            p.contains("self-evolving"),
+            "prompt must describe EvoClaw as self-evolving"
+        );
+        assert!(
+            p.contains("reflection"),
+            "prompt must mention reflection step"
+        );
+        assert!(
+            p.contains("skill"),
+            "prompt must mention skill distillation"
+        );
     }
 
     #[test]

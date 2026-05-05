@@ -14,31 +14,26 @@
 //!   3) ACP agent (TEMPORARILY NOT SUPPORTED — most upstream CLIs don't
 //!      implement Zed-ACP natively; gated off until that situation matures)
 
-pub mod catalog;
-pub(crate) mod paths;
-pub(crate) mod picker;
-pub(crate) mod model;
 pub(crate) mod auth;
+pub mod catalog;
+pub(crate) mod model;
+pub(crate) mod paths;
 pub(crate) mod persist;
+pub(crate) mod picker;
 
 // Re-export everything that was pub in the old onboard.rs
-pub use catalog::{ProviderProfile, find_provider, provider_to_acp_agent, PROVIDERS};
-pub use paths::{
-    evoclaw_dir, config_path, secrets_dir, secret_file,
-    browser_profiles_dir, browser_profile_path,
-};
-pub use picker::{
-    ProviderChoice, pick_provider, prompt_gateway,
-    pick_auth_method, read_nonempty,
-};
-pub use model::pick_model;
 pub use auth::{
-    KeySource, resolve_api_key, ask_api_key, run_copilot_oauth, capture_browser_profile,
+    ask_api_key, capture_browser_profile, resolve_api_key, run_copilot_oauth, KeySource,
+};
+pub use catalog::{find_provider, provider_to_acp_agent, ProviderProfile, PROVIDERS};
+pub use model::pick_model;
+pub use paths::{
+    browser_profile_path, browser_profiles_dir, config_path, evoclaw_dir, secret_file, secrets_dir,
 };
 pub use persist::{
-    save_secret, save_browser_profile, load_browser_profile,
-    save_config_with_auth, save_config,
+    load_browser_profile, save_browser_profile, save_config, save_config_with_auth, save_secret,
 };
+pub use picker::{pick_auth_method, pick_provider, prompt_gateway, read_nonempty, ProviderChoice};
 
 #[cfg(test)]
 mod tests {

@@ -15,13 +15,13 @@
 //!   - Slash commands are instant; their output goes to the conversation area.
 
 pub mod event;
-pub mod state;
-pub mod renderer;
-pub mod markdown;
 pub mod input;
+pub mod markdown;
+pub mod renderer;
+pub mod state;
 
 pub use event::UiEvent;
-pub use state::{UiState, InputState, TaskPanelState, ConversationBlock, Role, BlockStatus};
-pub use renderer::UiRenderer;
+pub use input::{load_history, run_input_task_sync, save_history};
 pub(crate) use markdown::render_markdown_plain;
-pub use input::{run_input_task_sync, load_history, save_history};
+pub use renderer::UiRenderer;
+pub use state::{BlockStatus, ConversationBlock, InputState, Role, TaskPanelState, UiState};
