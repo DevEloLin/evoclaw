@@ -699,13 +699,13 @@ mod ui_tests {
         let theme = Theme { enabled: false };
         let out = TerminalUI::render_top_status_bar(
             &theme,
-            "evoclaw v0.3.7",
+            "evoclaw v1.0.0-beta.1",
             "acp:codex",
             "acp:codex",
             "~/devops/gptcli/agent/EvoClaw",
             "2026-05-03 17:22:48",
         );
-        assert!(out.contains("evoclaw v0.3.7"));
+        assert!(out.contains("evoclaw v1.0.0-beta.1"));
         assert!(out.contains("acp:codex"));
         assert!(out.contains("workspace: ~/devops/gptcli/agent/EvoClaw"));
         assert!(out.contains("2026-05-03 17:22:48"));
