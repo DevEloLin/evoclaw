@@ -177,6 +177,9 @@ jobs:
       - name: Build
         run: cargo build --release --package evo-cli --bin evoclaw --target x86_64-pc-windows-msvc
 
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
       - name: Create NSIS installer
         shell: pwsh
         run: |
@@ -224,8 +227,7 @@ jobs:
           )
 
           Copy-Item $BIN evoclaw.exe
-          $env:PATH += ";C:\Program Files (x86)\NSIS"
-          makensis installer.nsi
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
 
           $hash = (Get-FileHash "evoclaw-windows-x64-setup.exe" -Algorithm SHA256).Hash.ToLower()
           "$hash  evoclaw-windows-x64-setup.exe" | Out-File -Encoding ascii "evoclaw-windows-x64-setup.exe.sha256"
