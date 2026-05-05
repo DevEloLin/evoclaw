@@ -20,7 +20,7 @@
 
 <p align="center">
   <b>🌐 Website</b>: <a href="https://develolin.github.io/EvoClawSite/">develolin.github.io/EvoClawSite</a> ·
-  <b>📦 Version</b>: <a href="./version"><code>v0.3.3</code></a> ·
+  <b>📦 Version</b>: <a href="./version"><code>v0.3.6</code></a> ·
   <b>🇨🇳 中文文档</b>: <a href="./docs/zh/README.md">docs/zh/README.md</a>
 </p>
 
@@ -141,7 +141,7 @@ $ evoclaw
       ▄▄ ▄▄             /skill   browse skills
   //  ██ ██  \\
 
-  EvoClaw  v0.3.3       Status
+  EvoClaw  v0.3.6       Status
   self-evolving agent   ──────────────────────────
   runtime               auth    ✓ ready
                         model   deepseek-chat
@@ -385,7 +385,7 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 7   — Multi-channel        | ⏳ v0.6 plan | future     | Telegram / Slack / Discord plugins, Local Dashboard, trust-FSM auto-promote, group-mention enforcement |
 | 8   — Deep hardening       | ⏳ v0.7 plan | future     | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
-Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.3.3.
+Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.3.6.
 
 ---
 
@@ -409,7 +409,7 @@ The version of this code is recorded in [`./version`](./version). The site repo 
 - `EvoClaw/version` (this repo)
 - `EvoClawSite/version`
 
-A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.3.3`**.
+A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.3.6`**.
 
 ---
 
