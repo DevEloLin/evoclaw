@@ -283,8 +283,7 @@ pub fn run_input_task_sync(
                         }
                     }
                     KeyCode::Char('n')
-                        if mods.contains(KeyModifiers::CONTROL)
-                            && hist_idx < history.len() =>
+                        if mods.contains(KeyModifiers::CONTROL) && hist_idx < history.len() =>
                     {
                         hist_idx += 1;
                         input = if hist_idx == history.len() {
