@@ -1,14 +1,19 @@
 # EvoClaw — tag-based release.
 #
-# This workflow only runs when pushing version tags like v0.2.0.
-# main branch pushes do not package or publish releases.
+# Trigger:
+#   git tag -a v1.0.0 -m "Release v1.0.0"
+#   git push origin v1.0.0
 #
-# Release trigger:
-#   git tag -a v0.2.0 -m "Release v0.2.0"
-#   git push origin v0.2.0
+# Produces:
+#   macOS  : evoclaw-macos-arm64.dmg
+#   Windows: evoclaw-windows-x64-setup.exe
+#   Linux  : evoclaw-linux-amd64.deb
+#             evoclaw-linux-x86_64.rpm
+#             evoclaw-linux-x86_64.tar.gz
 #
 # Optional release notes:
-#   .github/release-notes/v0.2.0.md
+#   .github/release-notes/<tag>.md   (stable)
+#   .github/beta-notes/<tag>.md      (pre-release)
 
 name: Release
 
@@ -24,49 +29,13 @@ concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
+# ─────────────────────────────────────────────────────────
+# macOS — Apple Silicon DMG
+# ─────────────────────────────────────────────────────────
 jobs:
-  build:
-    name: Build ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # macOS Apple Silicon
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            bin_name: evoclaw
-            archive_name: evoclaw-aarch64-apple-darwin.tar.gz
-            archive_type: tar
-
-          # Linux x64, Ubuntu / Debian / CentOS etc.
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            bin_name: evoclaw
-            archive_name: evoclaw-x86_64-unknown-linux-gnu.tar.gz
-            archive_type: tar
-
-          # Linux ARM64 — cross-compiled on ubuntu-latest (no paid runner needed)
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            bin_name: evoclaw
-            archive_name: evoclaw-aarch64-unknown-linux-gnu.tar.gz
-            archive_type: tar
-
-          # Linux x64 static, better for cross-distro compatibility
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            bin_name: evoclaw
-            archive_name: evoclaw-x86_64-unknown-linux-musl.tar.gz
-            archive_type: tar
-
-          # Windows x64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bin_name: evoclaw.exe
-            archive_name: evoclaw-x86_64-pc-windows-msvc.zip
-            archive_type: zip
-
-    runs-on: ${{ matrix.os }}
+  build-macos:
+    name: Build macOS arm64 DMG
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
@@ -75,68 +44,205 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install musl tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - name: Install ARM64 cross-compiler
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-
       - name: Build
-        run: cargo build --release --package evo-cli --bin evoclaw --target ${{ matrix.target }}
+        run: cargo build --release --package evo-cli --bin evoclaw --target aarch64-apple-darwin
 
-      - name: Package Unix
-        if: matrix.archive_type == 'tar'
-        shell: bash
+      - name: Package DMG
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ matrix.bin_name }} dist/evoclaw
-          cp README.md dist/README.md
-          chmod +x dist/evoclaw
-          cd dist
-          tar -czf ../${{ matrix.archive_name }} evoclaw README.md
-          cd ..
-          shasum -a 256 ${{ matrix.archive_name }} > ${{ matrix.archive_name }}.sha256
-
-      - name: Package Windows
-        if: matrix.archive_type == 'zip'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "dist/evoclaw.exe"
-          Copy-Item "README.md" "dist/README.md"
-          Compress-Archive -Path "dist/evoclaw.exe","dist/README.md" -DestinationPath "${{ matrix.archive_name }}"
-          Get-FileHash "${{ matrix.archive_name }}" -Algorithm SHA256 | ForEach-Object {
-            "$($_.Hash.ToLower())  ${{ matrix.archive_name }}" | Out-File -Encoding ascii "${{ matrix.archive_name }}.sha256"
-          }
+          mkdir -p dmg_src
+          cp target/aarch64-apple-darwin/release/evoclaw dmg_src/evoclaw
+          chmod +x dmg_src/evoclaw
+          hdiutil create \
+            -volname "EvoClaw" \
+            -srcfolder dmg_src \
+            -ov \
+            -format UDZO \
+            evoclaw-macos-arm64.dmg
+          shasum -a 256 evoclaw-macos-arm64.dmg \
+            | awk '{print $1}' > evoclaw-macos-arm64.dmg.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive_name }}
+          name: evoclaw-macos-arm64.dmg
           path: |
-            ${{ matrix.archive_name }}
-            ${{ matrix.archive_name }}.sha256
+            evoclaw-macos-arm64.dmg
+            evoclaw-macos-arm64.dmg.sha256
 
-  release:
-    name: Create GitHub Release
-    needs: build
+# ─────────────────────────────────────────────────────────
+# Linux — .deb + .rpm + .tar.gz  (x86_64 only)
+# ─────────────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux x86_64 packages
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download artifacts
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install fpm dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev rubygems build-essential rpm
+          sudo gem install --no-document fpm
+
+      - name: Build
+        run: cargo build --release --package evo-cli --bin evoclaw --target x86_64-unknown-linux-gnu
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BIN="target/x86_64-unknown-linux-gnu/release/evoclaw"
+          chmod +x "$BIN"
+
+          # .deb
+          fpm -s dir -t deb \
+            --name evoclaw \
+            --version "$VERSION" \
+            --architecture amd64 \
+            --description "Self-evolving local-first personal AI agent" \
+            --url "https://github.com/DevEloLin/evoclaw" \
+            --license MIT \
+            --prefix /usr/local/bin \
+            "$BIN"=evoclaw
+          DEB=$(ls evoclaw_*.deb | head -1)
+          mv "$DEB" evoclaw-linux-amd64.deb
+          sha256sum evoclaw-linux-amd64.deb | awk '{print $1}' > evoclaw-linux-amd64.deb.sha256
+
+          # .rpm
+          fpm -s dir -t rpm \
+            --name evoclaw \
+            --version "$VERSION" \
+            --architecture x86_64 \
+            --description "Self-evolving local-first personal AI agent" \
+            --url "https://github.com/DevEloLin/evoclaw" \
+            --license MIT \
+            --prefix /usr/local/bin \
+            "$BIN"=evoclaw
+          RPM=$(ls evoclaw-*.rpm | head -1)
+          mv "$RPM" evoclaw-linux-x86_64.rpm
+          sha256sum evoclaw-linux-x86_64.rpm | awk '{print $1}' > evoclaw-linux-x86_64.rpm.sha256
+
+          # .tar.gz
+          mkdir -p dist
+          cp "$BIN" dist/evoclaw
+          cp README.md dist/README.md
+          tar -czf evoclaw-linux-x86_64.tar.gz -C dist evoclaw README.md
+          sha256sum evoclaw-linux-x86_64.tar.gz | awk '{print $1}' > evoclaw-linux-x86_64.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: evoclaw-linux-packages
+          path: |
+            evoclaw-linux-amd64.deb
+            evoclaw-linux-amd64.deb.sha256
+            evoclaw-linux-x86_64.rpm
+            evoclaw-linux-x86_64.rpm.sha256
+            evoclaw-linux-x86_64.tar.gz
+            evoclaw-linux-x86_64.tar.gz.sha256
+
+# ─────────────────────────────────────────────────────────
+# Windows — NSIS installer (.exe)
+# ─────────────────────────────────────────────────────────
+  build-windows:
+    name: Build Windows x64 installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --package evo-cli --bin evoclaw --target x86_64-pc-windows-msvc
+
+      - name: Create NSIS installer
+        shell: pwsh
+        run: |
+          $VERSION = "${{ github.ref_name }}".TrimStart('v')
+          $BIN = "target\x86_64-pc-windows-msvc\release\evoclaw.exe"
+
+          $nsi = @'
+!define PRODUCT_NAME "EvoClaw"
+!define PRODUCT_VERSION "EVOCLAW_VERSION"
+!define INSTALL_DIR "$LOCALAPPDATA\Programs\EvoClaw"
+
+Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
+OutFile "evoclaw-windows-x64-setup.exe"
+InstallDir "${INSTALL_DIR}"
+RequestExecutionLevel user
+SetCompressor lzma
+
+Section "Install"
+  SetOutPath "$INSTDIR"
+  File "evoclaw.exe"
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+
+  ; Add to user PATH (HKCU)
+  ReadRegStr $0 HKCU "Environment" "PATH"
+  StrCpy $0 "$0;$INSTDIR"
+  WriteRegExpandStr HKCU "Environment" "PATH" "$0"
+  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
+SectionEnd
+
+Section "Uninstall"
+  Delete "$INSTDIR\evoclaw.exe"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir "$INSTDIR"
+SectionEnd
+'@
+
+          $nsi = $nsi.Replace('EVOCLAW_VERSION', $VERSION)
+          $nsi | Out-File -Encoding ascii installer.nsi
+
+          Copy-Item $BIN evoclaw.exe
+          makensis installer.nsi
+
+          $hash = (Get-FileHash "evoclaw-windows-x64-setup.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  evoclaw-windows-x64-setup.exe" | Out-File -Encoding ascii "evoclaw-windows-x64-setup.exe.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: evoclaw-windows-x64-setup.exe
+          path: |
+            evoclaw-windows-x64-setup.exe
+            evoclaw-windows-x64-setup.exe.sha256
+
+# ─────────────────────────────────────────────────────────
+# GitHub Release
+# ─────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -144,9 +250,14 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir -p release
-          find artifacts -type f -name "*.tar.gz" -exec cp {} release/ \;
-          find artifacts -type f -name "*.zip" -exec cp {} release/ \;
-          find artifacts -type f -name "*.sha256" -exec cp {} release/ \;
+          find artifacts -type f \( \
+            -name "*.dmg" -o \
+            -name "*.exe" -o \
+            -name "*.deb" -o \
+            -name "*.rpm" -o \
+            -name "*.tar.gz" -o \
+            -name "*.sha256" \
+          \) -exec cp {} release/ \;
 
       - name: Detect pre-release
         id: prerelease
@@ -161,8 +272,6 @@ jobs:
       - name: Prepare release notes
         shell: bash
         run: |
-          # Stable releases: .github/release-notes/<tag>.md
-          # Pre-releases:    .github/beta-notes/<tag>.md
           if [[ "${{ steps.prerelease.outputs.is_prerelease }}" == "true" ]]; then
             NOTES_FILE=".github/beta-notes/${GITHUB_REF_NAME}.md"
           else
@@ -177,32 +286,23 @@ jobs:
 
           EvoClaw is a local-first, CLI-first, self-evolving personal AI assistant built with Rust.
 
-          This release was created from tag \`${GITHUB_REF_NAME}\`.
-
-          ---
-
           ## Artifacts
 
-          This release includes binaries for:
+          | Platform | File |
+          |----------|------|
+          | macOS Apple Silicon | \`evoclaw-macos-arm64.dmg\` |
+          | Windows x64 | \`evoclaw-windows-x64-setup.exe\` |
+          | Linux x64 | \`evoclaw-linux-amd64.deb\` |
+          | Linux x64 | \`evoclaw-linux-x86_64.rpm\` |
+          | Linux x64 | \`evoclaw-linux-x86_64.tar.gz\` |
 
-          - macOS Apple Silicon (arm64)
-          - Linux x64
-          - Linux ARM64
-          - Linux x64 static musl
-          - Windows x64
+          Each artifact has a matching \`.sha256\` checksum file.
 
-          Each artifact includes a matching \`.sha256\` checksum file.
-
-          ---
-
-          ## Install
-
-          Download the artifact for your platform from this release.
+          ## Install via Homebrew (macOS, stable releases only)
 
           \`\`\`bash
           brew install develolin/tap/evoclaw
           \`\`\`
-
           EOF
           fi
 
