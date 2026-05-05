@@ -100,9 +100,10 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/${{ matrix.bin_name }} dist/evoclaw
+          cp README.md dist/README.md
           chmod +x dist/evoclaw
           cd dist
-          tar -czf ../${{ matrix.archive_name }} evoclaw
+          tar -czf ../${{ matrix.archive_name }} evoclaw README.md
           cd ..
           shasum -a 256 ${{ matrix.archive_name }} > ${{ matrix.archive_name }}.sha256
 
@@ -112,7 +113,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "dist/evoclaw.exe"
-          Compress-Archive -Path "dist/evoclaw.exe" -DestinationPath "${{ matrix.archive_name }}"
+          Copy-Item "README.md" "dist/README.md"
+          Compress-Archive -Path "dist/evoclaw.exe","dist/README.md" -DestinationPath "${{ matrix.archive_name }}"
           Get-FileHash "${{ matrix.archive_name }}" -Algorithm SHA256 | ForEach-Object {
             "$($_.Hash.ToLower())  ${{ matrix.archive_name }}" | Out-File -Encoding ascii "${{ matrix.archive_name }}.sha256"
           }
@@ -146,10 +148,26 @@ jobs:
           find artifacts -type f -name "*.zip" -exec cp {} release/ \;
           find artifacts -type f -name "*.sha256" -exec cp {} release/ \;
 
+      - name: Detect pre-release
+        id: prerelease
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME}" =~ -(alpha|beta|rc)\. ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Prepare release notes
         shell: bash
         run: |
-          NOTES_FILE=".github/release-notes/${GITHUB_REF_NAME}.md"
+          # Stable releases: .github/release-notes/<tag>.md
+          # Pre-releases:    .github/beta-notes/<tag>.md
+          if [[ "${{ steps.prerelease.outputs.is_prerelease }}" == "true" ]]; then
+            NOTES_FILE=".github/beta-notes/${GITHUB_REF_NAME}.md"
+          else
+            NOTES_FILE=".github/release-notes/${GITHUB_REF_NAME}.md"
+          fi
 
           if [ -f "$NOTES_FILE" ]; then
             cp "$NOTES_FILE" release_body.md
@@ -182,17 +200,10 @@ jobs:
 
           Download the artifact for your platform from this release.
 
-          Homebrew support is planned through:
-
           \`\`\`bash
           brew install develolin/tap/evoclaw
           \`\`\`
 
-          ---
-
-          ## Notes
-
-          Detailed release notes were not provided for this version.
           EOF
           fi
 
@@ -202,3 +213,4 @@ jobs:
           files: release/*
           body_path: release_body.md
           generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
