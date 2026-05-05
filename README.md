@@ -117,10 +117,75 @@ All five are wired and unit-tested. You can `evoclaw doctor-of tokens` to see th
 
 ## Install
 
+Download the pre-built binary for your platform from the **[Releases page](https://github.com/DevEloLin/evoclaw/releases)**.
+
+### macOS
+
+```bash
+# Apple Silicon (M1/M2/M3/M4)
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c evoclaw-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf evoclaw-aarch64-apple-darwin.tar.gz
+chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
+evoclaw
+```
+
+```bash
+# Intel (x86_64)
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-x86_64-apple-darwin.tar.gz
+shasum -a 256 -c evoclaw-x86_64-apple-darwin.tar.gz.sha256
+tar -xzf evoclaw-x86_64-apple-darwin.tar.gz
+chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
+evoclaw
+```
+
+### Linux
+
+```bash
+# x86_64
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-x86_64-unknown-linux-gnu.tar.gz
+shasum -a 256 -c evoclaw-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf evoclaw-x86_64-unknown-linux-gnu.tar.gz
+chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
+evoclaw
+```
+
+```bash
+# ARM64 (Raspberry Pi 4, AWS Graviton, etc.)
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-aarch64-unknown-linux-gnu.tar.gz
+shasum -a 256 -c evoclaw-aarch64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf evoclaw-aarch64-unknown-linux-gnu.tar.gz
+chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
+evoclaw
+```
+
+```bash
+# x86_64 static (musl) — containers, Alpine, cross-distro
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-x86_64-unknown-linux-musl.tar.gz
+shasum -a 256 -c evoclaw-x86_64-unknown-linux-musl.tar.gz.sha256
+tar -xzf evoclaw-x86_64-unknown-linux-musl.tar.gz
+chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
+evoclaw
+```
+
+### Windows
+
+```powershell
+# x86_64 — run in PowerShell
+Invoke-WebRequest -Uri "https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-x86_64-pc-windows-msvc.zip" -OutFile evoclaw.zip
+Expand-Archive evoclaw.zip -DestinationPath "$env:LOCALAPPDATA\evoclaw"
+$env:PATH += ";$env:LOCALAPPDATA\evoclaw"
+evoclaw.exe
+```
+
+Each archive includes a `README.md` and a `.sha256` checksum file. Verify the checksum before running.
+
+### Build from source
+
 ```bash
 git clone https://github.com/DevEloLin/evoclaw && cd evoclaw
 cargo build --workspace --release
-./target/release/evoclaw            # interactive setup wizard runs on first launch
+./target/release/evoclaw
 ```
 
 Full instructions: [`docs/installation.md`](./docs/installation.md) · 中文: [`docs/zh/installation.md`](./docs/zh/installation.md)
