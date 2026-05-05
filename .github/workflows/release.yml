@@ -188,6 +188,8 @@ jobs:
             '!define PRODUCT_NAME "EvoClaw"',
             '!define PRODUCT_VERSION "EVOCLAW_VERSION"',
             '!define INSTALL_DIR "$LOCALAPPDATA\Programs\EvoClaw"',
+            '!define HWND_BROADCAST 0xffff',
+            '!define WM_WININICHANGE 0x001A',
             '',
             'Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"',
             'OutFile "evoclaw-windows-x64-setup.exe"',
@@ -213,8 +215,13 @@ jobs:
             '  RMDir "$INSTDIR"',
             'SectionEnd'
           )
-          ($nsiLines -join "`n").Replace('EVOCLAW_VERSION', $VERSION) |
-            Out-File -Encoding ascii installer.nsi
+          $nsi = ($nsiLines -join "`n").Replace('EVOCLAW_VERSION', $VERSION)
+          # Use .NET WriteAllText for reliable ASCII output (avoids PowerShell BOM issues)
+          [System.IO.File]::WriteAllText(
+            (Join-Path (Get-Location) 'installer.nsi'),
+            $nsi,
+            [System.Text.Encoding]::ASCII
+          )
 
           Copy-Item $BIN evoclaw.exe
           makensis installer.nsi
