@@ -1,8 +1,8 @@
 //! Configuration structs, path helpers, and layout/load functions.
 
 use directories::BaseDirs;
-use eyre::{Result, WrapErr};
 use evo_providers::AuthMethod;
+use eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::OnceLock;

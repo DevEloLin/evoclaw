@@ -213,9 +213,7 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str, term_w: usize) ->
         {
             let non_space: Vec<char> = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
             if non_space.len() >= 3
-                && non_space
-                    .iter()
-                    .all(|&c| c == '-' || c == '*' || c == '_')
+                && non_space.iter().all(|&c| c == '-' || c == '*' || c == '_')
                 && non_space.iter().all(|&c| c == non_space[0])
             {
                 out.push(format!(
@@ -230,9 +228,7 @@ pub(crate) fn render_markdown_plain(theme: &Theme, text: &str, term_w: usize) ->
 
         // Blockquote (supports `> ` prefix; strips leading `>` chars for nesting)
         if trimmed.starts_with('>') {
-            let rest = trimmed
-                .trim_start_matches('>')
-                .trim_start_matches(' ');
+            let rest = trimmed.trim_start_matches('>').trim_start_matches(' ');
             let rendered = render_inline(theme, rest);
             out.push(format!(
                 "{dim}  {rendered}{r}",
@@ -333,11 +329,7 @@ fn parse_inline_link(chars: &[char], start: usize) -> Option<(String, String, us
         return None;
     }
     // Strip optional title attribute: `url "title"` → keep only the URL token
-    let url_clean = url
-        .split(' ')
-        .next()
-        .unwrap_or(url.as_str())
-        .to_string();
+    let url_clean = url.split(' ').next().unwrap_or(url.as_str()).to_string();
     Some((text, url_clean, i + 1))
 }
 
@@ -400,11 +392,7 @@ fn render_inline(theme: &Theme, text: &str) -> String {
 
         // Bold: **...**  (check before single-* italic)
         if ch == '*' && i + 1 < n && chars[i + 1] == '*' {
-            out.push_str(if in_bold {
-                theme.reset()
-            } else {
-                theme.bold()
-            });
+            out.push_str(if in_bold { theme.reset() } else { theme.bold() });
             in_bold = !in_bold;
             i += 2;
             continue;
@@ -425,8 +413,7 @@ fn render_inline(theme: &Theme, text: &str) -> String {
         // Italic: _..._ — only at non-identifier boundaries to avoid `snake_case` false positives
         if ch == '_' {
             let prev_word = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
-            let next_word =
-                i + 1 < n && (chars[i + 1].is_alphanumeric() || chars[i + 1] == '_');
+            let next_word = i + 1 < n && (chars[i + 1].is_alphanumeric() || chars[i + 1] == '_');
             let is_boundary = if in_italic {
                 !next_word
             } else {

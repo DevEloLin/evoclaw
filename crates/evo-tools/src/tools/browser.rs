@@ -32,8 +32,7 @@ impl Drop for BrowserSession {
     }
 }
 
-static SESSION: LazyLock<Mutex<Option<BrowserSession>>> =
-    LazyLock::new(|| Mutex::new(None));
+static SESSION: LazyLock<Mutex<Option<BrowserSession>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Try well-known Chrome/Chromium absolute paths, then fall back to PATH.
 fn find_chrome() -> Option<std::path::PathBuf> {
@@ -52,7 +51,12 @@ fn find_chrome() -> Option<std::path::PathBuf> {
         }
     }
     let path_var = std::env::var("PATH").unwrap_or_default();
-    for name in ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"] {
+    for name in [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium-browser",
+        "chromium",
+    ] {
         for dir in path_var.split(':') {
             let full = std::path::Path::new(dir).join(name);
             if full.exists() {
@@ -83,9 +87,7 @@ async fn ensure_session(slot: &mut Option<BrowserSession>) -> Result<(), ToolErr
             "browser launch failed: {e} — Chrome/Chromium must be installed"
         ))
     })?;
-    let handle = tokio::spawn(async move {
-        while handler.next().await.is_some() {}
-    });
+    let handle = tokio::spawn(async move { while handler.next().await.is_some() {} });
     let page = browser
         .new_page("about:blank")
         .await
@@ -221,7 +223,11 @@ impl Tool for BrowserScreenshot {
         let save_path = match a.path {
             Some(p) => {
                 let pb = std::path::PathBuf::from(&p);
-                if pb.is_absolute() { pb } else { ctx.workspace.join(pb) }
+                if pb.is_absolute() {
+                    pb
+                } else {
+                    ctx.workspace.join(pb)
+                }
             }
             None => ctx.workspace.join("screenshot.png"),
         };
@@ -347,8 +353,8 @@ impl Tool for BrowserType {
         ensure_session(&mut *guard).await?;
         let session = guard.as_ref().unwrap();
         if a.clear.unwrap_or(true) {
-            let sel_json = serde_json::to_string(&a.selector)
-                .unwrap_or_else(|_| format!("{:?}", a.selector));
+            let sel_json =
+                serde_json::to_string(&a.selector).unwrap_or_else(|_| format!("{:?}", a.selector));
             let _ = session
                 .page
                 .evaluate(format!(

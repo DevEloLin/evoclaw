@@ -2,12 +2,12 @@
 
 use crate::commands::profile::get_active_profile_name;
 use crate::config::{config_path, load_config, session_log_path, workspace_dir};
+use crate::onboard;
 use crate::slash::{count_skills, count_vault_entries};
 use crate::terminal_ui::TerminalUI;
 use crate::theme::{display_home, Theme};
-use crate::onboard;
-use eyre::{Result, WrapErr};
 use evo_providers::AuthMethod;
+use eyre::{Result, WrapErr};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -310,7 +310,11 @@ pub(crate) async fn status_cmd() -> Result<()> {
         }
         AuthMethod::Acp => (true, format!("Managed by external agent: {}", provider_id)),
     };
-    let status_text = if auth_ok { "Authenticated" } else { "Not Authenticated" };
+    let status_text = if auth_ok {
+        "Authenticated"
+    } else {
+        "Not Authenticated"
+    };
     let session_log = session_log_path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "(unavailable)".to_string());
@@ -368,7 +372,11 @@ pub(crate) async fn status_cmd() -> Result<()> {
                 "串行执行 — 当前任务完成后接受下一条输入".to_string(),
                 format!(
                     "runtime type: {}",
-                    if is_local { "local inference" } else { "cloud/external" }
+                    if is_local {
+                        "local inference"
+                    } else {
+                        "cloud/external"
+                    }
                 ),
                 format!("session log: {session_log}"),
             ],
@@ -393,4 +401,3 @@ pub(crate) async fn status_cmd() -> Result<()> {
 
     Ok(())
 }
-

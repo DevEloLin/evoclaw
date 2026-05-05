@@ -111,7 +111,10 @@ impl Provider for AnthropicProvider {
                                     cached_tokens = u.cache_read_input_tokens;
                                 }
                             }
-                            SseEvent::ContentBlockStart { index, content_block } => {
+                            SseEvent::ContentBlockStart {
+                                index,
+                                content_block,
+                            } => {
                                 if let SseContentBlock::ToolUse { id, name } = content_block {
                                     tool_acc.insert(index, (id, name, String::new()));
                                 }
@@ -120,9 +123,7 @@ impl Provider for AnthropicProvider {
                             SseEvent::ContentBlockDelta { index, delta } => match delta {
                                 SseDelta::TextDelta { text } => {
                                     if !text.is_empty()
-                                        && tx
-                                            .unbounded_send(Ok(StreamEvent::Delta(text)))
-                                            .is_err()
+                                        && tx.unbounded_send(Ok(StreamEvent::Delta(text))).is_err()
                                     {
                                         return;
                                     }
@@ -139,7 +140,11 @@ impl Provider for AnthropicProvider {
                                     let arguments =
                                         serde_json::from_str(&args_str).unwrap_or(Value::Null);
                                     let _ = tx.unbounded_send(Ok(StreamEvent::ToolCallStart(
-                                        ToolCall { id, name, arguments },
+                                        ToolCall {
+                                            id,
+                                            name,
+                                            arguments,
+                                        },
                                     )));
                                 }
                             }
@@ -369,8 +374,12 @@ mod tests {
 
     #[test]
     fn with_bearer_auth_preserves_base_url() {
-        let p = AnthropicProvider::with_base_url("https://gateway.example.com/v1", "token", "claude-opus-4.6")
-            .with_bearer_auth();
+        let p = AnthropicProvider::with_base_url(
+            "https://gateway.example.com/v1",
+            "token",
+            "claude-opus-4.6",
+        )
+        .with_bearer_auth();
         assert_eq!(p.endpoint(), "https://gateway.example.com/v1/messages");
         assert!(p.bearer_auth);
     }
@@ -436,7 +445,9 @@ mod tests {
     fn sse_event_deserialises_message_start() {
         let data = r#"{"type":"message_start","message":{"usage":{"input_tokens":42,"cache_read_input_tokens":10}}}"#;
         let ev: SseEvent = serde_json::from_str(data).unwrap();
-        let SseEvent::MessageStart { message } = ev else { panic!("wrong variant") };
+        let SseEvent::MessageStart { message } = ev else {
+            panic!("wrong variant")
+        };
         let u = message.usage.unwrap();
         assert_eq!(u.input_tokens, 42);
         assert_eq!(u.cache_read_input_tokens, 10);
@@ -446,9 +457,13 @@ mod tests {
     fn sse_event_deserialises_text_delta() {
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#;
         let ev: SseEvent = serde_json::from_str(data).unwrap();
-        let SseEvent::ContentBlockDelta { index, delta } = ev else { panic!("wrong variant") };
+        let SseEvent::ContentBlockDelta { index, delta } = ev else {
+            panic!("wrong variant")
+        };
         assert_eq!(index, 0);
-        let SseDelta::TextDelta { text } = delta else { panic!("wrong delta") };
+        let SseDelta::TextDelta { text } = delta else {
+            panic!("wrong delta")
+        };
         assert_eq!(text, "hello");
     }
 
@@ -456,7 +471,11 @@ mod tests {
     fn sse_event_deserialises_tool_use_block_start() {
         let data = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01","name":"read_file","input":{}}}"#;
         let ev: SseEvent = serde_json::from_str(data).unwrap();
-        let SseEvent::ContentBlockStart { index, content_block } = ev else {
+        let SseEvent::ContentBlockStart {
+            index,
+            content_block,
+        } = ev
+        else {
             panic!("wrong variant")
         };
         assert_eq!(index, 1);
@@ -471,8 +490,12 @@ mod tests {
     fn sse_event_deserialises_input_json_delta() {
         let data = r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}"#;
         let ev: SseEvent = serde_json::from_str(data).unwrap();
-        let SseEvent::ContentBlockDelta { delta, .. } = ev else { panic!("wrong variant") };
-        let SseDelta::InputJsonDelta { partial_json } = delta else { panic!("wrong delta") };
+        let SseEvent::ContentBlockDelta { delta, .. } = ev else {
+            panic!("wrong variant")
+        };
+        let SseDelta::InputJsonDelta { partial_json } = delta else {
+            panic!("wrong delta")
+        };
         assert_eq!(partial_json, "{\"path\":");
     }
 
@@ -487,7 +510,9 @@ mod tests {
     fn sse_event_deserialises_message_delta_with_usage() {
         let data = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}"#;
         let ev: SseEvent = serde_json::from_str(data).unwrap();
-        let SseEvent::MessageDelta { usage } = ev else { panic!("wrong variant") };
+        let SseEvent::MessageDelta { usage } = ev else {
+            panic!("wrong variant")
+        };
         assert_eq!(usage.unwrap().output_tokens, 15);
     }
 

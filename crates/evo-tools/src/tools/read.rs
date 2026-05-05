@@ -1,4 +1,6 @@
-use crate::{format_with_line_numbers, resolve_within_workspace, Tool, ToolContext, ToolError, ToolFactory};
+use crate::{
+    format_with_line_numbers, resolve_within_workspace, Tool, ToolContext, ToolError, ToolFactory,
+};
 use async_trait::async_trait;
 use evo_policy::Permission;
 use serde::Deserialize;

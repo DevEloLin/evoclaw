@@ -320,7 +320,9 @@ pub fn pick_auth_method(profile: &ProviderChoice) -> Result<evo_providers::AuthM
         }
 
         match input {
-            "" | "1" | "api_key" | "apikey" | "key" => return Ok(evo_providers::AuthMethod::ApiKey),
+            "" | "1" | "api_key" | "apikey" | "key" => {
+                return Ok(evo_providers::AuthMethod::ApiKey)
+            }
             "2" | "browser" | "web" | "cookie" => return Ok(evo_providers::AuthMethod::Browser),
             "3" | "acp" | "agent" if has_acp => return Ok(evo_providers::AuthMethod::Acp),
             "0" => {
