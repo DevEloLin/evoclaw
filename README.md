@@ -20,9 +20,11 @@
 
 <p align="center">
   <b>🌐 Website</b>: <a href="https://develolin.github.io/EvoClawSite/">develolin.github.io/EvoClawSite</a> ·
-  <b>📦 Version</b>: <a href="./version"><code>v0.3.7</code></a> ·
+  <b>📦 Version</b>: <a href="./version"><code>v1.0.0-beta.1</code></a> ·
   <b>🇨🇳 中文文档</b>: <a href="./docs/zh/README.md">docs/zh/README.md</a>
 </p>
+
+> **Beta release — v1.0.0-beta.1**: Core agent runtime, tools, and multi-channel adapters are stable. The full TUI and release pipeline are new in this cycle. APIs may evolve before the 1.0 GA. [Report issues](https://github.com/develolin/EvoClaw/issues).
 
 ---
 
@@ -141,7 +143,7 @@ $ evoclaw
       ▄▄ ▄▄             /skill   browse skills
   //  ██ ██  \\
 
-  EvoClaw  v0.3.7       Status
+  EvoClaw  v1.0.0-beta.1       Status
   self-evolving agent   ──────────────────────────
   runtime               auth    ✓ ready
                         model   deepseek-chat
@@ -382,11 +384,13 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 4.6 — Secret-redaction     | ✓ shipped   | Week 8     | Vault + Redactor + `secret` subcommand |
 | 5   — Local Gateway core   | ✓ shipped   | Week 8–9   | HTTP daemon + WebChat + bearer-token allowlist + session isolation |
 | 6   — Hardening (CI gates) | ✓ shipped   | Week 9     | doctor closure + mock-provider tests + LOC enforcer + `evo replay` + doc-sync check + GitHub Actions CI |
-| 7   — Multi-channel        | ✓ shipped   | v0.3.7     | Telegram (long-poll) + Slack (Socket Mode) + Discord (Gateway WS); group @-mention detection; per-channel Markdown hints |
-| 8   — Deep hardening       | ⏳ v0.8 plan | future     | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
+| 7   — Multi-channel        | ✓ shipped   | v1.0.0-beta.1     | Telegram (long-poll) + Slack (Socket Mode) + Discord (Gateway WS); group @-mention detection; per-channel Markdown hints |
+| 8   — TUI + Release pipeline | 🔄 beta    | v1.0.0-beta.1 | Full event-driven TUI rewrite (streaming REPL, scroll buffer, delta ordering fix) + multi-platform CI/CD release pipeline + beta release process |
+| 9   — Deep hardening       | ⏳ planned  | v1.0 GA    | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
-Phase 7 (Multi-channel) ships in v0.3.7 with Telegram, Slack, and Discord adapters.
-Phase 8 (Deep hardening) remains explicit future work — kernel-level sandbox and load testing are not blockers for solo-developer use today.
+Phase 7 (Multi-channel): shipped with Telegram, Slack, and Discord adapters.
+Phase 8 (TUI + Release pipeline): v1.0.0-beta.1 public beta — full TUI rewrite with event-driven REPL and multi-platform CI/CD release pipeline.
+Phase 9 (Deep hardening): planned for v1.0 GA — kernel-level sandbox and load testing are not blockers for solo-developer use today.
 
 ---
 
@@ -410,7 +414,8 @@ The version of this code is recorded in [`./version`](./version). The site repo 
 - `EvoClaw/version` (this repo)
 - `EvoClawSite/version`
 
-A version bump in one **must** be accompanied by the same bump in the other. Both currently read **`v0.3.7`**.
+For **stable releases**, both repos must be bumped together — they stay in sync.
+For **pre-release versions** (beta/rc), only the code repo is bumped; EvoClawSite continues to reflect the latest stable version. The code repo currently reads **`v1.0.0-beta.1`** (stable baseline) on `main`; `beta-v1` is at **`v1.0.0-beta.1`**.
 
 ---
 
