@@ -339,30 +339,32 @@ impl UiRenderer {
 
         if !block.content.is_empty() {
             let rendered = render_markdown_plain(theme, &block.content, bw);
-            // Collect all wrapped lines first, then keep only the tail that
-            // fits within the visible terminal height.  This prevents the
-            // streaming block from growing beyond the screen and leaving
-            // un-clearable stale rows in the scrollback buffer (duplicate
-            // text when scrolling up).
             let (_, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
             // Reserve: top-rule(1) + header(1) + bottom-rule(1) + task-line(1)
             //        + input-box(4) + shortcut(1) = 9 lines.
             let max_content = (term_h as usize).saturating_sub(9).max(3);
-            let all_lines: Vec<&str> = rendered.lines().collect();
-            let tail = if all_lines.len() > max_content {
-                &all_lines[all_lines.len() - max_content..]
-            } else {
-                &all_lines
-            };
-            for raw_line in tail {
+
+            // Build the physical-line list first (a logical line from the
+            // markdown renderer may wrap into multiple terminal rows).  Then
+            // take only the tail that fits within the physical-line budget.
+            // Without this, wide code lines expand the streaming block past
+            // term_h, pushing stale top-separator/header rows into the
+            // scrollback buffer on every re-render and producing duplicate
+            // cyan separator lines when the user scrolls up.
+            let mut phys: Vec<String> = Vec::new();
+            for raw_line in rendered.lines() {
                 let visible = tui::strip_ansi(raw_line);
                 if tui::display_width(&visible) <= bw {
-                    out.push_str(&format!("{raw_line}\n"));
+                    phys.push(raw_line.to_string());
                 } else {
-                    for line in &tui::wrap_text(&visible, bw) {
-                        out.push_str(&format!("{line}\n"));
+                    for line in tui::wrap_text(&visible, bw) {
+                        phys.push(line);
                     }
                 }
+            }
+            let tail_start = phys.len().saturating_sub(max_content);
+            for line in &phys[tail_start..] {
+                out.push_str(&format!("{line}\n"));
             }
         }
 

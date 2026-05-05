@@ -169,7 +169,7 @@ pub(crate) fn spawn_task(
         let (delta_raw_tx, mut delta_raw_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let fwd_task_id = task_id.clone();
         let fwd_tx = ui_tx.clone();
-        tokio::spawn(async move {
+        let fwd_handle = tokio::spawn(async move {
             while let Some(delta) = delta_raw_rx.recv().await {
                 let _ = fwd_tx
                     .send(ui::UiEvent::AssistantDelta {
@@ -186,10 +186,16 @@ pub(crate) fn spawn_task(
             is_acp,
             &cfg,
             &session_log,
-            delta_raw_tx,
+            delta_raw_tx, // dropped here, closes delta_raw_rx
             ask_tx,
         )
         .await;
+
+        // Wait for the forwarding task to drain all buffered deltas before
+        // sending AssistantDone. Without this, AssistantDone can race ahead
+        // of the final delta batch, leaving the streaming block empty or
+        // truncated when it is flushed to the scroll buffer.
+        let _ = fwd_handle.await;
 
         let elapsed = started.elapsed().as_secs_f32();
 
