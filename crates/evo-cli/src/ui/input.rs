@@ -282,20 +282,21 @@ pub fn run_input_task_sync(
                             });
                         }
                     }
-                    KeyCode::Char('n') if mods.contains(KeyModifiers::CONTROL) => {
-                        if hist_idx < history.len() {
-                            hist_idx += 1;
-                            input = if hist_idx == history.len() {
-                                hist_snapshot.clone()
-                            } else {
-                                history[hist_idx].clone()
-                            };
-                            cursor_char = input.chars().count();
-                            let _ = tx.blocking_send(UiEvent::InputChanged {
-                                content: input.clone(),
-                                cursor_char,
-                            });
-                        }
+                    KeyCode::Char('n')
+                        if mods.contains(KeyModifiers::CONTROL)
+                            && hist_idx < history.len() =>
+                    {
+                        hist_idx += 1;
+                        input = if hist_idx == history.len() {
+                            hist_snapshot.clone()
+                        } else {
+                            history[hist_idx].clone()
+                        };
+                        cursor_char = input.chars().count();
+                        let _ = tx.blocking_send(UiEvent::InputChanged {
+                            content: input.clone(),
+                            cursor_char,
+                        });
                     }
 
                     // ── History ──────────────────────────────────────────────
