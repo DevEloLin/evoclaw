@@ -130,15 +130,6 @@ chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
 evoclaw
 ```
 
-```bash
-# Intel (x86_64)
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.0-beta.1/evoclaw-x86_64-apple-darwin.tar.gz
-shasum -a 256 -c evoclaw-x86_64-apple-darwin.tar.gz.sha256
-tar -xzf evoclaw-x86_64-apple-darwin.tar.gz
-chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
-evoclaw
-```
-
 ### Linux
 
 ```bash
