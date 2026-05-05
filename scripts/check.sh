@@ -19,7 +19,7 @@ warn() { echo "WARN $*"; [[ "$STRICT" == "1" ]] && exit 1 || true; }
 ok()   { echo "OK   $*"; }
 
 # Parallel arrays — bash 3.2 compatible (macOS default).
-# Caps reflect v1.0.0-beta.1 actual scope (multi-channel + headless browser tools):
+# Caps reflect v1.0.1-beta.1 actual scope (multi-channel + headless browser tools):
 # - evo-cli: event-driven TUI + REPL + onboard wizard (21 providers) +
 #            agent/mcp/secret subcommands + mcp_tools bridge + welcome banner + replay +
 #            Slack/Discord/Telegram channel commands
