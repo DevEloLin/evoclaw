@@ -220,8 +220,8 @@ pub(crate) async fn channel_remove(kind: &str) -> Result<()> {
 pub(crate) async fn channel_run(kind: &str) -> Result<()> {
     use evo_core::channel::{ChannelAdapter, ChannelKind, OutboundKind, OutboundMessage};
     use evo_core::channel_router::{self, ChannelRouter};
-    use evo_core::local_pipe::LocalPipe;
     use evo_core::discord::DiscordAdapter;
+    use evo_core::local_pipe::LocalPipe;
     use evo_core::slack::SlackAdapter;
     use evo_core::telegram::TelegramAdapter;
 

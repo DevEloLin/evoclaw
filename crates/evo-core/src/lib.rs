@@ -5,6 +5,7 @@ pub mod channel;
 pub mod channel_config;
 pub mod channel_router;
 pub mod compression;
+pub mod discord;
 pub mod distillation;
 pub mod local_pipe;
 pub mod memory;
@@ -14,9 +15,8 @@ pub mod runtime;
 pub mod session;
 pub mod skill;
 pub mod skill_tree;
-pub mod summary;
-pub mod discord;
 pub mod slack;
+pub mod summary;
 pub mod telegram;
 
 pub use compression::{compress_if_due, CompressionConfig};
