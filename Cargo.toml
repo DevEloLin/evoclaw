@@ -55,6 +55,7 @@ bytes          = "1"
 
 # tools
 inventory      = "0.3"
+chromiumoxide  = { version = "0.9" }
 
 # Zed Agent Client Protocol (ACP) SDK — pinned to the same version Zed uses
 # in tmp/zed/Cargo.toml. Replaces the hand-rolled JSON-RPC client that was
