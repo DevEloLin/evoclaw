@@ -8,7 +8,6 @@ use crate::slash::get_active_mcp_servers;
 use crate::terminal_ui::{Spinner, TerminalUI};
 use crate::theme::{short_key_source, Theme};
 use crate::{mcp_tools, onboard, ui};
-use eyre::{Result, WrapErr};
 use evo_core::{ConversationRuntime, Memory, Session};
 use evo_policy::{BudgetCfg, CostEngine, Redactor, Vault};
 use evo_providers::{
@@ -16,6 +15,7 @@ use evo_providers::{
     OpenAiCompatProvider, Provider,
 };
 use evo_tools::{ToolContext, ToolRegistry};
+use eyre::{Result, WrapErr};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -65,10 +65,8 @@ pub(crate) async fn build_provider(cfg: &Config) -> Result<(Arc<dyn Provider>, b
         AuthMethod::ApiKey => {
             let (api_key, _src) = onboard::resolve_api_key(&provider_id).await?;
             match provider_id.as_str() {
-                "anthropic" => {
-                    Arc::new(AnthropicProvider::new(api_key, cfg.model.default.clone()))
-                        as Arc<dyn Provider>
-                }
+                "anthropic" => Arc::new(AnthropicProvider::new(api_key, cfg.model.default.clone()))
+                    as Arc<dyn Provider>,
                 "copilot" => Arc::new(CopilotProvider::new(api_key, cfg.model.default.clone())),
                 _ => Arc::new(OpenAiCompatProvider::new(
                     cfg.model.base_url.clone(),
@@ -181,9 +179,16 @@ pub(crate) fn spawn_task(
             }
         });
 
-        let result =
-            run_task_interactive(&content, provider, is_acp, &cfg, &session_log, delta_raw_tx, ask_tx)
-                .await;
+        let result = run_task_interactive(
+            &content,
+            provider,
+            is_acp,
+            &cfg,
+            &session_log,
+            delta_raw_tx,
+            ask_tx,
+        )
+        .await;
 
         let elapsed = started.elapsed().as_secs_f32();
 

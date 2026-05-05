@@ -1,8 +1,8 @@
 //! Secret vault sub-commands and session helpers.
 
 use crate::config::{logs_dir, vault_path};
-use eyre::{Result, WrapErr};
 use evo_policy::{Redactor, Vault};
+use eyre::{Result, WrapErr};
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------

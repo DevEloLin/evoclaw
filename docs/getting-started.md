@@ -55,26 +55,30 @@ evoclaw
 You drop into the welcome panel:
 
 ```
-   ╔═══════════════════════════════════════════════════════════════╗
-   ║      ███████╗██╗   ██╗ ██████╗  ██████╗██╗      █████╗ ██╗    ║
-   ║      ██╔════╝██║   ██║██╔═══██╗██╔════╝██║     ██╔══██╗██║    ║
-   ║                          ...                                  ║
-   ║             local-first · self-evolving · v0.2.0              ║
-   ╚═══════════════════════════════════════════════════════════════╝
+───────────────────────────────────────────────────────────────────
+  \\  ▄   ▄  //                  Quick start
+    ▄███████▄                    ──────────────────────────
+    █       █                    /help    list all commands
+    █ ▀▀ ▀▀ █                    /login   configure auth
+    ▀█▄▄▄▄▄█▀                    /doctor  health check
+      ▄▄ ▄▄                      /skill   browse skills
+  //  ██ ██  \\
+                                  Status
+  EvoClaw  v0.3.6                 ──────────────────────────
+  self-evolving agent runtime     auth    ✓ ready
+                                  model   deepseek-chat
 
-   ┌─ context ─────────────────────────────────────────────────────┐
-   │  home    : ~/.evoclaw                                         │
-   │  provider: deepseek    (https://api.deepseek.com/v1)          │
-   │  model   : deepseek-chat                                      │
-   │  api key : ok · secrets file: ~/.evoclaw/secrets/deepseek.key │
-   │  vault   : empty · pattern fallback only                      │
-   │  skills  : 0 learned                                          │
-   └───────────────────────────────────────────────────────────────┘
+  deepseek  ·  deepseek-chat
+  ~/.evoclaw                      Ctrl-D to exit  ·  /help
 
-   Type a task in plain language to run the agent.
-   /help for slash commands  ·  /exit or Ctrl-D to quit.
+  ✓ ready  secrets file: ~/.evoclaw/secrets/deepseek.key
 
-evoclaw>
+───────────────────────────────────────────────────────────────────
+
+─ input ───────────────────────────────────────────────────────────
+  ▷ Type your message and press Enter to send  ·  /help for commands
+───────────────────────────────────────────────────────────────────
+shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N history  ·  Ctrl-R search  ·  Ctrl-C quit
 ```
 
 Type a plain-language task at the prompt:

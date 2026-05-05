@@ -4,18 +4,18 @@ pub(crate) mod classify;
 pub(crate) mod redactor;
 pub(crate) mod vault;
 
-pub use classify::{classify_secret, fingerprint_of, SecretKind, shannon_entropy};
+pub use classify::{classify_secret, fingerprint_of, shannon_entropy, SecretKind};
 pub use redactor::{
-    is_fully_redacted, scrub_patterns, scrub_patterns_with, scrub_pem_blocks, Redactor,
-    RedactionMode,
+    is_fully_redacted, scrub_patterns, scrub_patterns_with, scrub_pem_blocks, RedactionMode,
+    Redactor,
 };
 pub use vault::{default_vault_path, Vault, VaultEntry};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::classify::is_path_like;
     use super::redactor::strip_assignment;
+    use super::*;
 
     #[test]
     fn classify_openai_sk() {

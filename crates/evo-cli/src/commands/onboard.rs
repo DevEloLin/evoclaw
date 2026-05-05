@@ -2,8 +2,8 @@
 
 use crate::config::{config_path, ensure_layout};
 use crate::onboard;
-use eyre::Result;
 use evo_providers::AuthMethod;
+use eyre::Result;
 use onboard::ProviderChoice;
 
 // ---------------------------------------------------------------------------
@@ -140,9 +140,7 @@ pub(crate) async fn run_provider_wizard() -> Result<()> {
                     );
                     println!();
                     println!("  Configuration saved but connection failed.");
-                    println!(
-                        "  Run `evoclaw doctor` to diagnose or retry with `evoclaw login`."
-                    );
+                    println!("  Run `evoclaw doctor` to diagnose or retry with `evoclaw login`.");
                 }
             }
         }
@@ -157,9 +155,7 @@ pub(crate) async fn run_provider_wizard() -> Result<()> {
 /// Test ACP agent connection by spawning the agent and performing a handshake.
 /// Returns `Ok(())` if connection succeeds, `Err` with details if it fails.
 /// Uses a timeout to avoid hanging on unresponsive agents.
-pub(crate) async fn test_acp_connection(
-    agent_config: &evo_acp_client::AgentConfig,
-) -> Result<()> {
+pub(crate) async fn test_acp_connection(agent_config: &evo_acp_client::AgentConfig) -> Result<()> {
     use tokio::time::{timeout, Duration};
 
     let client = evo_acp_client::AcpClient::new();

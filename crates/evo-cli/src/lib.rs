@@ -227,9 +227,7 @@ pub async fn entry() -> Result<()> {
             DoctorCmd::Tokens => diag::doctor_tokens().await,
             DoctorCmd::Closure => diag::doctor_closure().await,
         },
-        Some(Cmd::Gateway { bind, token }) => {
-            gateway::gateway(&bind, token.as_deref()).await
-        }
+        Some(Cmd::Gateway { bind, token }) => gateway::gateway(&bind, token.as_deref()).await,
         Some(Cmd::Replay { path }) => diag::replay(path).await,
         Some(Cmd::Skill(s)) => match s {
             SkillCmd::List => skill::skill_list().await,
@@ -651,10 +649,8 @@ mod ui_tests {
     #[test]
     fn test_render_inline_markdown_formats_links_and_code() {
         let theme = Theme { enabled: false };
-        let rendered = TerminalUI::render_markdown(
-            &theme,
-            "See [docs](https://example.com) and `cargo test`",
-        );
+        let rendered =
+            TerminalUI::render_markdown(&theme, "See [docs](https://example.com) and `cargo test`");
         assert!(rendered.contains("docs (https://example.com)"));
         assert!(rendered.contains("cargo test"));
         assert!(!rendered.contains('`'));
@@ -703,13 +699,13 @@ mod ui_tests {
         let theme = Theme { enabled: false };
         let out = TerminalUI::render_top_status_bar(
             &theme,
-            "evoclaw v0.3.2",
+            "evoclaw v0.3.3",
             "acp:codex",
             "acp:codex",
             "~/devops/gptcli/agent/EvoClaw",
             "2026-05-03 17:22:48",
         );
-        assert!(out.contains("evoclaw v0.3.2"));
+        assert!(out.contains("evoclaw v0.3.3"));
         assert!(out.contains("acp:codex"));
         assert!(out.contains("workspace: ~/devops/gptcli/agent/EvoClaw"));
         assert!(out.contains("2026-05-03 17:22:48"));

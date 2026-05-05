@@ -121,14 +121,13 @@ impl Provider for OpenAiCompatProvider {
                                 }
                             }
                             for tc in &choice.delta.tool_calls {
-                                let entry =
-                                    tool_acc.entry(tc.index).or_insert_with(|| {
-                                        (
-                                            tc.id.clone().unwrap_or_default(),
-                                            tc.function.name.clone().unwrap_or_default(),
-                                            String::new(),
-                                        )
-                                    });
+                                let entry = tool_acc.entry(tc.index).or_insert_with(|| {
+                                    (
+                                        tc.id.clone().unwrap_or_default(),
+                                        tc.function.name.clone().unwrap_or_default(),
+                                        String::new(),
+                                    )
+                                });
                                 if let Some(id) = &tc.id {
                                     if !id.is_empty() && entry.0.is_empty() {
                                         entry.0.clone_from(id);
@@ -405,7 +404,10 @@ mod tests {
     #[test]
     fn detects_messages_api_mismatch() {
         let body = r#"{"error":{"message":"Model 'claude-opus-4.6' (access_group=messages) cannot be used with endpoint /v1/chat/completions. Expected one of: chat, chat_responses","type":"invalid_request_error","code":"model_endpoint_mismatch"}}"#;
-        assert!(needs_messages_api(body), "should detect messages access_group");
+        assert!(
+            needs_messages_api(body),
+            "should detect messages access_group"
+        );
     }
 
     #[test]

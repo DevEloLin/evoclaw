@@ -1,8 +1,8 @@
 //! Skill and memory sub-commands.
 
 use crate::config::{memory_dir, skills_dir};
-use eyre::{Result, WrapErr};
 use evo_core::{Memory, MemoryLayer, Skill, SkillTree};
+use eyre::{Result, WrapErr};
 
 // ---------------------------------------------------------------------------
 // skill_list

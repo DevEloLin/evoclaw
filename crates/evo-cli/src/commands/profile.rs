@@ -352,9 +352,7 @@ pub(crate) async fn profile_edit(name: Option<&str>) -> Result<()> {
         ok = theme.ok(),
         reset = theme.reset()
     );
-    println!(
-        "  Use '/profile switch {profile_name}' to reload if this is not the active profile"
-    );
+    println!("  Use '/profile switch {profile_name}' to reload if this is not the active profile");
     println!();
     Ok(())
 }

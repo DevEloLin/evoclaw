@@ -2,10 +2,10 @@ use std::io::Write as _;
 
 use crossterm::{cursor, execute, queue, style::Print, terminal};
 
+use super::markdown::render_markdown_plain;
+use super::state::{ConversationBlock, InputState, Role, TaskPanelState, UiState};
 use crate::tui;
 use crate::Theme;
-use super::state::{UiState, TaskPanelState, InputState, ConversationBlock, Role};
-use super::markdown::render_markdown_plain;
 
 /// Manages terminal output per the PRD layout:
 ///
@@ -387,7 +387,11 @@ impl UiRenderer {
         let elapsed = task.elapsed_ms as f32 / 1000.0;
 
         let running_id = task.running_task_id.as_deref().unwrap_or("processing");
-        let provider = if task.provider.is_empty() { "—" } else { task.provider.as_str() };
+        let provider = if task.provider.is_empty() {
+            "—"
+        } else {
+            task.provider.as_str()
+        };
 
         let mut out = format!(
             "{tc}{fill}{r}\n",
@@ -482,7 +486,8 @@ impl UiRenderer {
                 r = self.theme.reset()
             )
         } else {
-            let hint = "shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N history  ·  Ctrl-R search  ·  Ctrl-C quit";
+            let hint =
+                "shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N history  ·  Ctrl-R search  ·  Ctrl-C quit";
             let truncated = truncate_display(hint, bw);
             format!(
                 "{dim}{truncated}{r}",

@@ -6,11 +6,9 @@ use super::event::UiEvent;
 
 /// All slash commands supported by the REPL — used for Tab completion.
 pub const SLASH_CMDS: &[&str] = &[
-    "/agent", "/channel", "/clear", "/closure", "/config",
-    "/doctor", "/exit", "/help", "/login", "/logout",
-    "/mcp", "/memory", "/model", "/profile", "/quit",
-    "/replay", "/secret", "/skill", "/status", "/tokens",
-    "/usage",
+    "/agent", "/channel", "/clear", "/closure", "/config", "/doctor", "/exit", "/help", "/login",
+    "/logout", "/mcp", "/memory", "/model", "/profile", "/quit", "/replay", "/secret", "/skill",
+    "/status", "/tokens", "/usage",
 ];
 
 #[derive(Debug, Clone, PartialEq)]

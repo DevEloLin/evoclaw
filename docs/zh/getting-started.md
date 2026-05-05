@@ -34,18 +34,30 @@ evoclaw
 进入：
 
 ```
-  EvoClaw v0.4.5  ·  local-first self-evolving agent
-  -----------------------------------------------------
-  home   : /Users/you/.evoclaw
-  model  : deepseek-chat  (https://api.deepseek.com/v1)
-  api_key: set (len=51)
-  skills : 0 on disk
+───────────────────────────────────────────────────────────────────
+  \\  ▄   ▄  //                  Quick start
+    ▄███████▄                    ──────────────────────────
+    █       █                    /help    list all commands
+    █ ▀▀ ▀▀ █                    /login   configure auth
+    ▀█▄▄▄▄▄█▀                    /doctor  health check
+      ▄▄ ▄▄                      /skill   browse skills
+  //  ██ ██  \\
+                                  Status
+  EvoClaw  v0.3.6                 ──────────────────────────
+  self-evolving agent runtime     auth    ✓ ready
+                                  model   deepseek-chat
 
-  Type your task in plain language to run the agent.
-  Slash commands: /help /skill /memory /tokens /closure /replay /doctor /clear /exit
-  EOF (Ctrl-D) also exits.
+  deepseek  ·  deepseek-chat
+  ~/.evoclaw                      Ctrl-D to exit  ·  /help
 
-evoclaw>
+  ✓ ready  secrets file: ~/.evoclaw/secrets/deepseek.key
+
+───────────────────────────────────────────────────────────────────
+
+─ input ───────────────────────────────────────────────────────────
+  ▷ Type your message and press Enter to send  ·  /help for commands
+───────────────────────────────────────────────────────────────────
+shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N 历史  ·  Ctrl-R 搜索  ·  Ctrl-C 退出
 ```
 
 直接用自然语言描述任务：
