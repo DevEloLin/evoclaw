@@ -1,8 +1,10 @@
-# 🦀 EvoClaw — Self-evolving Personal AI Assistant
+# 🕷 EvoClaw — Self-evolving Personal AI Agent
 
 <p align="center">
-  <img src="./docs/image/EvoClaw.png" alt="EvoClaw — self-evolving personal AI assistant" width="700">
+  <img src="./docs/image/EvoClaw.png" alt="EvoClaw — self-evolving personal AI agent" width="700">
 </p>
+
+
 
 <p align="center">
   <b>LEARN. REMEMBER. EVOLVE.</b>
@@ -48,7 +50,7 @@ A handful of design choices we made that we think matter:
 | **6-line system prompt cap** | enforced in CI by `scripts/check.sh`; every tool description capped at 80 chars |
 | **Permission ladder P0..P8** | totally ordered; default ceiling **P1**; channel senders hard-capped at **P4** regardless of config |
 | **Three-tier budget engine** | per-task hard stop, per-day soft warn + hard cap (4×), per-month hard cap; `doctor-of tokens` reports cache-hit rate |
-| **Standard CLI ergonomics** | run `evoclaw` with no subcommand → REPL with Tab auto-completion, vim-style keybindings (Ctrl+A/E/K/U/W), and slash commands (`/agent /mcp /secret /skill /memory /tokens /closure /replay /doctor /logout /config /status /model /profile /usage`) |
+| **Standard CLI ergonomics** | run `evoclaw` with no subcommand → REPL with Tab auto-completion, history navigation (↑↓ / Ctrl-P/N), reverse search (Ctrl-R), vim-style line-editing (Ctrl+A/E/K/U/W), and slash commands (`/agent /mcp /secret /skill /memory /tokens /closure /replay /doctor /logout /config /status /model /profile /usage /clear /exit`) |
 | **Zero telemetry** | no analytics SDK, no remote pings, no "anonymous usage statistics" toggle hiding the real one |
 | **Local-first by default** | every byte of state lives under `~/.evoclaw/` on your machine — vault, agents/*.toml, mcp/*.toml, JSONL logs, learned Skills |
 
@@ -130,62 +132,66 @@ Type **`evoclaw`** — no subcommand — to enter the interactive shell:
 ```
 $ evoclaw
 
-╭─────────────────────────────────────────────────────────────────────────────────╮
-│ evoclaw v0.3.3  •  deepseek  •  deepseek-chat                                   │
-│ workspace: ~/.evoclaw                                        2026-05-04 12:00:00 │
-╰─────────────────────────────────────────────────────────────────────────────────╯
+──────────────────────────────────────────────────────────────────────────────────
+  \\  ▄   ▄  //        Quick start
+    ▄███████▄           ──────────────────────────
+    █       █           /help    list all commands
+    █ ▀▀ ▀▀ █           /login   configure auth
+    ▀█▄▄▄▄▄█▀           /doctor  health check
+      ▄▄ ▄▄             /skill   browse skills
+  //  ██ ██  \\
 
-╭─ evoclaw ───────────────────────────────────────────────────────────────────────╮
-│ auth: ok · ~/.evoclaw/secrets/deepseek.key                                      │
-│ account: not available for API key auth                                         │
-│ vault: 2 secrets · redactor active                                              │
-│ skills: 8 learned  ·  mcp: none attached                                        │
-│ Type a question or /help for commands · Ctrl-D to exit                          │
-╰─────────────────────────────────────────────────────────────────────────────────╯
+  EvoClaw  v0.3.3       Status
+  self-evolving agent   ──────────────────────────
+  runtime               auth    ✓ ready
+                        model   deepseek-chat
+  deepseek  ·  deepseek-chat
+  ~/.evoclaw            Ctrl-D to exit  ·  /help for commands
+──────────────────────────────────────────────────────────────────────────────────
 
-
-
-
-╭─ input ─────────────────────────────────────────────────────────────────────────╮
-│ ▷ Type your message and press Enter to send  ·  /help for commands              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
-Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
+─ input ─────────────────────────────────────────────────────────────────────────
+  ▷ Type your message and press Enter to send  ·  /help for commands
+─────────────────────────────────────────────────────────────────────────────────
+shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N history  ·  Ctrl-R search  ·  Ctrl-C quit
 ```
 
 Type a question and press Enter — it appears in the conversation area above while the
 assistant streams in-place on a single status line:
 
 ```
-╭─ You · 12:00:05 ────────────────────────────────────────────────────────────────╮
-│ diagnose why my SSH hangs intermittently                                         │
-╰─────────────────────────────────────────────────────────────────────────────────╯
+─ You · 12:00:05 ────────────────────────────────────────────────────────────────
+diagnose why my SSH hangs intermittently
+─────────────────────────────────────────────────────────────────────────────────
 
-⠹ generating · deepseek · 3.1s · 412 chars
+────────────────────────────────────────────────────── (streaming)
+EvoClaw · streaming · 3.1s
+The most common cause is TCP keepalive not configured...
+─────────────────────────────────────────────────────────────────────────────────
 
-╭─ input ─────────────────────────────────────────────────────────────────────────╮
-│ ▷ Type your message and press Enter to send  ·  /help for commands              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
-Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
+─ input ─────────────────────────────────────────────────────────────────────────
+  ▷ Type your message and press Enter to send  ·  /help for commands
+─────────────────────────────────────────────────────────────────────────────────
+shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N history  ·  Ctrl-R search  ·  Ctrl-C quit
 ```
 
 When done the full answer scrolls into the history above the fixed input box:
 
 ```
-╭─ EvoClaw · deepseek · 12:00:05 · 3.4s · 512tok ────────────────────────────────╮
-│ The most common cause is TCP keepalive not being configured.                     │
-│                                                                                  │
-│ ## Fix                                                                           │
-│ Add to ~/.ssh/config:                                                            │
-│   ┌─ code: ssh ──────────────────────────────────────────────────────           │
-│   │ ServerAliveInterval 60                                                       │
-│   │ ServerAliveCountMax 3                                                        │
-│   └───────────────────────────────────────────────────────────────              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
+─ EvoClaw · deepseek · 12:00:05 ─────────────────────────────────────────────────
+The most common cause is TCP keepalive not being configured.
 
-╭─ input ─────────────────────────────────────────────────────────────────────────╮
-│ ▷ Type your message and press Enter to send  ·  /help for commands              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
-Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
+## Fix
+Add to ~/.ssh/config:
+
+  ServerAliveInterval 60
+  ServerAliveCountMax 3
+
+─────────────────────────────────────────────────────────────────────────────────
+
+─ input ─────────────────────────────────────────────────────────────────────────
+  ▷ Type your message and press Enter to send  ·  /help for commands
+─────────────────────────────────────────────────────────────────────────────────
+shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N history  ·  Ctrl-R search  ·  Ctrl-C quit
 ```
 
 5-minute walkthrough: [`docs/getting-started.md`](./docs/getting-started.md) · 中文: [`docs/zh/getting-started.md`](./docs/zh/getting-started.md)
@@ -269,7 +275,7 @@ Each profile is a separate `~/.evoclaw/profiles/<name>.toml` file with its own p
 
 ---
 
-## Built-in tools (cap 10, ship 7)
+## Built-in tools (ship 12)
 
 | # | Name | Permission | What it does |
 |---|------|------------|--------------|
@@ -280,10 +286,15 @@ Each profile is a separate `~/.evoclaw/profiles/<name>.toml` file with its own p
 | 5 | `run_shell` | P2 | `sh -c` with a 30-second default timeout, output capped at 8K. |
 | 6 | `web_fetch` | P3 | HTTPS only. Cookies are stripped before the body reaches the model. |
 | 7 | `ask_user` | P0 | Mandatory call when params are ambiguous or the action is high-risk. |
+| 8 | `browser_navigate` | P3 | Navigate headless browser to URL; returns page title and body text. |
+| 9 | `browser_screenshot` | P3 | Screenshot the current page to a PNG; returns the saved path. |
+| 10 | `browser_click` | P3 | Click an element matching a CSS selector. |
+| 11 | `browser_type` | P3 | Type text into a form field matching a CSS selector. |
+| 12 | `browser_eval` | P3 | Evaluate JavaScript in the browser page; returns the result. |
 
-The permission ladder runs **P0** (read-only) → **P8** (production ops). The default ceiling is P1; messages arriving over a remote channel are hard-capped at P4 regardless of config.
+The permission ladder runs **P0** (read-only) → **P8** (production ops). The default ceiling is P1; messages arriving over a remote channel are hard-capped at P4 regardless of config. Browser tools (8–12) require Chrome/Chromium on the host and P3 permission.
 
-**Need more tools?** Don't add an eighth built-in. Attach an MCP server instead.
+**Need more tools?** Prefer attaching an MCP server over adding new built-ins.
 
 ---
 
@@ -294,7 +305,7 @@ The permission ladder runs **P0** (read-only) → **P8** (production ops). The d
 Want the agent loop run by an upstream coding CLI you already trust? Set `provider = "acp:claude"` (or `acp:codex`, `acp:cursor`, `acp:copilot`) in `~/.evoclaw/config.toml`. EvoClaw spawns the upstream binary as a subprocess, hands it your prompt over JSON-RPC, and surfaces the response. The upstream CLI handles its own auth — EvoClaw never touches their credentials.
 
 ```bash
-evoclaw agent catalog          # see the four built-in agent profiles
+evoclaw agent catalog          # see the seven built-in agent profiles
 evoclaw agent add claude       # write ~/.evoclaw/agents/claude.toml
 evoclaw agent test claude      # spawn `claude --acp` + ACP initialize handshake
 ```
@@ -417,7 +428,7 @@ PRs welcome. Read [`docs/contributing.md`](./docs/contributing.md). The seven go
 
 1. Keep the LOC budgets (`./scripts/check.sh`).
 2. Keep the system prompt at exactly 6 lines.
-3. Keep the **built-in** tool count ≤ 10. MCP-bridged tools don't count.
+3. Keep the **built-in** tool count ≤ 12. MCP-bridged tools don't count.
 4. Tests stay green.
 5. Clippy stays green with `-D warnings`.
 6. No new dependencies without justification.

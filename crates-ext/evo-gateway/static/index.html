@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>EvoClaw — WebChat</title>
+  <title>EvoClaw — Self-evolving AI Agent · 自主进化 AI 智能体</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -20,28 +20,50 @@
       background: rgba(30, 30, 50, 0.85);
       border-radius: 16px;
       padding: 2.5rem;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.08);
       backdrop-filter: blur(12px);
     }
+    .mascot {
+      font-family: ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 1rem;
+      line-height: 1.35;
+      text-align: center;
+      margin: 0 0 1.25rem 0;
+      letter-spacing: 0.04em;
+      white-space: pre;
+      user-select: none;
+    }
+    .mascot .legs { color: #4b7a88; }
+    .mascot .face { color: #67e8f9; text-shadow: 0 0 10px rgba(103,232,249,0.5); }
+    .mascot .chin { color: #4b7a88; }
     h1 {
       font-size: 2rem;
-      margin: 0 0 0.75rem 0;
+      margin: 0 0 0.2rem 0;
       font-weight: 700;
       background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
       letter-spacing: -0.02em;
+      text-align: center;
     }
+    .tagline {
+      text-align: center;
+      margin: 0 0 1.75rem 0;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .tagline .en { display: block; color: #9ca3af; font-size: 0.875rem; }
+    .tagline .zh { display: block; color: #6b7280; font-size: 0.8rem; margin-top: 0.15rem; }
     .hint {
       color: #9ca3af;
       font-size: 0.875rem;
       margin-bottom: 2rem;
       padding-bottom: 1.5rem;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
     }
     .hint code {
-      background: rgba(96, 165, 250, 0.15);
+      background: rgba(96,165,250,0.15);
       padding: 0.2rem 0.5rem;
       border-radius: 4px;
       color: #93c5fd;
@@ -58,15 +80,15 @@
       font: inherit;
       padding: 0.75rem 1rem;
       border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      background: rgba(30, 30, 50, 0.6);
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(30,30,50,0.6);
       color: #e4e4f0;
       transition: all 0.2s ease;
     }
     input:focus, textarea:focus {
       outline: none;
       border-color: #60a5fa;
-      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
+      box-shadow: 0 0 0 3px rgba(96,165,250,0.15);
     }
     input[type=password] {
       flex: 1;
@@ -81,9 +103,7 @@
       resize: vertical;
       line-height: 1.5;
     }
-    textarea::placeholder {
-      color: #6b7280;
-    }
+    textarea::placeholder { color: #6b7280; }
     button {
       background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
       color: white;
@@ -91,16 +111,10 @@
       cursor: pointer;
       font-weight: 600;
       padding: 0.75rem 2rem;
-      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
-      transition: all 0.2s ease;
+      box-shadow: 0 4px 12px rgba(59,130,246,0.3);
     }
-    button:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
-    }
-    button:active {
-      transform: translateY(0);
-    }
+    button:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(59,130,246,0.4); }
+    button:active { transform: translateY(0); }
     button:disabled {
       background: linear-gradient(135deg, #4b5563 0%, #6b7280 100%);
       cursor: not-allowed;
@@ -108,22 +122,18 @@
       transform: none;
     }
     pre {
-      background: rgba(17, 24, 39, 0.8);
+      background: rgba(17,24,39,0.8);
       padding: 1.25rem;
       border-radius: 10px;
       overflow-x: auto;
       font-size: 0.875rem;
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255,255,255,0.08);
       line-height: 1.6;
       font-family: ui-monospace, 'Fira Code', monospace;
       color: #d1d5db;
-      box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.3);
     }
-    .meta {
-      color: #9ca3af;
-      font-size: 0.85rem;
-      font-family: ui-monospace, 'Fira Code', monospace;
-    }
+    .meta { color: #9ca3af; font-size: 0.85rem; font-family: ui-monospace, 'Fira Code', monospace; }
     label {
       font-size: 0.875rem;
       color: #d1d5db;
@@ -136,15 +146,15 @@
     #session {
       margin: 1rem 0;
       padding: 0.75rem 1rem;
-      background: rgba(17, 24, 39, 0.5);
+      background: rgba(17,24,39,0.5);
       border-radius: 8px;
       font-size: 0.875rem;
       color: #9ca3af;
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255,255,255,0.06);
     }
     .version {
       display: inline-block;
-      background: rgba(96, 165, 250, 0.2);
+      background: rgba(96,165,250,0.2);
       padding: 0.15rem 0.5rem;
       border-radius: 6px;
       font-size: 0.75rem;
@@ -156,20 +166,40 @@
 </head>
 <body>
   <div class="container">
+
+    <div class="mascot"><span class="legs">\\  ▄   ▄  //</span>
+<span class="face">  ▄███████▄  </span>
+<span class="face">  █       █  </span>
+<span class="face">  █ ▀▀ ▀▀ █  </span>
+<span class="face">  ▀█▄▄▄▄▄█▀  </span>
+<span class="chin">    ▄▄ ▄▄    </span>
+<span class="legs">//  ██ ██  \\</span></div>
+
     <h1>EvoClaw <span class="version">v0.3.3</span></h1>
-    <div class="hint">Local Gateway &middot; POST /chat with <code>Authorization: Bearer &lt;token&gt;</code></div>
+    <div class="tagline">
+      <span class="en">Self-evolving Personal AI Agent &mdash; Local Gateway</span>
+      <span class="zh">自主进化个人 AI 智能体 &mdash; 本地网关</span>
+    </div>
+
+    <div class="hint">
+      POST <code>/chat</code> with <code>Authorization: Bearer &lt;token&gt;</code>
+      &nbsp;&middot;&nbsp;
+      发送消息需在请求头附带 Bearer 令牌
+    </div>
 
     <div class="row">
       <label>
         <span style="min-width: 70px;">Token</span>
-        <input id="tok" type="password" autocomplete="off" placeholder="paste your gateway token">
+        <input id="tok" type="password" autocomplete="off"
+               placeholder="paste gateway token · 粘贴网关令牌">
       </label>
     </div>
     <div id="session">Provider: —</div>
 
-    <textarea id="prompt" placeholder="Type your message and press Send  ·  /help for slash commands"></textarea>
+    <textarea id="prompt"
+      placeholder="Type your message and press Send  ·  输入消息并点击发送  ·  /help for commands"></textarea>
     <div class="row">
-      <button id="go">Send</button>
+      <button id="go">Send · 发送</button>
       <span id="meta" class="meta"></span>
     </div>
 
@@ -187,11 +217,11 @@
       if (!token) { session.textContent = 'Provider: —'; return; }
       try {
         const r = await fetch('/session', { headers: { 'Authorization': 'Bearer ' + token } });
-        if (!r.ok) { session.textContent = 'Provider: — (invalid token)'; return; }
+        if (!r.ok) { session.textContent = 'Provider: — (invalid token · 令牌无效)'; return; }
         const d = await r.json();
         session.textContent = 'Provider: ' + (d.identity || d.provider || '—');
       } catch (_) {
-        session.textContent = 'Provider: — (gateway unreachable)';
+        session.textContent = 'Provider: — (gateway unreachable · 网关不可达)';
       }
     }
 
@@ -205,7 +235,7 @@
       await refreshSession();
       const btn = document.getElementById('go');
       btn.disabled = true;
-      btn.textContent = 'Sending…';
+      btn.textContent = 'Sending… · 发送中…';
       meta.textContent = '';
       out.textContent = '';
       try {
@@ -220,11 +250,11 @@
         meta.textContent = r.status + ' · ' + ms + ' ms · ' + (d.turns || 0) + ' turns · ' + (d.task_id || '');
         out.textContent = d.final_text || JSON.stringify(d, null, 2);
       } catch (e) {
-        meta.textContent = 'error';
+        meta.textContent = 'error · 错误';
         out.textContent = String(e);
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Send';
+        btn.textContent = 'Send · 发送';
       }
     });
   </script>

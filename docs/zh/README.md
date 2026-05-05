@@ -1,8 +1,10 @@
-# 🦀 EvoClaw — 自主进化的个人 AI 助手
+# 🕷 EvoClaw — 自主进化的个人 AI 智能体
 
 <p align="center">
-  <img src="../image/EvoClaw.png" alt="EvoClaw — 自主进化的个人 AI 助手" width="700">
+  <img src="../image/EvoClaw.png" alt="EvoClaw — 自主进化的个人 AI 智能体" width="700">
 </p>
+
+
 
 <p align="center">
   <b>学习。记忆。进化。</b>
@@ -48,7 +50,7 @@
 | **system prompt 6 行硬约束** | `scripts/check.sh` CI 卡住；每个工具描述上限 80 字符 |
 | **P0..P8 权限阶梯** | 全序约束；默认上限 **P1**；远程渠道无视 config 硬封顶 **P4** |
 | **三级预算引擎** | per-task hard stop、per-day soft warn + hard cap（4×）、per-month hard cap；`doctor-of tokens` 看缓存命中率 |
-| **CLI 体验** | 无子命令直接进 REPL；斜杠命令全套（`/agent /mcp /secret /skill /memory /tokens /closure /replay /doctor`） |
+| **CLI 体验** | 无子命令直接进 REPL；Tab 自动补全、历史导航（↑↓ / Ctrl-P/N）、反向搜索（Ctrl-R）、vim 风格行编辑（Ctrl+A/E/K/U/W）；斜杠命令全套（`/agent /mcp /secret /skill /memory /tokens /closure /replay /doctor /logout /config /status /model /profile /usage /clear /exit`） |
 | **零遥测** | 没有分析 SDK、没有远程 ping、没有"匿名使用统计"开关其实在偷偷上报 |
 | **本地优先** | 所有状态在 `~/.evoclaw/`：vault、agents/*.toml、mcp/*.toml、JSONL 日志、学到的 Skill |
 
@@ -130,61 +132,65 @@ cargo build --workspace --release
 ```
 $ evoclaw
 
-╭─────────────────────────────────────────────────────────────────────────────────╮
-│ evoclaw v0.3.3  •  deepseek  •  deepseek-chat                                   │
-│ workspace: ~/.evoclaw                                        2026-05-04 12:00:00 │
-╰─────────────────────────────────────────────────────────────────────────────────╯
+──────────────────────────────────────────────────────────────────────────────────
+  \\  ▄   ▄  //        快速开始
+    ▄███████▄           ──────────────────────────
+    █       █           /help    查看所有命令
+    █ ▀▀ ▀▀ █           /login   配置认证
+    ▀█▄▄▄▄▄█▀           /doctor  健康检查
+      ▄▄ ▄▄             /skill   浏览技能
+  //  ██ ██  \\
 
-╭─ evoclaw ───────────────────────────────────────────────────────────────────────╮
-│ auth: ok · ~/.evoclaw/secrets/deepseek.key                                      │
-│ account: not available for API key auth                                         │
-│ vault: 2 secrets · redactor active                                              │
-│ skills: 8 learned  ·  mcp: none attached                                        │
-│ Type a question or /help for commands · Ctrl-D to exit                          │
-╰─────────────────────────────────────────────────────────────────────────────────╯
+  EvoClaw  v0.3.3       状态
+  自主进化智能体         ──────────────────────────
+  运行时                 auth    ✓ 就绪
+                         model   deepseek-chat
+  deepseek  ·  deepseek-chat
+  ~/.evoclaw             Ctrl-D 退出  ·  /help 查看命令
+──────────────────────────────────────────────────────────────────────────────────
 
-
-
-
-╭─ input ─────────────────────────────────────────────────────────────────────────╮
-│ ▷ Type your message and press Enter to send  ·  /help for commands              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
-Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
+─ input ─────────────────────────────────────────────────────────────────────────
+  ▷ 输入消息并回车发送  ·  /help 查看命令
+─────────────────────────────────────────────────────────────────────────────────
+shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N 历史  ·  Ctrl-R 搜索  ·  Ctrl-C 退出
 ```
 
 输入问题并回车 —— 消息出现在上方对话区，助手以流式方式在单行状态栏输出：
 
 ```
-╭─ You · 12:00:05 ────────────────────────────────────────────────────────────────╮
-│ 排查为什么我连生产机的 SSH 偶尔卡住                                              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
+─ You · 12:00:05 ────────────────────────────────────────────────────────────────
+排查为什么我连生产机的 SSH 偶尔卡住
+─────────────────────────────────────────────────────────────────────────────────
 
-⠹ generating · deepseek · 3.1s · 412 chars
+─────────────────────────────────────────────────────── (streaming)
+EvoClaw · 流式输出 · 3.1s
+最常见的原因是未配置 TCP keepalive...
+─────────────────────────────────────────────────────────────────────────────────
 
-╭─ input ─────────────────────────────────────────────────────────────────────────╮
-│ ▷ Type your message and press Enter to send  ·  /help for commands              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
-Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
+─ input ─────────────────────────────────────────────────────────────────────────
+  ▷ 输入消息并回车发送  ·  /help 查看命令
+─────────────────────────────────────────────────────────────────────────────────
+shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N 历史  ·  Ctrl-R 搜索  ·  Ctrl-C 退出
 ```
 
 完成后完整回复滚入固定输入框上方的历史区：
 
 ```
-╭─ EvoClaw · deepseek · 12:00:05 · 3.4s · 512tok ────────────────────────────────╮
-│ 最常见的原因是未配置 TCP keepalive。                                             │
-│                                                                                  │
-│ ## 修复方法                                                                      │
-│ 在 ~/.ssh/config 中添加：                                                        │
-│   ┌─ code: ssh ──────────────────────────────────────────────────────           │
-│   │ ServerAliveInterval 60                                                       │
-│   │ ServerAliveCountMax 3                                                        │
-│   └───────────────────────────────────────────────────────────────              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
+─ EvoClaw · deepseek · 12:00:05 ─────────────────────────────────────────────────
+最常见的原因是未配置 TCP keepalive。
 
-╭─ input ─────────────────────────────────────────────────────────────────────────╮
-│ ▷ Type your message and press Enter to send  ·  /help for commands              │
-╰─────────────────────────────────────────────────────────────────────────────────╯
-Shortcuts: /status  /usage  /help  /clear  /queue  /cancel  /exit  |  Ctrl-C quit
+## 修复方法
+在 ~/.ssh/config 中添加：
+
+  ServerAliveInterval 60
+  ServerAliveCountMax 3
+
+─────────────────────────────────────────────────────────────────────────────────
+
+─ input ─────────────────────────────────────────────────────────────────────────
+  ▷ 输入消息并回车发送  ·  /help 查看命令
+─────────────────────────────────────────────────────────────────────────────────
+shortcuts: Tab /cmd  ·  ↑↓/Ctrl-P/N 历史  ·  Ctrl-R 搜索  ·  Ctrl-C 退出
 ```
 
 完整教程：[`getting-started.md`](./getting-started.md) · English: [`../getting-started.md`](../getting-started.md)
@@ -268,7 +274,7 @@ evoclaw> /status
 
 ---
 
-## 内置工具（上限 10，已交付 7）
+## 内置工具（已交付 12）
 
 | # | 名字 | 权限 | 干什么 |
 |---|------|------|--------|
@@ -279,10 +285,15 @@ evoclaw> /status
 | 5 | `run_shell` | P2 | `sh -c`，默认 30 秒超时，输出截到 8K。 |
 | 6 | `web_fetch` | P3 | 仅 HTTPS。Cookie 在响应进 LLM 上下文前剥除。 |
 | 7 | `ask_user` | P0 | 参数歧义或动作高危时**必须**调用。 |
+| 8 | `browser_navigate` | P3 | 无头浏览器跳转 URL；返回页面标题和正文。 |
+| 9 | `browser_screenshot` | P3 | 对当前页面截图保存为 PNG；返回文件路径。 |
+| 10 | `browser_click` | P3 | 点击 CSS selector 匹配的元素。 |
+| 11 | `browser_type` | P3 | 向 CSS selector 匹配的表单字段输入文本。 |
+| 12 | `browser_eval` | P3 | 在浏览器页面执行 JavaScript；返回结果。 |
 
-权限阶梯 **P0**（只读）→ **P8**（生产环境）。默认上限 P1；通过远程渠道进入的消息硬封顶 P4，无论 config 怎么设。
+权限阶梯 **P0**（只读）→ **P8**（生产环境）。默认上限 P1；通过远程渠道进入的消息硬封顶 P4，无论 config 怎么设。浏览器工具（8–12）需要宿主机安装 Chrome / Chromium，且要求 P3 权限。
 
-**想要更多工具？** 不要加第 8 个内置 —— **接 MCP 服务器**。
+**想要更多工具？** 优先考虑接入 MCP 服务器，而非继续增加内置工具。
 
 ---
 
@@ -293,7 +304,7 @@ evoclaw> /status
 想让上游 coding CLI 来跑 agent loop？在 `~/.evoclaw/config.toml` 设 `provider = "acp:claude"`（或 `acp:codex` / `acp:cursor` / `acp:copilot`）。EvoClaw 会把上游 CLI 拉成子进程、用 JSON-RPC 把你的 prompt 喂过去、回收最终文本。**上游 CLI 自己处理认证 —— EvoClaw 永远不接触它的凭据。**
 
 ```bash
-evoclaw agent catalog          # 看四个内置 agent profile
+evoclaw agent catalog          # 看七个内置 agent profile
 evoclaw agent add claude       # 落盘 ~/.evoclaw/agents/claude.toml
 evoclaw agent test claude      # spawn `claude --acp` + ACP initialize 握手
 ```
@@ -416,7 +427,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 1. 守住 LOC 预算（`./scripts/check.sh`）。
 2. system prompt 永远 6 行。
-3. **内置**工具数 ≤ 10。MCP 桥接的工具不计入。
+3. **内置**工具数 ≤ 12。MCP 桥接的工具不计入。
 4. 测试全绿。
 5. clippy `-D warnings` 全绿。
 6. 没有充分理由不加新依赖。
