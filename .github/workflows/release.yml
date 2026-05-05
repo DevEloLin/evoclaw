@@ -143,15 +143,27 @@ jobs:
           tar -czf evoclaw-linux-x86_64.tar.gz -C dist evoclaw README.md
           sha256sum evoclaw-linux-x86_64.tar.gz | awk '{print $1}' > evoclaw-linux-x86_64.tar.gz.sha256
 
-      - name: Upload artifact
+      - name: Upload deb
         uses: actions/upload-artifact@v4
         with:
-          name: evoclaw-linux-packages
+          name: evoclaw-linux-amd64.deb
           path: |
             evoclaw-linux-amd64.deb
             evoclaw-linux-amd64.deb.sha256
+
+      - name: Upload rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: evoclaw-linux-x86_64.rpm
+          path: |
             evoclaw-linux-x86_64.rpm
             evoclaw-linux-x86_64.rpm.sha256
+
+      - name: Upload tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: evoclaw-linux-x86_64.tar.gz
+          path: |
             evoclaw-linux-x86_64.tar.gz
             evoclaw-linux-x86_64.tar.gz.sha256
 
