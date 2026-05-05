@@ -141,7 +141,7 @@ impl Tool for BrowserNavigate {
             ));
         }
         let mut guard = SESSION.lock().await;
-        ensure_session(&mut *guard).await?;
+        ensure_session(&mut guard).await?;
         let session = guard.as_ref().unwrap();
         session
             .page
@@ -232,7 +232,7 @@ impl Tool for BrowserScreenshot {
             None => ctx.workspace.join("screenshot.png"),
         };
         let mut guard = SESSION.lock().await;
-        ensure_session(&mut *guard).await?;
+        ensure_session(&mut guard).await?;
         let session = guard.as_ref().unwrap();
         let params = ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
@@ -288,7 +288,7 @@ impl Tool for BrowserClick {
         let a: ClickArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
         let mut guard = SESSION.lock().await;
-        ensure_session(&mut *guard).await?;
+        ensure_session(&mut guard).await?;
         let session = guard.as_ref().unwrap();
         session
             .page
@@ -350,7 +350,7 @@ impl Tool for BrowserType {
         let a: TypeArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
         let mut guard = SESSION.lock().await;
-        ensure_session(&mut *guard).await?;
+        ensure_session(&mut guard).await?;
         let session = guard.as_ref().unwrap();
         if a.clear.unwrap_or(true) {
             let sel_json =
@@ -414,7 +414,7 @@ impl Tool for BrowserEval {
         let a: EvalArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
         let mut guard = SESSION.lock().await;
-        ensure_session(&mut *guard).await?;
+        ensure_session(&mut guard).await?;
         let session = guard.as_ref().unwrap();
         let result: Value = session
             .page
