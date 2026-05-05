@@ -137,6 +137,7 @@ pub(crate) async fn print_banner(cfg: &Config) {
 /// Spawn a task that runs the AI provider and forwards streaming deltas and
 /// completion as `UiEvent`s. The task runs on the tokio thread pool; the
 /// caller's event loop is never blocked.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_task(
     task_id: String,
     content: String,
