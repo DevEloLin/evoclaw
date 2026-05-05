@@ -183,38 +183,38 @@ jobs:
           $VERSION = "${{ github.ref_name }}".TrimStart('v')
           $BIN = "target\x86_64-pc-windows-msvc\release\evoclaw.exe"
 
-          $nsi = @'
-!define PRODUCT_NAME "EvoClaw"
-!define PRODUCT_VERSION "EVOCLAW_VERSION"
-!define INSTALL_DIR "$LOCALAPPDATA\Programs\EvoClaw"
-
-Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "evoclaw-windows-x64-setup.exe"
-InstallDir "${INSTALL_DIR}"
-RequestExecutionLevel user
-SetCompressor lzma
-
-Section "Install"
-  SetOutPath "$INSTDIR"
-  File "evoclaw.exe"
-  WriteUninstaller "$INSTDIR\uninstall.exe"
-
-  ; Add to user PATH (HKCU)
-  ReadRegStr $0 HKCU "Environment" "PATH"
-  StrCpy $0 "$0;$INSTDIR"
-  WriteRegExpandStr HKCU "Environment" "PATH" "$0"
-  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
-SectionEnd
-
-Section "Uninstall"
-  Delete "$INSTDIR\evoclaw.exe"
-  Delete "$INSTDIR\uninstall.exe"
-  RMDir "$INSTDIR"
-SectionEnd
-'@
-
-          $nsi = $nsi.Replace('EVOCLAW_VERSION', $VERSION)
-          $nsi | Out-File -Encoding ascii installer.nsi
+          # Build NSI as array of literal strings (avoids YAML here-string indent clash)
+          $nsiLines = @(
+            '!define PRODUCT_NAME "EvoClaw"',
+            '!define PRODUCT_VERSION "EVOCLAW_VERSION"',
+            '!define INSTALL_DIR "$LOCALAPPDATA\Programs\EvoClaw"',
+            '',
+            'Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"',
+            'OutFile "evoclaw-windows-x64-setup.exe"',
+            'InstallDir "${INSTALL_DIR}"',
+            'RequestExecutionLevel user',
+            'SetCompressor lzma',
+            '',
+            'Section "Install"',
+            '  SetOutPath "$INSTDIR"',
+            '  File "evoclaw.exe"',
+            '  WriteUninstaller "$INSTDIR\uninstall.exe"',
+            '',
+            '  ; Add to user PATH (HKCU)',
+            '  ReadRegStr $0 HKCU "Environment" "PATH"',
+            '  StrCpy $0 "$0;$INSTDIR"',
+            '  WriteRegExpandStr HKCU "Environment" "PATH" "$0"',
+            '  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000',
+            'SectionEnd',
+            '',
+            'Section "Uninstall"',
+            '  Delete "$INSTDIR\evoclaw.exe"',
+            '  Delete "$INSTDIR\uninstall.exe"',
+            '  RMDir "$INSTDIR"',
+            'SectionEnd'
+          )
+          ($nsiLines -join "`n").Replace('EVOCLAW_VERSION', $VERSION) |
+            Out-File -Encoding ascii installer.nsi
 
           Copy-Item $BIN evoclaw.exe
           makensis installer.nsi
