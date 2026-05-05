@@ -224,6 +224,7 @@ jobs:
           )
 
           Copy-Item $BIN evoclaw.exe
+          $env:PATH += ";C:\Program Files (x86)\NSIS"
           makensis installer.nsi
 
           $hash = (Get-FileHash "evoclaw-windows-x64-setup.exe" -Algorithm SHA256).Hash.ToLower()
