@@ -160,7 +160,7 @@ impl ChannelAdapter for SlackAdapter {
                 // Acknowledge every envelope within Slack's 3-second window.
                 if let Some(ref env_id) = envelope.envelope_id {
                     let ack = format!(r#"{{"envelope_id":"{env_id}"}}"#);
-                    let _ = ws_tx.send(Message::Text(ack.into())).await;
+                    let _ = ws_tx.send(Message::Text(ack)).await;
                 }
 
                 let Some(payload) = envelope.payload else {

@@ -117,7 +117,7 @@ impl DiscordAdapter {
                 "properties": { "os": "linux", "browser": "evoclaw", "device": "evoclaw" }
             }
         });
-        sink.send(Message::Text(identify.to_string().into()))
+        sink.send(Message::Text(identify.to_string()))
             .await
             .wrap_err("discord: send Identify")?;
 
@@ -129,7 +129,7 @@ impl DiscordAdapter {
             tokio::select! {
                 _ = hb_timer.tick() => {
                     let hb = serde_json::json!({"op": 1, "d": last_seq});
-                    if sink.send(Message::Text(hb.to_string().into())).await.is_err() {
+                    if sink.send(Message::Text(hb.to_string())).await.is_err() {
                         break;
                     }
                 }
