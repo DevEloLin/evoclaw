@@ -4,22 +4,25 @@
 #   cp browser-login-download.yaml ~/.evoclaw/skills/
 #
 # Store credentials once (values stay local, never reach AI providers):
-#   evoclaw secret add {site}_{account}_user  your@email.com
-#   evoclaw secret add {site}_{account}_pass  yourpassword
-#   evoclaw secret add {site}_{account}_totp  BASE32SEED   # optional TOTP 2FA
+#   Edit ~/.evoclaw/secrets/credentials.toml  (created automatically on first run)
 #
-# Example — 3 Google accounts:
-#   evoclaw secret add google_work_user   work@company.com
-#   evoclaw secret add google_work_pass   workpass123
-#   evoclaw secret add google_work_totp   JBSWY3DPEHPK3PXP
-#   evoclaw secret add google_home_user   me@gmail.com
-#   evoclaw secret add google_home_pass   homepass456
-#   evoclaw secret add google_side_user   side@gmail.com
-#   evoclaw secret add google_side_pass   sidepass789
+# credentials.toml example:
+#   [google_work]
+#   user = "work@company.com"
+#   pass = "yourpassword"
+#   totp = "BASE32SEED"          # optional TOTP 2FA seed
 #
-# Usage examples:
+#   [hsbc_main]
+#   user = "myuser"
+#   pass = "mypass"
+#
+# Usage:
 #   "Download my Google work account bills — account_id = google_work"
-#   "Download HSBC credit card statement — account_id = hsbc_main"
+#   "Download HSBC credit card statement  — account_id = hsbc_main"
+#
+# Sessions persist: after the first login Chrome stores the session cookie in
+# ~/.evoclaw/browser_profiles/{account_id}/ (chmod 700). Subsequent runs skip
+# login entirely unless the session has expired.
 
 id: browser-login-download
 name: Browser login and download bills
@@ -28,116 +31,141 @@ description: >
   statements. Credentials are injected at the tool-execution boundary —
   the AI model only sees placeholder tokens, never raw values.
   Supports: password-only login, TOTP 2FA (fully automatic),
-  SMS/push 2FA (semi-automatic with ask_user pause), multiple accounts.
+  SMS/push 2FA (semi-automatic with ask_user pause), multiple accounts,
+  and persistent sessions (login once, reuse across runs).
 
 # ──────────────────────────────────────────────────────────────────
 # Parameters — pass these when invoking the skill
 # ──────────────────────────────────────────────────────────────────
 parameters:
+  - name: account_id
+    description: >
+      Vault key prefix AND browser profile name.
+      Follows the convention {site}_{account}.
+      The skill appends _user, _pass, _totp automatically.
+      Chrome session is persisted under this name — login only happens once.
+    example: "google_work"
+
+  - name: bill_area_url
+    description: >
+      URL of the billing or statements page.
+      The skill navigates here first; if already logged in it proceeds
+      directly. If redirected to a login page it authenticates then retries.
+    example: "https://myaccount.google.com/payments-and-subscriptions"
+
   - name: site_url
-    description: Full URL of the login page
+    description: Login page URL — only used when session is not active.
     example: "https://accounts.google.com"
 
   - name: username_selector
-    description: CSS selector for the username / email input field
+    description: CSS selector for the username / email input field.
     example: "#identifierId"
 
   - name: password_selector
-    description: CSS selector for the password input field
+    description: CSS selector for the password input field.
     example: "#password input"
 
-  - name: account_id
-    description: >
-      Vault key prefix following the convention {site}_{account}.
-      The skill appends _user, _pass, _totp automatically.
-      For multiple accounts of the same site, use different suffixes
-      (work, home, side, main, etc.).
-    example: "google_work"
+  - name: submit_selector
+    description: CSS selector for the login / next button.
+    example: "#passwordNext"
 
   - name: totp_selector
     description: >
       CSS selector for the TOTP / OTP input field.
-      Omit entirely if the site does not use TOTP — the step is skipped.
+      Omit entirely if the site does not use TOTP.
     required: false
     example: "#totpPin"
 
-  - name: submit_selector
-    description: CSS selector for the login / next button
-    example: "#passwordNext"
-
-  - name: bill_area_url
-    description: URL of the billing or statements page (navigated after login)
-    example: "https://myaccount.google.com/payments-and-subscriptions"
-
   - name: download_selector
-    description: CSS selector for the PDF download link or button
+    description: CSS selector for the PDF download link or button.
     example: "a[href$='.pdf']"
 
   - name: save_dir
-    description: Local directory where downloaded files should be saved
+    description: Local directory where downloaded files should be saved.
     example: "~/Downloads/bills"
 
 # ──────────────────────────────────────────────────────────────────
 # Execution steps
 # ──────────────────────────────────────────────────────────────────
 steps: |
-  ## 1. Navigate to login page
-  browser_navigate({site_url})
+  ## 1. Try to reach the billing page directly (lazy login)
+  #
+  # The browser session for {account_id} is loaded from
+  # ~/.evoclaw/browser_profiles/{account_id}/ if it exists.
+  # If the session cookie is still valid, the user is already logged in
+  # and we go straight to step 5.
 
-  ## 2. Enter username
-  # ${SECRET:{account_id}_user} is resolved at execution time from vault.
-  # The model sends the placeholder token; the real email never enters the prompt.
-  browser_type({username_selector}, "${SECRET:{account_id}_user}")
+  result = browser_navigate({bill_area_url})
 
-  ## 3. Enter password
-  browser_type({password_selector}, "${SECRET:{account_id}_pass}")
-  browser_click({submit_selector})
+  ## 2. Check login_required hint in result
+  #
+  # browser_navigate returns "login_required: true" in the observation
+  # when it detects a redirect to a login page (URL or visible text heuristic).
+  # If absent, jump to step 5.
 
-  ## 4. 2FA — choose one branch based on what the page shows
-  #
-  # Branch A — TOTP (Google Authenticator, Authy, etc.) — FULLY AUTOMATIC
-  #   The vault entry {account_id}_totp holds the base32 seed.
-  #   EvoClaw computes the current 6-digit code locally with HMAC-SHA1.
-  #   Seed and code never leave the machine.
-  #   Run this branch only if totp_selector is provided AND the page prompts for it:
-  #
-  #     browser_type({totp_selector}, "${TOTP:{account_id}_totp}")
-  #     browser_click({submit_selector})
-  #
-  # Branch B — SMS / push notification — SEMI-AUTOMATIC
-  #   If the page shows an SMS or push-approval prompt, pause and ask the user:
-  #
-  #     ask_user("A verification code was sent to your phone. Please enter it:")
-  #     browser_type({totp_selector}, <user_reply>)
-  #     browser_click({submit_selector})
-  #
-  # Branch C — No 2FA required — SKIP entirely (do nothing here)
+  if result contains "login_required: true":
 
-  ## 5. Navigate to billing page and download
-  browser_navigate({bill_area_url})
+    ## 3. Navigate to login page and authenticate
+    browser_navigate({site_url})
+    browser_type({username_selector}, "${SECRET:{account_id}_user}")
+    browser_click({submit_selector})
+    browser_type({password_selector}, "${SECRET:{account_id}_pass}")
+    browser_click({submit_selector})
+
+    ## 4. 2FA — choose one branch based on what the page shows
+
+    # Branch A — TOTP (fully automatic)
+    #   Run only if totp_selector is provided AND the page shows an OTP field:
+    #
+    #   browser_type({totp_selector}, "${TOTP:{account_id}_totp}")
+    #   browser_click({submit_selector})
+
+    # Branch B — SMS / push notification (semi-automatic)
+    #   If the page shows an SMS or push-approval prompt:
+    #
+    #   ask_user("A verification code was sent to your phone. Please enter it:")
+    #   browser_type({totp_selector}, <user_reply>)
+    #   browser_click({submit_selector})
+
+    # Branch C — No 2FA — skip entirely
+
+    ## 4b. Return to billing page after login
+    browser_navigate({bill_area_url})
+
+  ## 5. Download bills
   browser_click({download_selector})
   # Files are saved to {save_dir} or the browser default download folder.
+  # Chrome session cookie is now stored in
+  # ~/.evoclaw/browser_profiles/{account_id}/ for future runs.
 
 # ──────────────────────────────────────────────────────────────────
 # Security notes
 # ──────────────────────────────────────────────────────────────────
 notes: |
-  What the AI model sees vs. what actually happens
-  -------------------------------------------------
-  Model input :  browser_type("#pwd", "${SECRET:google_work_pass}")
-  Tool runtime:  loads vault → finds google_work_pass → types real value into browser
-  Model output:  "typed into: #pwd"   ← no value, ever
+  Credential privacy
+  ------------------
+  Model sees :  browser_type("#pwd", "${SECRET:google_work_pass}")
+  Tool runtime: loads credentials.toml → types real value into browser
+  Model sees :  "typed into: #pwd"   ← no value, ever
 
-  TOTP seed stays local:
-    vault.json (chmod 600) → HMAC-SHA1 computation → 6-digit code → browser
-    The seed and the code are never transmitted to any AI provider.
+  TOTP stays fully local:
+    credentials.toml (chmod 600) → HMAC-SHA1 → 6-digit code → browser
+    Seed and code are never transmitted to any AI provider.
 
-  JSONL session logs contain only placeholder tokens, not real credentials.
+  Session persistence
+  -------------------
+  Profile dir:  ~/.evoclaw/browser_profiles/{account_id}/  (chmod 700)
+  What Chrome stores: session cookies, localStorage, IndexedDB
+  What is NOT stored: passwords (those stay in credentials.toml only)
 
-  Multi-account pattern
-  ---------------------
-  Vault naming:   {site}_{account}_{field}
-  Skill param:    account_id = "google_work" | "google_home" | "google_side"
-  Resolved keys:  google_work_user, google_work_pass, google_work_totp
+  After the first successful login, subsequent runs skip all login steps
+  until the site's session cookie expires (typically 30–365 days).
 
-  Add as many accounts as needed; they share this single skill template.
+  Multi-account isolation
+  -----------------------
+  Each account_id gets a separate Chrome profile directory.
+  Compromising one profile does not expose other accounts.
+
+  Vault naming:  {site}_{account}_{field}
+  Skill param:   account_id = "google_work" | "google_home" | "hsbc_main"
+  Resolved keys: google_work_user, google_work_pass, google_work_totp

@@ -135,6 +135,10 @@ pub(crate) fn vault_path() -> Result<PathBuf> {
     Ok(evo_policy::default_vault_path(&evoclaw_dir()?))
 }
 
+pub(crate) fn policy_path() -> Result<PathBuf> {
+    Ok(evoclaw_dir()?.join("policy.toml"))
+}
+
 // ---------------------------------------------------------------------------
 // Logs directory management
 // ---------------------------------------------------------------------------
@@ -225,8 +229,121 @@ pub(crate) async fn ensure_layout() -> Result<()> {
             .await
             .wrap_err_with(|| format!("create {sub}"))?;
     }
+
+    // Harden browser_profiles/ — session data must not be world-readable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let bp = evoclaw_dir()?.join("browser_profiles");
+        if bp.exists() {
+            let _ = tokio::fs::set_permissions(
+                &bp,
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .await;
+        }
+    }
+
+    // Drop a ready-to-edit credentials.toml on first run if absent.
+    let creds_path = evoclaw_dir()?.join("secrets").join("credentials.toml");
+    if !creds_path.exists() {
+        tokio::fs::write(&creds_path, CREDENTIALS_TEMPLATE)
+            .await
+            .wrap_err("create credentials.toml")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(
+                &creds_path,
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .await
+            .wrap_err("chmod credentials.toml")?;
+        }
+    }
+
+    // Drop a ready-to-edit policy.toml on first run if absent.
+    let policy_path = evoclaw_dir()?.join("policy.toml");
+    if !policy_path.exists() {
+        tokio::fs::write(&policy_path, POLICY_TEMPLATE)
+            .await
+            .wrap_err("create policy.toml")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(
+                &policy_path,
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .await
+            .wrap_err("chmod policy.toml")?;
+        }
+    }
+
     Ok(())
 }
+
+const CREDENTIALS_TEMPLATE: &str = r#"# EvoClaw credentials — edit with any text editor.
+# This file is chmod 600; values never leave this machine.
+#
+# Group credentials by account using [section] headers.
+# The section name becomes the key prefix in placeholders:
+#   [google_work]  ->  ${SECRET:google_work_user}, ${SECRET:google_work_pass}
+#                      ${TOTP:google_work_totp}
+#
+# Examples:
+#
+# [google_work]
+# user = "work@company.com"
+# pass = "yourpassword"
+# totp = "BASE32SEED"        # optional — remove if site has no TOTP
+#
+# [hsbc_main]
+# user = "myuser"
+# pass = "mypass"
+#
+# Flat (top-level) keys are also supported:
+#   my_api_key = "sk-abc123"   ->  ${SECRET:my_api_key}
+"#;
+
+const POLICY_TEMPLATE: &str = r#"# EvoClaw policy — edit with any text editor (chmod 600).
+#
+# deny rules are always checked first and take precedence over allow rules.
+# Pattern syntax: * matches any sequence of characters, ? matches one character.
+# Tool keys: "bash", "write_file", "read_file", "patch_file", "web_fetch", "*" (all tools).
+#
+# Examples:
+#
+# [deny]
+# bash = [
+#   "* .ssh*",          # block any bash command touching .ssh
+#   "rm -rf *",         # block destructive deletes
+#   "* gpg *",          # block GPG operations
+# ]
+# write_file = [
+#   "~/.ssh/**",        # block writes to SSH directory
+#   "/etc/**",          # block writes to system directories
+# ]
+#
+# [allow]
+# # Restrict bash to only these commands (uncomment to enable whitelist mode):
+# # bash = ["cargo *", "git *", "ls *", "cat *"]
+#
+# # Pre-execution hooks — shell commands run before each tool invocation.
+# # The hook receives {"tool": "...", "args": {...}} on stdin.
+# # Exit 0 = allow, exit 2 = block (stdout shown as reason), other = see on_fail.
+#
+# [[hooks.pre_exec]]
+# tool = "bash"                                    # or "*" for all tools
+# command = "python3 ~/.evoclaw/hooks/check.py"
+# on_fail = "block"                                # "block" (default) or "warn"
+
+[deny]
+bash = [
+    "* .ssh*",
+    "*~/.ssh*",
+]
+"#;
 
 pub(crate) async fn load_config() -> Result<Config> {
     let p = config_path()?;

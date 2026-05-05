@@ -22,6 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 
 pub const INDEX_HTML: &str = include_str!("../static/index.html");
+pub const ZH_HTML: &str = include_str!("../static/zh.html");
 
 /// Hard cap on request body bytes. The header is rejected before we allocate.
 pub const MAX_BODY_BYTES: usize = 2_000_000;
@@ -518,6 +519,25 @@ async fn route<P: Provider>(
                 "text/html; charset=utf-8",
                 security_headers,
                 INDEX_HTML.as_bytes(),
+            )
+            .await
+        }
+        ("GET", "/zh.html") => {
+            let security_headers: &[(&str, &str)] = &[
+                (
+                    "Content-Security-Policy",
+                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+                ),
+                ("X-Frame-Options", "DENY"),
+                ("X-Content-Type-Options", "nosniff"),
+                ("Referrer-Policy", "no-referrer"),
+            ];
+            write_response_with_headers(
+                stream,
+                200,
+                "text/html; charset=utf-8",
+                security_headers,
+                ZH_HTML.as_bytes(),
             )
             .await
         }

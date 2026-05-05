@@ -1,15 +1,15 @@
 //! Provider construction, task spawning, and one-shot execution.
 
 use crate::config::{
-    cost_log_path, ensure_layout, load_config, logs_dir, memory_dir, skills_dir, vault_path,
-    workspace_dir, Config,
+    cost_log_path, ensure_layout, evoclaw_dir, load_config, logs_dir, memory_dir, policy_path,
+    skills_dir, vault_path, workspace_dir, Config,
 };
 use crate::slash::get_active_mcp_servers;
 use crate::terminal_ui::{Spinner, TerminalUI};
 use crate::theme::{short_key_source, Theme};
 use crate::{mcp_tools, onboard, ui};
 use evo_core::{ConversationRuntime, Memory, Session};
-use evo_policy::{BudgetCfg, CostEngine, Redactor, Vault};
+use evo_policy::{BudgetCfg, CostEngine, PolicyConfig, Redactor, Vault};
 use evo_providers::{
     AcpProvider, AnthropicProvider, AuthMethod, BrowserProvider, CopilotProvider,
     OpenAiCompatProvider, Provider,
@@ -251,11 +251,14 @@ async fn run_task_interactive(
     mcp_tools::install_all(&mut registry).await;
     let registry = Arc::new(registry);
     let session = Session::open(log_path).await?;
+    let policy = PolicyConfig::load(&policy_path()?).await;
     let tool_ctx = ToolContext {
         workspace: workspace_dir()?,
         allow_user_prompt: true,
         ask_tx: Some(ask_tx),
         vault_path: vault_path().ok(),
+        evoclaw_dir: evoclaw_dir().ok(),
+        policy: Some(Arc::new(policy)),
         ..Default::default()
     };
     let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
@@ -328,10 +331,13 @@ pub(crate) async fn run_task_with_provider(
     }
     let registry = Arc::new(registry);
     let session = Session::open(log_path).await?;
+    let policy = PolicyConfig::load(&policy_path()?).await;
     let tool_ctx = ToolContext {
         workspace: workspace_dir()?,
         allow_user_prompt: true,
         vault_path: vault_path().ok(),
+        evoclaw_dir: evoclaw_dir().ok(),
+        policy: Some(Arc::new(policy)),
         ..Default::default()
     };
     let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));

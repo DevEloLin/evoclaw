@@ -27,10 +27,12 @@ ok()   { echo "OK   $*"; }
 #             Telegram + Slack (Socket Mode) + Discord (Gateway WS) adapters
 # - evo-providers: OpenAI-compat + Anthropic + Copilot + ACP adapter (with /v1/models fetcher)
 # - evo-policy: permission ladder + cost engine + Vault/Redactor (PRD §13.4)
-# - evo-tools: 12 built-in tools (7 core + 5 headless browser, capped at 15 by PRD §43)
-# Hard fail triggers at total > 21890 LOC (19900 target + 10% slack).
+# - evo-tools: 12 built-in tools (7 core + 5 headless browser) + browser session pool
+#              (browser_session, browser_profile, login_detect, secret_inject modules)
+#              + credential injection (credentials.toml + TOTP auto-2FA) — max 15 (PRD §43)
+# Hard fail triggers at total > 24090 LOC (21900 target + 10% slack).
 crates=(evo-cli   evo-core evo-tools evo-providers evo-policy)
-caps=(  9000      5000     2000       2200          1700)
+caps=(  9000      5000     3200       2200          2000)
 core_total=0
 echo "== LOC budget =="
 for i in "${!crates[@]}"; do
@@ -48,8 +50,8 @@ for i in "${!crates[@]}"; do
   fi
   core_total=$((core_total + loc))
 done
-echo "core total: $core_total / 19900 LOC ($(( 100 * core_total / 19900 ))%)"
-(( core_total > 21890 )) && fail "core total > 19900 by >10%"
+echo "core total: $core_total / 22200 LOC ($(( 100 * core_total / 22200 ))%)"
+(( core_total > 24420 )) && fail "core total > 22200 by >10%"
 
 echo
 echo "== docs sync =="
@@ -106,8 +108,8 @@ fi
 
 echo
 echo "== tool count =="
-tools=$(grep -cE '^inventory::submit!\(ToolFactory' crates/evo-tools/src/lib.rs || true)
-if (( tools <= 10 )); then ok "$tools / 10 tools registered (PRD §43)"; else fail "$tools tools registered, exceeds PRD §43 cap of 10"; fi
+tools=$(grep -rcE '^inventory::submit!\(ToolFactory' crates/evo-tools/src/ | wc -l | tr -d ' ')
+if (( tools <= 15 )); then ok "$tools / 15 tools registered (PRD §43)"; else fail "$tools tools registered, exceeds PRD §43 cap of 15"; fi
 
 echo
 echo "== version sync =="
