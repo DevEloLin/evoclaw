@@ -382,10 +382,11 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 4.6 — Secret-redaction     | ✓ shipped   | Week 8     | Vault + Redactor + `secret` subcommand |
 | 5   — Local Gateway core   | ✓ shipped   | Week 8–9   | HTTP daemon + WebChat + bearer-token allowlist + session isolation |
 | 6   — Hardening (CI gates) | ✓ shipped   | Week 9     | doctor closure + mock-provider tests + LOC enforcer + `evo replay` + doc-sync check + GitHub Actions CI |
-| 7   — Multi-channel        | ⏳ v0.6 plan | future     | Telegram / Slack / Discord plugins, Local Dashboard, trust-FSM auto-promote, group-mention enforcement |
-| 8   — Deep hardening       | ⏳ v0.7 plan | future     | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
+| 7   — Multi-channel        | ✓ shipped   | v0.3.7     | Telegram (long-poll) + Slack (Socket Mode) + Discord (Gateway WS); group @-mention detection; per-channel Markdown hints |
+| 8   — Deep hardening       | ⏳ v0.8 plan | future     | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
-Phase 7 (Multi-channel) and Phase 8 (Deep hardening) are explicit future work — the Telegram / Slack plugins depend on external service tokens and a Tauri-based dashboard, and the kernel-level sandbox + load testing aren't blockers for solo-developer use of the runtime today. Everything in Phases 1–6 ships in v0.3.7.
+Phase 7 (Multi-channel) ships in v0.3.7 with Telegram, Slack, and Discord adapters.
+Phase 8 (Deep hardening) remains explicit future work — kernel-level sandbox and load testing are not blockers for solo-developer use today.
 
 ---
 
@@ -417,7 +418,7 @@ A version bump in one **must** be accompanied by the same bump in the other. Bot
 
 - **Not a SaaS platform.** Every byte of state stays on your machine. There is no telemetry endpoint.
 - **Not a replacement for upstream coding CLIs.** When you want one of those, route the loop through ACP — they keep their full feature set, you keep the redaction barrier and the local logs.
-- **Not a chat aggregator.** Channels are on the v0.6 horizon, but the heart of EvoClaw is the **self-evolving runtime**, not message routing.
+- **Not a chat aggregator.** EvoClaw supports Telegram, Slack, and Discord as inbound channels, but the heart of the project is the **self-evolving runtime**, not message routing.
 - **Not a vector-DB-powered "second brain."** Memory is plain text + grep on purpose. We measured.
 
 ---

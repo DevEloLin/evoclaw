@@ -15,6 +15,8 @@ pub mod session;
 pub mod skill;
 pub mod skill_tree;
 pub mod summary;
+pub mod discord;
+pub mod slack;
 pub mod telegram;
 
 pub use compression::{compress_if_due, CompressionConfig};
