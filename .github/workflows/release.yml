@@ -38,13 +38,6 @@ jobs:
             archive_name: evoclaw-aarch64-apple-darwin.tar.gz
             archive_type: tar
 
-          # macOS Intel — macos-13 is the last Intel runner GitHub provides
-          - os: macos-13
-            target: x86_64-apple-darwin
-            bin_name: evoclaw
-            archive_name: evoclaw-x86_64-apple-darwin.tar.gz
-            archive_type: tar
-
           # Linux x64, Ubuntu / Debian / CentOS etc.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -192,8 +185,7 @@ jobs:
 
           This release includes binaries for:
 
-          - macOS Apple Silicon
-          - macOS Intel
+          - macOS Apple Silicon (arm64)
           - Linux x64
           - Linux ARM64
           - Linux x64 static musl

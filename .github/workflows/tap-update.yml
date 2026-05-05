@@ -42,23 +42,19 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name }}"
           mkdir -p checksums
-          for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            archive="evoclaw-${target}.tar.gz"
-            gh release download "$TAG" \
-              --repo DevEloLin/evoclaw \
-              --pattern "${archive}" \
-              --dir checksums
-            shasum -a 256 "checksums/${archive}" \
-              | awk '{print $1}' > "checksums/${archive}.sha256"
-          done
+          archive="evoclaw-aarch64-apple-darwin.tar.gz"
+          gh release download "$TAG" \
+            --repo DevEloLin/evoclaw \
+            --pattern "${archive}" \
+            --dir checksums
+          shasum -a 256 "checksums/${archive}" \
+            | awk '{print $1}' > "checksums/${archive}.sha256"
 
       - name: Extract SHA256 values
         id: sha
         run: |
           ARM=$(awk '{print $1}' checksums/evoclaw-aarch64-apple-darwin.tar.gz.sha256)
-          X86=$(awk '{print $1}' checksums/evoclaw-x86_64-apple-darwin.tar.gz.sha256)
           echo "arm=$ARM" >> "$GITHUB_OUTPUT"
-          echo "x86=$X86" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -74,8 +70,7 @@ jobs:
           python3 scripts/update_formula.py \
             tap/Formula/evoclaw.rb \
             "$VERSION" \
-            "${{ steps.sha.outputs.arm }}" \
-            "${{ steps.sha.outputs.x86 }}"
+            "${{ steps.sha.outputs.arm }}"
 
       - name: Commit and push tap
         run: |
