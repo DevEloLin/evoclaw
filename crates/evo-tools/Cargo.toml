@@ -16,6 +16,8 @@ async-trait   = { workspace = true }
 inventory     = { workspace = true }
 thiserror     = { workspace = true }
 tracing       = { workspace = true }
-reqwest       = { workspace = true }
-evo-policy    = { workspace = true }
-evo-providers = { workspace = true }
+reqwest         = { workspace = true }
+futures         = { workspace = true }
+chromiumoxide   = { workspace = true }
+evo-policy      = { workspace = true }
+evo-providers   = { workspace = true }

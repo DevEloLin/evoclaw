@@ -24,7 +24,10 @@ fn user_msg(body: &str) -> Message {
 }
 
 #[test]
-fn fingerprint_reuse_dominates_long_session() {
+fn fingerprint_always_sends_full() {
+    // Reuse was disabled: omitting tool schemas from API requests caused the
+    // model to lose tool-calling capability on turns 1+ of a multi-turn loop.
+    // Every turn must return Full so the model can call tools at any point.
     let mut fp = ToolFingerprint::default();
     let tools = vec![
         tspec("read_file"),
@@ -32,21 +35,13 @@ fn fingerprint_reuse_dominates_long_session() {
         tspec("run_shell"),
         tspec("ask_user"),
     ];
-    let mut full = 0;
-    let mut reuse = 0;
     for turn in 0..30 {
         let p = fp.payload_for_turn(turn, tools.clone());
-        if p.is_reuse() {
-            reuse += 1;
-        } else {
-            full += 1;
-        }
+        assert!(
+            !p.is_reuse(),
+            "turn {turn}: expected Full — agents must receive tool schemas on every turn"
+        );
     }
-    assert_eq!(
-        full, 3,
-        "expected exactly 3 full sends across 30 turns (turns 0/10/20)"
-    );
-    assert_eq!(reuse, 27);
 }
 
 #[test]
