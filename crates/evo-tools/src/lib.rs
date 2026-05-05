@@ -7,7 +7,7 @@
 pub(crate) mod tools;
 
 use async_trait::async_trait;
-use evo_policy::Permission;
+use evo_policy::{hook, Permission, PolicyConfig, PolicyDecision};
 use evo_providers::ToolSpec;
 #[cfg(test)]
 use serde_json::json;
@@ -80,6 +80,18 @@ pub struct ToolContext {
     /// and `${TOTP:name}` placeholders at tool-execution time.
     /// When `None`, placeholder syntax passes through unchanged.
     pub vault_path: Option<PathBuf>,
+    /// Root of the EvoClaw data directory (`~/.evoclaw`). Used by browser
+    /// tools to locate `browser_profiles/{account_id}/` for session persistence.
+    /// When `None`, browser sessions are ephemeral (no profile directory).
+    pub evoclaw_dir: Option<PathBuf>,
+    /// Account identifier for persistent browser sessions (e.g. `"google_work"`).
+    /// Maps to `{evoclaw_dir}/browser_profiles/{browser_profile}/`.
+    /// When `None`, an ephemeral session is used.
+    pub browser_profile: Option<String>,
+    /// User-configurable allow/deny rules and pre-exec hooks loaded from
+    /// `~/.evoclaw/policy.toml`. `None` disables policy enforcement (default
+    /// in tests and one-shot contexts that don't load a config file).
+    pub policy: Option<Arc<PolicyConfig>>,
 }
 
 impl Default for ToolContext {
@@ -97,6 +109,9 @@ impl Default for ToolContext {
             self_exe,
             ask_tx: None,
             vault_path: None,
+            evoclaw_dir: None,
+            browser_profile: None,
+            policy: None,
         }
     }
 }
@@ -231,9 +246,42 @@ impl ToolRegistry {
                 name, required, ctx.max_permission
             )));
         }
+        // User-configurable policy: allow/deny rules then pre-exec hooks.
+        if let Some(policy) = &ctx.policy {
+            let subject = extract_subject(name, &args);
+            match policy.check_rules(name, &subject) {
+                PolicyDecision::Block(reason) => return Err(ToolError::Denied(reason)),
+                PolicyDecision::Allow => {}
+            }
+            for h in policy.hooks_for(name) {
+                match hook::run_pre_exec(h, name, &args).await {
+                    PolicyDecision::Block(reason) => return Err(ToolError::Denied(reason)),
+                    PolicyDecision::Allow => {}
+                }
+            }
+        }
         let raw = tool.run(ctx, args).await?;
         Ok(smart_format(&raw, ctx.max_observation_chars))
     }
+}
+
+/// Extract the policy-matching subject from tool args.
+///
+/// For `bash`/`run_shell`: the `command` field.
+/// For `write_file`/`read_file`/`patch_file`/`list_dir`: the `path` field.
+/// For `web_fetch`: the `url` field.
+/// For all other tools: empty string (rule still matches on tool name alone).
+fn extract_subject(tool: &str, args: &Value) -> String {
+    let field = match tool {
+        "run_shell" | "bash" => "command",
+        "write_file" | "read_file" | "patch_file" | "list_dir" => "path",
+        "web_fetch" => "url",
+        _ => return String::new(),
+    };
+    args.get(field)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn resolve_path(workspace: &Path, requested: &str) -> PathBuf {

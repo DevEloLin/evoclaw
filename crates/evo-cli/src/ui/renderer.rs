@@ -324,25 +324,19 @@ impl UiRenderer {
         };
 
         let mut out = format!(
-            "{tc}{fill}{r}\n",
-            tc = theme.frame(),
-            fill = "─".repeat(bw),
-            r = theme.reset(),
-        );
-        out.push_str(&format!(
             "{tc}{title} · streaming · {elapsed:.1}s{queued}{r}\n",
             tc = theme.frame(),
             title = &block.title,
             queued = queued_suffix,
             r = theme.reset(),
-        ));
+        );
 
         if !block.content.is_empty() {
             let rendered = render_markdown_plain(theme, &block.content, bw);
             let (_, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
-            // Reserve: top-rule(1) + header(1) + bottom-rule(1) + task-line(1)
-            //        + input-box(4) + shortcut(1) = 9 lines.
-            let max_content = (term_h as usize).saturating_sub(9).max(3);
+            // Reserve: header(1) + bottom-rule(1) + task-line(1)
+            //        + input-box(4) + shortcut(1) = 8 lines.
+            let max_content = (term_h as usize).saturating_sub(8).max(3);
 
             // Build the physical-line list first (a logical line from the
             // markdown renderer may wrap into multiple terminal rows).  Then

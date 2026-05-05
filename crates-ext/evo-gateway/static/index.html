@@ -175,17 +175,71 @@
 <span class="chin">    ▄▄ ▄▄    </span>
 <span class="legs">//  ██ ██  \\</span></div>
 
-    <h1>EvoClaw <span class="version">v1.0.0-beta.1</span></h1>
+    <h1>EvoClaw <span class="version">v1.0.1-beta.1</span></h1>
     <div class="tagline">
       <span class="en">Self-evolving Personal AI Agent &mdash; Local Gateway</span>
       <span class="zh">自主进化个人 AI 智能体 &mdash; 本地网关</span>
     </div>
+
+    <p style="text-align:right;margin:-0.5rem 0 0.75rem;font-size:0.8rem;">
+      <a href="zh.html" style="color:#60a5fa;text-decoration:none;opacity:0.8;">中文版 →</a>
+    </p>
 
     <div class="hint">
       POST <code>/chat</code> with <code>Authorization: Bearer &lt;token&gt;</code>
       &nbsp;&middot;&nbsp;
       发送消息需在请求头附带 Bearer 令牌
     </div>
+
+    <details style="margin-bottom:1.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.75rem 1rem;">
+      <summary style="cursor:pointer;color:#9ca3af;font-size:0.85rem;user-select:none;list-style:none;display:flex;justify-content:space-between;align-items:center;">
+        <span>Features &amp; capabilities</span>
+        <span style="font-size:0.7rem;opacity:0.5;">▼</span>
+      </summary>
+      <div style="margin-top:1rem;font-size:0.82rem;color:#9ca3af;display:grid;grid-template-columns:1fr 1fr;gap:0.75rem 1.5rem;">
+        <div>
+          <div style="color:#60a5fa;font-weight:600;margin-bottom:0.35rem;">Agent Runtime</div>
+          <ul style="margin:0;padding-left:1.1rem;line-height:1.9;">
+            <li>Self-evolving YAML Skill Tree (EWMA lifecycle)</li>
+            <li>Reflection + distillation after every task</li>
+            <li>Append-only JSONL audit logs + replay</li>
+            <li>6-layer working memory (L0–L5)</li>
+            <li>5-trick token economy (≈⅓ naive cost)</li>
+          </ul>
+        </div>
+        <div>
+          <div style="color:#a78bfa;font-weight:600;margin-bottom:0.35rem;">Security</div>
+          <ul style="margin:0;padding-left:1.1rem;line-height:1.9;">
+            <li>Secret vault (chmod 600) — never sent to model</li>
+            <li>Pattern redaction: sk-*, ghp_*, JWT, high-entropy</li>
+            <li><code>credentials.toml</code> — edit with any text editor</li>
+            <li>Credential injection at Rust execution boundary</li>
+            <li>TOTP computed locally — seed never leaves machine</li>
+            <li><code>policy.toml</code> — per-tool allow/deny rules + pre-exec hooks</li>
+          </ul>
+        </div>
+        <div>
+          <div style="color:#34d399;font-weight:600;margin-bottom:0.35rem;">Browser Automation</div>
+          <ul style="margin:0;padding-left:1.1rem;line-height:1.9;">
+            <li>Headless Chrome: navigate, click, type, screenshot</li>
+            <li>Persistent sessions — login once, reuse indefinitely</li>
+            <li>Lazy login detection — skips auth when session valid</li>
+            <li>Per-account Chrome profiles (chmod 700, isolated)</li>
+            <li>Auto TOTP · semi-auto SMS 2FA · no-2FA skip</li>
+          </ul>
+        </div>
+        <div>
+          <div style="color:#fb923c;font-weight:600;margin-bottom:0.35rem;">Integrations</div>
+          <ul style="margin:0;padding-left:1.1rem;line-height:1.9;">
+            <li>17 model providers (9 CN + 8 intl + 3 local)</li>
+            <li>ACP — Claude Code, Codex, Cursor, Copilot…</li>
+            <li>MCP — GitHub, filesystem, Postgres, Brave…</li>
+            <li>Channels — Telegram, Slack, Discord</li>
+            <li>This local HTTP gateway</li>
+          </ul>
+        </div>
+      </div>
+    </details>
 
     <div class="row">
       <label>

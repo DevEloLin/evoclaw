@@ -53,6 +53,10 @@ A handful of design choices we made that we think matter:
 | **Permission ladder P0..P8** | totally ordered; default ceiling **P1**; channel senders hard-capped at **P4** regardless of config |
 | **Three-tier budget engine** | per-task hard stop, per-day soft warn + hard cap (4×), per-month hard cap; `doctor-of tokens` reports cache-hit rate |
 | **Standard CLI ergonomics** | run `evoclaw` with no subcommand → REPL with Tab auto-completion, history navigation (↑↓ / Ctrl-P/N), reverse search (Ctrl-R), vim-style line-editing (Ctrl+A/E/K/U/W), and slash commands (`/agent /mcp /secret /skill /memory /tokens /closure /replay /doctor /logout /config /status /model /profile /usage /clear /exit`) |
+| **Browser credential injection** | `${SECRET:name}` / `${TOTP:name}` placeholders resolved at tool-execution time — model sees only tokens, never raw passwords; TOTP 2FA computed locally (HMAC-SHA1, RFC 6238); multi-account via `credentials.toml` |
+| **Persistent browser sessions** | one Chrome profile per account (`~/.evoclaw/browser_profiles/{id}/`, chmod 700); login once, reuse indefinitely; lazy login detection skips the auth flow when the session is still valid |
+| **Human-editable credentials** | `~/.evoclaw/secrets/credentials.toml` (chmod 600, auto-created on first run) — edit with any text editor; grouped `[section]` syntax maps to `${SECRET:{section}_{field}}` placeholders |
+| **User-configurable policy** | `~/.evoclaw/policy.toml` (chmod 600, auto-created) — per-tool allow/deny glob rules + pre-exec hooks; deny always beats allow; runs after the P0–P8 permission check, before `tool.run()` |
 | **Zero telemetry** | no analytics SDK, no remote pings, no "anonymous usage statistics" toggle hiding the real one |
 | **Local-first by default** | every byte of state lives under `~/.evoclaw/` on your machine — vault, agents/*.toml, mcp/*.toml, JSONL logs, learned Skills |
 
@@ -306,6 +310,48 @@ Vault file layout (`~/.evoclaw/secrets/vault.json`, chmod 600):
 
 ---
 
+## Tool execution policy
+
+`~/.evoclaw/policy.toml` (chmod 600, auto-created on first run) is the user-editable policy layer that sits **after** the built-in P0–P8 permission check and **before** every `tool.run()` call. Edit it with any text editor — no recompile needed.
+
+### Allow / deny rules
+
+```toml
+[deny]
+bash      = ["* .ssh*", "*~/.ssh*", "rm -rf *"]
+write_file = ["~/.ssh/**", "/etc/**"]
+
+[allow]
+# Uncomment to restrict bash to an explicit whitelist:
+# bash = ["cargo *", "git *", "ls *"]
+```
+
+- **Pattern syntax**: `*` = any sequence, `?` = one character
+- **Deny always wins** over allow
+- **Tool keys**: `bash`, `write_file`, `read_file`, `patch_file`, `web_fetch`, `*` (all)
+- **Subject matched**: `bash` → command string · file tools → path · `web_fetch` → URL
+
+### Pre-execution hooks
+
+```toml
+[[hooks.pre_exec]]
+tool    = "bash"                              # or "*" for all tools
+command = "python3 ~/.evoclaw/hooks/check.py"
+on_fail = "block"                             # "block" (default) or "warn"
+```
+
+Hook receives `{"tool": "...", "args": {...}}` on stdin. Exit `0` = proceed, exit `2` = block (stdout shown as reason), other = per `on_fail`.
+
+### Enforcement order
+
+```
+P0–P8 permission check  ──▶  deny/allow rules  ──▶  pre-exec hooks  ──▶  tool.run()
+```
+
+The permission ladder is the hard floor and cannot be overridden. Policy rules are the user-controlled overlay above it.
+
+---
+
 ## Multi-Profile Configuration
 
 Switch between different model providers and configurations seamlessly with profiles:
@@ -368,6 +414,72 @@ The permission ladder runs **P0** (read-only) → **P8** (production ops). The d
 
 ---
 
+## Browser automation & credential injection
+
+EvoClaw can drive a headless browser to log in to websites and download documents (bills, statements, reports) fully automatically — including TOTP 2FA — without ever exposing your credentials to the AI model.
+
+### How credentials stay private
+
+The model sends a placeholder token; the real value is injected only at the Rust tool-execution boundary:
+
+```
+Model sends  →  browser_type("#pwd", "${SECRET:hsbc_main_pass}")
+Tool runtime →  reads credentials.toml → types real password into browser
+Model sees   →  "typed into: #pwd"   ← no value, ever
+```
+
+TOTP seeds never leave your machine either — the 6-digit code is computed locally with HMAC-SHA1 (RFC 6238) and typed directly into the browser field.
+
+### credentials.toml — human-editable, no CLI needed
+
+On first run, EvoClaw creates `~/.evoclaw/secrets/credentials.toml` (chmod 600) with a commented template:
+
+```toml
+[google_work]
+user = "work@company.com"
+pass = "yourpassword"
+totp = "BASE32SEED"       # optional — TOTP seed for automatic 2FA
+
+[hsbc_main]
+user = "myuser"
+pass = "mypass"
+```
+
+Section name + field → placeholder key:  `[google_work]` + `pass` → `${SECRET:google_work_pass}`
+
+You can also store named vault entries via `evoclaw secret add` — both sources are merged at load time, with `credentials.toml` taking priority.
+
+### Persistent sessions — login once
+
+Each `account_id` gets its own isolated Chrome profile directory (`~/.evoclaw/browser_profiles/{account_id}/`, chmod 700). After the first successful login, Chrome stores the session cookie there. On subsequent runs the Skill navigates directly to the target page — if the session is still valid it proceeds without authenticating at all.
+
+Login detection is automatic: `browser_navigate` checks the final URL and page text for login-page heuristics and reports `login_required: true` in its observation when re-authentication is needed.
+
+### 2FA support matrix
+
+| Type | Behaviour |
+|------|-----------|
+| TOTP (Google Authenticator, Authy…) | **Fully automatic** — seed in `credentials.toml`, code computed locally |
+| SMS / push notification | **Semi-automatic** — agent calls `ask_user` and waits for you to paste the code |
+| No 2FA | **Skipped** — step is omitted entirely |
+
+### Quick start
+
+```bash
+# 1. Edit credentials (auto-created on first run)
+nano ~/.evoclaw/secrets/credentials.toml
+
+# 2. Install the skill template
+cp docs/skills/browser-login-download.yaml ~/.evoclaw/skills/
+
+# 3. Ask EvoClaw
+evoclaw
+> Download my HSBC credit card statement — account_id = hsbc_main, \
+  bill_area_url = https://www.hsbc.com.hk/…, download_selector = a[href$='.pdf']
+```
+
+---
+
 ## Standard interop: ACP + MCP
 
 ### ACP — Agent Client Protocol (delegate the loop)
@@ -413,6 +525,11 @@ Full guide: [`docs/mcp.md`](./docs/mcp.md) · 中文: [`docs/zh/mcp.md`](./docs/
 ├── memory/{L0,L1,L2,L3,L4,L5}.jsonl   # six layered memory streams
 ├── secrets/<provider>.key             # per-provider API key, chmod 600
 ├── secrets/vault.json                 # named secret vault, chmod 600
+├── secrets/credentials.toml          # human-editable credentials (chmod 600, auto-created)
+├── policy.toml                        # user-configurable allow/deny rules + hooks (chmod 600, auto-created)
+├── browser_profiles/                  # persistent Chrome session data (chmod 700)
+│   ├── google_work/                   # one profile per account_id
+│   └── hsbc_main/
 ├── agents/<id>.toml                   # ACP agent profiles
 ├── mcp/<id>.toml                      # MCP server profiles
 ├── plugins/                           # reserved
@@ -435,6 +552,7 @@ JSONL records are typed via `kind: "task" | "turn" | "end"`. The schema is stabl
 | MCP servers | [`docs/mcp.md`](./docs/mcp.md) | [`docs/zh/mcp.md`](./docs/zh/mcp.md) |
 | Architecture overview | [`docs/architecture.md`](./docs/architecture.md) | [`docs/zh/architecture.md`](./docs/zh/architecture.md) |
 | Contributing | [`docs/contributing.md`](./docs/contributing.md) | [`docs/zh/contributing.md`](./docs/zh/contributing.md) |
+| Release notes | [`docs/BETA-NOTES.md`](./docs/BETA-NOTES.md) | — |
 
 Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/architecture-en.html) · [中文](https://develolin.github.io/EvoClawSite/architecture-zh.html) · [Design (EN)](https://develolin.github.io/EvoClawSite/design-en.html) · [中文](https://develolin.github.io/EvoClawSite/design-zh.html)
 
@@ -453,7 +571,8 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 5   — Local Gateway core   | ✓ shipped   | Week 8–9   | HTTP daemon + WebChat + bearer-token allowlist + session isolation |
 | 6   — Hardening (CI gates) | ✓ shipped   | Week 9     | doctor closure + mock-provider tests + LOC enforcer + `evo replay` + doc-sync check + GitHub Actions CI |
 | 7   — Multi-channel        | ✓ shipped   | v1.0.0-beta.1     | Telegram (long-poll) + Slack (Socket Mode) + Discord (Gateway WS); group @-mention detection; per-channel Markdown hints |
-| 8   — TUI + Release pipeline | 🔄 beta    | v1.0.0-beta.1 | Full event-driven TUI rewrite (streaming REPL, scroll buffer, delta ordering fix) + multi-platform CI/CD release pipeline + beta release process |
+| 8   — TUI + Release pipeline | ✓ shipped  | v1.0.0-beta.1 | Full event-driven TUI rewrite (streaming REPL, scroll buffer, delta ordering fix) + multi-platform CI/CD release pipeline + beta release process |
+| 8.1 — Policy layer         | ✓ shipped  | v1.0.1-beta.1 | User-configurable `policy.toml`: per-tool allow/deny glob rules + pre-exec hooks; TUI streaming divider fix |
 | 9   — Deep hardening       | ⏳ planned  | v1.0 GA    | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
 Phase 7 (Multi-channel): shipped with Telegram, Slack, and Discord adapters.
@@ -502,7 +621,7 @@ PRs welcome. Read [`docs/contributing.md`](./docs/contributing.md). The seven go
 
 1. Keep the LOC budgets (`./scripts/check.sh`).
 2. Keep the system prompt at exactly 6 lines.
-3. Keep the **built-in** tool count ≤ 12. MCP-bridged tools don't count.
+3. Keep the **built-in** tool count ≤ 15. MCP-bridged tools don't count.
 4. Tests stay green.
 5. Clippy stays green with `-D warnings`.
 6. No new dependencies without justification.

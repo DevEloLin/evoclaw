@@ -1,13 +1,13 @@
 //! Channel adapter commands: list, status, add, remove, run.
 
 use crate::config::{
-    cost_log_path, ensure_layout, evoclaw_dir, load_config, logs_dir, memory_dir, skills_dir,
-    vault_path, workspace_dir,
+    cost_log_path, ensure_layout, evoclaw_dir, load_config, logs_dir, memory_dir, policy_path,
+    skills_dir, vault_path, workspace_dir,
 };
 use crate::mcp_tools;
 use crate::onboard;
 use evo_core::{ConversationRuntime, Memory, Session};
-use evo_policy::{BudgetCfg, CostEngine, Redactor, Vault};
+use evo_policy::{BudgetCfg, CostEngine, PolicyConfig, Redactor, Vault};
 use evo_providers::{
     AcpProvider, AnthropicProvider, AuthMethod, BrowserProvider, CopilotProvider,
     OpenAiCompatProvider, Provider,
@@ -364,10 +364,13 @@ pub(crate) async fn channel_run_one_shot_text(
     let task_id = format!("task-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f"));
     let log_path = logs_dir()?.join(format!("{task_id}.jsonl"));
     let session = Session::open(&log_path).await?;
+    let policy = PolicyConfig::load(&policy_path()?).await;
     let tool_ctx = ToolContext {
         workspace: workspace_dir()?,
         allow_user_prompt: false,
         vault_path: vault_path().ok(),
+        evoclaw_dir: evoclaw_dir().ok(),
+        policy: Some(Arc::new(policy)),
         ..Default::default()
     };
     let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
