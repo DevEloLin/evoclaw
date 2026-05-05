@@ -1,15 +1,20 @@
-//! evo-policy — permissions, budget, redaction.
+//! evo-policy — permissions, budget, redaction, and user-configurable policy.
 //!
 //! Phase 1 shipped `Permission` + `Decision`. Phase 3 added the Cost Engine
 //! (3-tier budget). Phase 4.6 added the secret-redaction barrier
 //! (`redact::Vault` + `redact::Redactor`) — see PRD §13.4.
+//! Phase 5 added user-configurable allow/deny rules and pre-exec hooks
+//! (`policy::PolicyConfig`, `hook::run_pre_exec`).
 
 pub mod cost;
+pub mod hook;
+pub mod policy;
 pub mod redact;
 
 pub use cost::{
     estimate_usd, BudgetCfg, BudgetCheck, BudgetLevel, CostEngine, CostEvent, CostSummary,
 };
+pub use policy::{glob_match, HookDef, HooksConfig, OnFail, PolicyConfig, PolicyDecision, RuleSet};
 pub use redact::{
     classify_secret, default_vault_path, fingerprint_of, is_fully_redacted, RedactionMode,
     Redactor, SecretKind, Vault, VaultEntry,

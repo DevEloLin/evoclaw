@@ -4,23 +4,30 @@
 //! Vault. Real credential values never appear in tool observations or model
 //! context — the model only ever sees the placeholder tokens.
 //!
-//! Syntax
-//! ------
-//!   ${SECRET:name}   vault entry with that name → raw value
-//!   ${TOTP:name}     vault entry holds base32 TOTP seed → current 6-digit code
+//! Credential sources (merged, credentials.toml takes priority)
+//! -------------------------------------------------------------
+//!   ~/.evoclaw/secrets/credentials.toml  — human-editable, grouped by account
+//!   ~/.evoclaw/secrets/vault.json        — managed by `evoclaw secret add`
 //!
-//! Multi-account naming convention
-//! --------------------------------
-//!   {site}_{account}_{field}
-//!   e.g.  google_work_user  /  google_work_pass  /  google_work_totp
-//!         google_home_user  /  google_home_pass
+//! credentials.toml format:
+//!   [google_work]
+//!   user = "work@company.com"
+//!   pass = "mypassword"
+//!   totp = "BASE32SEED"        # optional
 //!
-//! The agent constructs the full key name from the account_id parameter,
-//! so the model never sees the raw value at any point.
+//!   [hsbc_main]
+//!   user = "myuser"
+//!   pass = "mypass"
+//!
+//! Placeholder syntax
+//! ------------------
+//!   ${SECRET:google_work_user}   resolved to the real value at execution time
+//!   ${TOTP:google_work_totp}     computes current 6-digit TOTP code locally
 
 use evo_policy::Vault;
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
+use std::path::Path;
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -60,6 +67,60 @@ pub fn resolve(text: &str, vault: &Vault) -> Resolved {
         }
     } else {
         Resolved::Plain
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Credential loader
+// ---------------------------------------------------------------------------
+
+/// Load secrets from both `vault.json` and `credentials.toml`.
+///
+/// `credentials.toml` entries take priority over `vault.json` for the same
+/// key, so users can override programmatically-added secrets by editing the
+/// file directly.
+///
+/// `vault_path` is the path to `vault.json`; `credentials.toml` is expected
+/// in the same parent directory.
+pub async fn load_secrets(vault_path: &Path) -> Result<Vault, std::io::Error> {
+    let mut vault = Vault::load(vault_path).await?;
+
+    if let Some(dir) = vault_path.parent() {
+        let creds = dir.join("credentials.toml");
+        if creds.exists() {
+            let raw = tokio::fs::read_to_string(&creds).await?;
+            merge_credentials_toml(&raw, &mut vault);
+        }
+    }
+
+    Ok(vault)
+}
+
+/// Parse `credentials.toml` and upsert entries into `vault`.
+///
+/// Sections become key prefixes: `[google_work]` + `user = "x"` → key
+/// `google_work_user`. Top-level keys (outside any section) are also
+/// accepted and used verbatim.
+fn merge_credentials_toml(raw: &str, vault: &mut Vault) {
+    let Ok(table) = raw.parse::<toml::Table>() else {
+        return;
+    };
+    for (section, value) in &table {
+        match value {
+            // Grouped: [section] with user/pass/totp sub-keys
+            toml::Value::Table(sub) => {
+                for (field, v) in sub {
+                    if let toml::Value::String(s) = v {
+                        vault.upsert(&format!("{section}_{field}"), s);
+                    }
+                }
+            }
+            // Flat top-level: key = "value"
+            toml::Value::String(s) => {
+                vault.upsert(section, s);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -173,5 +234,50 @@ mod tests {
             resolve("${SECRET:site_pass}", &vault),
             Resolved::Value(_)
         ));
+    }
+
+    #[test]
+    fn credentials_toml_grouped_sections() {
+        let toml = r#"
+[google_work]
+user = "work@example.com"
+pass = "secret123"
+totp = "JBSWY3DPEHPK3PXP"
+
+[hsbc_main]
+user = "bankuser"
+pass = "bankpass"
+"#;
+        let mut vault = Vault::default();
+        merge_credentials_toml(toml, &mut vault);
+
+        assert_eq!(vault.get("google_work_user").map(|e| e.value.as_str()), Some("work@example.com"));
+        assert_eq!(vault.get("google_work_pass").map(|e| e.value.as_str()), Some("secret123"));
+        assert_eq!(vault.get("google_work_totp").map(|e| e.value.as_str()), Some("JBSWY3DPEHPK3PXP"));
+        assert_eq!(vault.get("hsbc_main_user").map(|e| e.value.as_str()), Some("bankuser"));
+    }
+
+    #[test]
+    fn credentials_toml_flat_keys() {
+        let toml = r#"
+my_api_key = "sk-abc123"
+another_key = "value"
+"#;
+        let mut vault = Vault::default();
+        merge_credentials_toml(toml, &mut vault);
+        assert_eq!(vault.get("my_api_key").map(|e| e.value.as_str()), Some("sk-abc123"));
+    }
+
+    #[test]
+    fn credentials_toml_overrides_vault() {
+        let mut vault = Vault::default();
+        vault.upsert("google_work_pass", "old_password");
+
+        let toml = r#"
+[google_work]
+pass = "new_password"
+"#;
+        merge_credentials_toml(toml, &mut vault);
+        assert_eq!(vault.get("google_work_pass").map(|e| e.value.as_str()), Some("new_password"));
     }
 }

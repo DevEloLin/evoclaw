@@ -1,13 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>EvoClaw — Self-evolving AI Agent · 自主进化 AI 智能体</title>
+  <title>EvoClaw — 自主进化 AI 智能体 · 本地网关</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+                   'Microsoft YaHei', system-ui, sans-serif;
       max-width: 820px;
       margin: 0 auto;
       padding: 2.5rem 1.5rem;
@@ -53,8 +54,8 @@
       padding-bottom: 1.5rem;
       border-bottom: 1px solid rgba(255,255,255,0.08);
     }
-    .tagline .en { display: block; color: #9ca3af; font-size: 0.875rem; }
-    .tagline .zh { display: block; color: #6b7280; font-size: 0.8rem; margin-top: 0.15rem; }
+    .tagline .zh { display: block; color: #9ca3af; font-size: 0.875rem; }
+    .tagline .en { display: block; color: #6b7280; font-size: 0.8rem; margin-top: 0.15rem; }
     .hint {
       color: #9ca3af;
       font-size: 0.875rem;
@@ -162,6 +163,32 @@
       font-weight: 600;
       margin-left: 0.5rem;
     }
+    details {
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1.5rem;
+    }
+    details summary {
+      cursor: pointer;
+      color: #9ca3af;
+      font-size: 0.85rem;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .feat-grid {
+      margin-top: 1rem;
+      font-size: 0.82rem;
+      color: #9ca3af;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem 1.5rem;
+    }
+    .feat-title { font-weight: 600; margin-bottom: 0.35rem; }
+    .feat-grid ul { margin: 0; padding-left: 1.1rem; line-height: 1.9; }
   </style>
 </head>
 <body>
@@ -177,65 +204,64 @@
 
     <h1>EvoClaw <span class="version">v1.0.1-beta.1</span></h1>
     <div class="tagline">
-      <span class="en">Self-evolving Personal AI Agent &mdash; Local Gateway</span>
       <span class="zh">自主进化个人 AI 智能体 &mdash; 本地网关</span>
+      <span class="en">Self-evolving Personal AI Agent &mdash; Local Gateway</span>
     </div>
 
     <p style="text-align:right;margin:-0.5rem 0 0.75rem;font-size:0.8rem;">
-      <a href="zh.html" style="color:#60a5fa;text-decoration:none;opacity:0.8;">中文版 →</a>
+      <a href="index.html" style="color:#60a5fa;text-decoration:none;opacity:0.8;">English →</a>
     </p>
 
     <div class="hint">
-      POST <code>/chat</code> with <code>Authorization: Bearer &lt;token&gt;</code>
-      &nbsp;&middot;&nbsp;
-      发送消息需在请求头附带 Bearer 令牌
+      在请求头中携带 <code>Authorization: Bearer &lt;令牌&gt;</code>
+      向 <code>POST /chat</code> 发送任务
     </div>
 
-    <details style="margin-bottom:1.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.75rem 1rem;">
-      <summary style="cursor:pointer;color:#9ca3af;font-size:0.85rem;user-select:none;list-style:none;display:flex;justify-content:space-between;align-items:center;">
-        <span>Features &amp; capabilities</span>
+    <details>
+      <summary>
+        <span>功能说明</span>
         <span style="font-size:0.7rem;opacity:0.5;">▼</span>
       </summary>
-      <div style="margin-top:1rem;font-size:0.82rem;color:#9ca3af;display:grid;grid-template-columns:1fr 1fr;gap:0.75rem 1.5rem;">
+      <div class="feat-grid">
         <div>
-          <div style="color:#60a5fa;font-weight:600;margin-bottom:0.35rem;">Agent Runtime</div>
-          <ul style="margin:0;padding-left:1.1rem;line-height:1.9;">
-            <li>Self-evolving YAML Skill Tree (EWMA lifecycle)</li>
-            <li>Reflection + distillation after every task</li>
-            <li>Append-only JSONL audit logs + replay</li>
-            <li>6-layer working memory (L0–L5)</li>
-            <li>5-trick token economy (≈⅓ naive cost)</li>
+          <div class="feat-title" style="color:#60a5fa;">智能体运行时</div>
+          <ul>
+            <li>自主进化 YAML 技能树（EWMA 生命周期）</li>
+            <li>每次任务后自动反思与技能提炼</li>
+            <li>仅追加 JSONL 审计日志 + 会话重放</li>
+            <li>6 层工作记忆（L0–L5）</li>
+            <li>5 重 Token 节省策略（约为原始成本⅓）</li>
           </ul>
         </div>
         <div>
-          <div style="color:#a78bfa;font-weight:600;margin-bottom:0.35rem;">Security</div>
-          <ul style="margin:0;padding-left:1.1rem;line-height:1.9;">
-            <li>Secret vault (chmod 600) — never sent to model</li>
-            <li>Pattern redaction: sk-*, ghp_*, JWT, high-entropy</li>
-            <li><code>credentials.toml</code> — edit with any text editor</li>
-            <li>Credential injection at Rust execution boundary</li>
-            <li>TOTP computed locally — seed never leaves machine</li>
-            <li><code>policy.toml</code> — per-tool allow/deny rules + pre-exec hooks</li>
+          <div class="feat-title" style="color:#a78bfa;">安全与隐私</div>
+          <ul>
+            <li>密钥保险库（chmod 600）——永不发送给模型</li>
+            <li>模式识别脱敏：sk-*、ghp_*、JWT、高熵串</li>
+            <li><code>credentials.toml</code>——文本编辑器直接编辑</li>
+            <li>凭证在 Rust 执行边界注入，模型只见占位符</li>
+            <li>TOTP 本地计算（HMAC-SHA1）——种子不离本机</li>
+            <li><code>policy.toml</code>——按工具配置允许/拒绝规则 + 执行前钩子</li>
           </ul>
         </div>
         <div>
-          <div style="color:#34d399;font-weight:600;margin-bottom:0.35rem;">Browser Automation</div>
-          <ul style="margin:0;padding-left:1.1rem;line-height:1.9;">
-            <li>Headless Chrome: navigate, click, type, screenshot</li>
-            <li>Persistent sessions — login once, reuse indefinitely</li>
-            <li>Lazy login detection — skips auth when session valid</li>
-            <li>Per-account Chrome profiles (chmod 700, isolated)</li>
-            <li>Auto TOTP · semi-auto SMS 2FA · no-2FA skip</li>
+          <div class="feat-title" style="color:#34d399;">浏览器自动化</div>
+          <ul>
+            <li>无头 Chrome：导航、点击、输入、截图、执行 JS</li>
+            <li>持久会话——首次登录后长期复用</li>
+            <li>懒登录检测——会话有效时直接跳过认证</li>
+            <li>账户隔离 Chrome Profile（chmod 700）</li>
+            <li>全自动 TOTP · 半自动短信码 · 无 2FA 自动跳过</li>
           </ul>
         </div>
         <div>
-          <div style="color:#fb923c;font-weight:600;margin-bottom:0.35rem;">Integrations</div>
-          <ul style="margin:0;padding-left:1.1rem;line-height:1.9;">
-            <li>17 model providers (9 CN + 8 intl + 3 local)</li>
-            <li>ACP — Claude Code, Codex, Cursor, Copilot…</li>
-            <li>MCP — GitHub, filesystem, Postgres, Brave…</li>
-            <li>Channels — Telegram, Slack, Discord</li>
-            <li>This local HTTP gateway</li>
+          <div class="feat-title" style="color:#fb923c;">集成与接入</div>
+          <ul>
+            <li>17 家模型厂商（9 国内 + 8 国际 + 3 本地）</li>
+            <li>ACP — Claude Code、Codex、Cursor、Copilot…</li>
+            <li>MCP — GitHub、文件系统、Postgres、Brave…</li>
+            <li>消息渠道 — Telegram、Slack、Discord</li>
+            <li>本地 HTTP 网关（即此页面）</li>
           </ul>
         </div>
       </div>
@@ -243,17 +269,17 @@
 
     <div class="row">
       <label>
-        <span style="min-width: 70px;">Token</span>
+        <span style="min-width: 52px;">令牌</span>
         <input id="tok" type="password" autocomplete="off"
-               placeholder="paste gateway token · 粘贴网关令牌">
+               placeholder="粘贴网关令牌">
       </label>
     </div>
-    <div id="session">Provider: —</div>
+    <div id="session">模型提供商：—</div>
 
     <textarea id="prompt"
-      placeholder="Type your message and press Send  ·  输入消息并点击发送  ·  /help for commands"></textarea>
+      placeholder="输入消息并按发送 · /help 查看命令列表"></textarea>
     <div class="row">
-      <button id="go">Send · 发送</button>
+      <button id="go">发送</button>
       <span id="meta" class="meta"></span>
     </div>
 
@@ -261,26 +287,26 @@
   </div>
 
   <script>
-    const out = document.getElementById('out');
-    const meta = document.getElementById('meta');
+    const out     = document.getElementById('out');
+    const meta    = document.getElementById('meta');
     const session = document.getElementById('session');
-    const tok = document.getElementById('tok');
+    const tok     = document.getElementById('tok');
 
     async function refreshSession() {
       const token = tok.value.trim();
-      if (!token) { session.textContent = 'Provider: —'; return; }
+      if (!token) { session.textContent = '模型提供商：—'; return; }
       try {
         const r = await fetch('/session', { headers: { 'Authorization': 'Bearer ' + token } });
-        if (!r.ok) { session.textContent = 'Provider: — (invalid token · 令牌无效)'; return; }
+        if (!r.ok) { session.textContent = '模型提供商：—（令牌无效）'; return; }
         const d = await r.json();
-        session.textContent = 'Provider: ' + (d.identity || d.provider || '—');
+        session.textContent = '模型提供商：' + (d.identity || d.provider || '—');
       } catch (_) {
-        session.textContent = 'Provider: — (gateway unreachable · 网关不可达)';
+        session.textContent = '模型提供商：—（网关不可达）';
       }
     }
 
     tok.addEventListener('change', refreshSession);
-    tok.addEventListener('blur', refreshSession);
+    tok.addEventListener('blur',   refreshSession);
 
     document.getElementById('go').addEventListener('click', async () => {
       const token = tok.value.trim();
@@ -289,26 +315,26 @@
       await refreshSession();
       const btn = document.getElementById('go');
       btn.disabled = true;
-      btn.textContent = 'Sending… · 发送中…';
+      btn.textContent = '发送中…';
       meta.textContent = '';
-      out.textContent = '';
+      out.textContent  = '';
       try {
         const t0 = performance.now();
-        const r = await fetch('/chat', {
-          method: 'POST',
+        const r  = await fetch('/chat', {
+          method:  'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-          body: JSON.stringify({ input })
+          body:    JSON.stringify({ input })
         });
         const ms = (performance.now() - t0).toFixed(0);
-        const d = await r.json();
-        meta.textContent = r.status + ' · ' + ms + ' ms · ' + (d.turns || 0) + ' turns · ' + (d.task_id || '');
-        out.textContent = d.final_text || JSON.stringify(d, null, 2);
+        const d  = await r.json();
+        meta.textContent = r.status + ' · ' + ms + ' ms · ' + (d.turns || 0) + ' 轮 · ' + (d.task_id || '');
+        out.textContent  = d.final_text || JSON.stringify(d, null, 2);
       } catch (e) {
-        meta.textContent = 'error · 错误';
-        out.textContent = String(e);
+        meta.textContent = '发生错误';
+        out.textContent  = String(e);
       } finally {
-        btn.disabled = false;
-        btn.textContent = 'Send · 发送';
+        btn.disabled    = false;
+        btn.textContent = '发送';
       }
     });
   </script>

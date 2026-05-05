@@ -1,6 +1,9 @@
 pub(crate) mod ask;
 pub(crate) mod browser;
+pub(crate) mod browser_profile;
+pub(crate) mod browser_session;
 pub(crate) mod listdir;
+pub(crate) mod login_detect;
 pub(crate) mod patch;
 pub(crate) mod read;
 pub(crate) mod secret_inject;
