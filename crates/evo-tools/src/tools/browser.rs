@@ -15,6 +15,7 @@ use chromiumoxide::page::ScreenshotParams;
 use evo_policy::Permission;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // browser_navigate
@@ -64,38 +65,35 @@ impl Tool for BrowserNavigate {
             .await?;
         }
 
-        let pool = POOL.lock().await;
-        let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
-        let session = pool.get(key).unwrap();
+        let page = {
+            let pool = POOL.lock().await;
+            let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
+            Arc::clone(&pool.get(key).unwrap().page)
+        };
 
-        session
-            .page
+        page
             .goto(a.url.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("navigate: {e}")))?;
-        session
-            .page
+        page
             .wait_for_navigation()
             .await
             .map_err(|e| ToolError::Internal(format!("wait: {e}")))?;
 
-        let final_url: String = session
-            .page
+        let final_url: String = page
             .evaluate("window.location.href")
             .await
             .map_err(|e| ToolError::Internal(format!("url: {e}")))?
             .into_value()
             .unwrap_or_else(|_| a.url.clone());
 
-        let title = session
-            .page
+        let title = page
             .get_title()
             .await
             .map_err(|e| ToolError::Internal(format!("title: {e}")))?
             .unwrap_or_default();
 
-        let text: String = session
-            .page
+        let text: String = page
             .evaluate("document.body ? document.body.innerText : ''")
             .await
             .map_err(|e| ToolError::Internal(format!("text: {e}")))?
@@ -173,16 +171,17 @@ impl Tool for BrowserScreenshot {
             .await?;
         }
 
-        let pool = POOL.lock().await;
-        let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
-        let session = pool.get(key).unwrap();
+        let page = {
+            let pool = POOL.lock().await;
+            let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
+            Arc::clone(&pool.get(key).unwrap().page)
+        };
 
         let params = ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
             .full_page(a.full_page.unwrap_or(false))
             .build();
-        let bytes = session
-            .page
+        let bytes = page
             .screenshot(params)
             .await
             .map_err(|e| ToolError::Internal(format!("screenshot: {e}")))?;
@@ -235,12 +234,13 @@ impl Tool for BrowserClick {
             .await?;
         }
 
-        let pool = POOL.lock().await;
-        let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
-        let session = pool.get(key).unwrap();
+        let page = {
+            let pool = POOL.lock().await;
+            let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
+            Arc::clone(&pool.get(key).unwrap().page)
+        };
 
-        session
-            .page
+        page
             .find_element(a.selector.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("find '{}': {e}", a.selector)))?
@@ -321,22 +321,22 @@ impl Tool for BrowserType {
             .await?;
         }
 
-        let pool = POOL.lock().await;
-        let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
-        let session = pool.get(key).unwrap();
+        let page = {
+            let pool = POOL.lock().await;
+            let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
+            Arc::clone(&pool.get(key).unwrap().page)
+        };
 
         if a.clear.unwrap_or(true) {
             let sel_json =
                 serde_json::to_string(&a.selector).unwrap_or_else(|_| format!("{:?}", a.selector));
-            let _ = session
-                .page
+            let _ = page
                 .evaluate(format!(
                     "(function(){{var el=document.querySelector({sel_json});if(el)el.value='';}})();"
                 ))
                 .await;
         }
-        session
-            .page
+        page
             .find_element(a.selector.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("find '{}': {e}", a.selector)))?
@@ -391,12 +391,13 @@ impl Tool for BrowserEval {
             .await?;
         }
 
-        let pool = POOL.lock().await;
-        let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
-        let session = pool.get(key).unwrap();
+        let page = {
+            let pool = POOL.lock().await;
+            let key = ctx.browser_profile.as_deref().unwrap_or("__ephemeral__");
+            Arc::clone(&pool.get(key).unwrap().page)
+        };
 
-        let result: Value = session
-            .page
+        let result: Value = page
             .evaluate(a.js.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("eval: {e}")))?

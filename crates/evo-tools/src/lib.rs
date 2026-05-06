@@ -267,13 +267,13 @@ impl ToolRegistry {
 
 /// Extract the policy-matching subject from tool args.
 ///
-/// For `bash`/`run_shell`: the `command` field.
+/// For `run_shell`: the `cmd` field (ShellArgs).
 /// For `write_file`/`read_file`/`patch_file`/`list_dir`: the `path` field.
 /// For `web_fetch`: the `url` field.
 /// For all other tools: empty string (rule still matches on tool name alone).
 fn extract_subject(tool: &str, args: &Value) -> String {
     let field = match tool {
-        "run_shell" | "bash" => "command",
+        "run_shell" => "cmd",
         "write_file" | "read_file" | "patch_file" | "list_dir" => "path",
         "web_fetch" => "url",
         _ => return String::new(),

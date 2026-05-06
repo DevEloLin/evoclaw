@@ -27,7 +27,7 @@ ok()   { echo "OK   $*"; }
 #             Telegram + Slack (Socket Mode) + Discord (Gateway WS) adapters
 # - evo-providers: OpenAI-compat + Anthropic + Copilot + ACP adapter (with /v1/models fetcher)
 # - evo-policy: permission ladder + cost engine + Vault/Redactor (PRD §13.4)
-# - evo-tools: 12 built-in tools (7 core + 5 headless browser) + browser session pool
+# - evo-tools: 12 registered tools (7 core + 5 headless browser); cap is ≤15 (PRD §43) + browser session pool
 #              (browser_session, browser_profile, login_detect, secret_inject modules)
 #              + credential injection (credentials.toml + TOTP auto-2FA) — max 15 (PRD §43)
 # Hard fail triggers at total > 24090 LOC (21900 target + 10% slack).

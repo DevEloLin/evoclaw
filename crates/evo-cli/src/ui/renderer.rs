@@ -335,7 +335,7 @@ impl UiRenderer {
             let rendered = render_markdown_plain(theme, &block.content, bw);
             let (_, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
             // Reserve: header(1) + bottom-rule(1) + task-line(1)
-            //        + input-box(4) + shortcut(1) = 8 lines.
+            //        + blank-separator(1) + input-box(3) + shortcut(1) = 8 lines.
             let max_content = (term_h as usize).saturating_sub(8).max(3);
 
             // Build the physical-line list first (a logical line from the
