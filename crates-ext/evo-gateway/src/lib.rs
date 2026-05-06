@@ -10,7 +10,7 @@
 //!   * CSP / X-Frame-Options / nosniff / no-referrer on the static page
 
 use evo_core::{ConversationRuntime, Memory, Session};
-use evo_policy::{BudgetCfg, CostEngine, Redactor, Vault};
+use evo_policy::{BudgetCfg, CostEngine, PolicyConfig, Redactor, Vault};
 use evo_providers::Provider;
 use evo_tools::{ToolContext, ToolRegistry};
 use serde::{Deserialize, Serialize};
@@ -351,9 +351,14 @@ pub async fn handle_chat<P: Provider>(
     let session = Session::open(&log_path).await?;
     let memory = Memory::at(cfg.memory_dir.clone());
     let cost = Arc::new(CostEngine::at(cfg.cost_log.clone(), BudgetCfg::default()));
+    let policy_path = cfg.workspace
+        .parent()
+        .map(|d| d.join("policy.toml"))
+        .unwrap_or_else(|| cfg.workspace.join("policy.toml"));
     let tool_ctx = ToolContext {
         workspace: cfg.workspace.clone(),
         allow_user_prompt: false,
+        policy: Some(Arc::new(PolicyConfig::load(&policy_path).await)),
         ..Default::default()
     };
     let mut runtime = ConversationRuntime::new(

@@ -9,6 +9,7 @@ use crate::ToolError;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use futures::StreamExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Session handle
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) struct BrowserSession {
     pub(crate) _browser: Browser,
-    pub(crate) page: chromiumoxide::Page,
+    pub(crate) page: Arc<chromiumoxide::Page>,
     /// Non-None when Chrome was started with a persistent `--user-data-dir`.
     #[allow(dead_code)]
     pub(crate) profile_dir: Option<PathBuf>,
@@ -71,7 +72,7 @@ pub(crate) async fn launch(profile_dir: Option<&Path>) -> Result<BrowserSession,
 
     Ok(BrowserSession {
         _browser: browser,
-        page,
+        page: Arc::new(page),
         profile_dir: profile_dir.map(Path::to_path_buf),
         _handle: handle,
     })

@@ -155,21 +155,35 @@ fn expand_home(s: &str) -> String {
 }
 
 /// Simple glob matching: `*` matches any sequence, `?` matches one char.
+/// O(m×n) DP — safe against adversarial patterns like `"***...***"`.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
     let pat: Vec<char> = pattern.chars().collect();
     let txt: Vec<char> = text.chars().collect();
-    glob_inner(&pat, &txt)
-}
+    let m = pat.len();
+    let n = txt.len();
 
-fn glob_inner(pat: &[char], txt: &[char]) -> bool {
-    match (pat.first(), txt.first()) {
-        (None, None) => true,
-        (None, Some(_)) => false,
-        (Some('*'), _) => (0..=txt.len()).any(|skip| glob_inner(&pat[1..], &txt[skip..])),
-        (Some('?'), Some(_)) => glob_inner(&pat[1..], &txt[1..]),
-        (Some('?'), None) | (Some(_), None) => false,
-        (Some(p), Some(t)) => p == t && glob_inner(&pat[1..], &txt[1..]),
+    // dp[i][j] = pat[..i] matches txt[..j]
+    let mut dp = vec![vec![false; n + 1]; m + 1];
+    dp[0][0] = true;
+
+    // A leading run of '*' matches empty text.
+    for i in 1..=m {
+        if pat[i - 1] == '*' {
+            dp[i][0] = dp[i - 1][0];
+        }
     }
+
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i][j] = match pat[i - 1] {
+                '*' => dp[i - 1][j] || dp[i][j - 1],
+                '?' => dp[i - 1][j - 1],
+                c => dp[i - 1][j - 1] && c == txt[j - 1],
+            };
+        }
+    }
+
+    dp[m][n]
 }
 
 #[cfg(test)]
