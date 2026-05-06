@@ -45,7 +45,9 @@ pub async fn run_pre_exec(hook: &HookDef, tool_name: &str, args: &Value) -> Poli
     };
 
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(&payload_bytes).await;
+        if let Err(e) = stdin.write_all(&payload_bytes).await {
+            warn!("hook: failed to write args to stdin of '{}': {e}", hook.command);
+        }
         // Drop closes stdin so the hook process can proceed.
     }
 
