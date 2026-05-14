@@ -203,38 +203,92 @@ impl Skill {
     }
 
     pub async fn save_yaml(&self, dir: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
-        let dir = dir.as_ref();
-        tokio::fs::create_dir_all(dir).await?;
-        let path = dir.join(format!("{}.yaml", self.id));
-        // Atomic write: render to a unique tmp sibling, then rename. POSIX
-        // `rename` is atomic on the same filesystem, so concurrent reflections
-        // for the same skill ID can no longer truncate each other's output.
-        let tmp = dir.join(format!(
-            "{}.yaml.tmp.{}.{}",
-            self.id,
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        let yaml_str = render_yaml(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        tokio::fs::write(&tmp, yaml_str).await?;
-        tokio::fs::rename(&tmp, &path).await?;
-        Ok(path)
+        self.save_with_ext(dir, "yaml", render_yaml).await
     }
 
     pub async fn load_yaml(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let text = tokio::fs::read_to_string(path).await?;
         parse_yaml(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
+
+    /// Save as Markdown with a YAML frontmatter block. Body is reserved for
+    /// human-readable notes and is left empty by the writer.
+    pub async fn save_md(&self, dir: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
+        self.save_with_ext(dir, "md", render_md).await
+    }
+
+    /// Load from a Markdown file with YAML frontmatter (`---\n…\n---\n<body>`).
+    /// The body is ignored — only the frontmatter populates the skill.
+    pub async fn load_md(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let text = tokio::fs::read_to_string(path).await?;
+        parse_md(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
+    async fn save_with_ext<F, E>(
+        &self,
+        dir: impl AsRef<Path>,
+        ext: &str,
+        render: F,
+    ) -> std::io::Result<std::path::PathBuf>
+    where
+        F: FnOnce(&Skill) -> Result<String, E>,
+        E: std::fmt::Display,
+    {
+        let dir = dir.as_ref();
+        tokio::fs::create_dir_all(dir).await?;
+        let path = dir.join(format!("{}.{ext}", self.id));
+        // Atomic write: render to a unique tmp sibling, then rename. POSIX
+        // `rename` is atomic on the same filesystem, so concurrent reflections
+        // for the same skill ID can no longer truncate each other's output.
+        let tmp = dir.join(format!(
+            "{}.{ext}.tmp.{}.{}",
+            self.id,
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let rendered = render(self).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+        })?;
+        tokio::fs::write(&tmp, rendered).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+        Ok(path)
+    }
 }
 
-/// JSON is a subset of YAML so we serialise as JSON for now (Phase 2 keeps deps small).
-pub fn render_yaml(skill: &Skill) -> Result<String, serde_json::Error> {
-    Ok(serde_json::to_string_pretty(skill)? + "\n")
+/// Render a skill as YAML.
+pub fn render_yaml(skill: &Skill) -> Result<String, serde_yaml::Error> {
+    serde_yaml::to_string(skill)
 }
 
+/// Parse a skill from YAML. JSON inputs also work (JSON is a YAML subset),
+/// preserving backward compatibility with the pre-0.9-serde_yaml format.
 pub fn parse_yaml(text: &str) -> Result<Skill, String> {
-    serde_json::from_str(text).map_err(|e| e.to_string())
+    serde_yaml::from_str(text).map_err(|e| e.to_string())
+}
+
+/// Render a skill as Markdown with a YAML frontmatter block.
+pub fn render_md(skill: &Skill) -> Result<String, serde_yaml::Error> {
+    let frontmatter = render_yaml(skill)?;
+    Ok(format!("---\n{frontmatter}---\n"))
+}
+
+/// Parse a Markdown skill file. Expects an opening `---` line, a YAML
+/// frontmatter block, a closing `---` line, then an optional body which is
+/// ignored. Plain YAML (no frontmatter) is also accepted as a fallback.
+pub fn parse_md(text: &str) -> Result<Skill, String> {
+    let trimmed = text.trim_start_matches('\u{feff}');
+    if let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) {
+        let end = rest
+            .find("\n---\n")
+            .or_else(|| rest.find("\n---\r\n"))
+            .or_else(|| rest.find("\n---"))
+            .ok_or_else(|| "markdown frontmatter missing closing '---'".to_string())?;
+        let frontmatter = &rest[..end];
+        parse_yaml(frontmatter)
+    } else {
+        // No frontmatter — fall back to treating the whole file as YAML.
+        parse_yaml(trimmed)
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +372,57 @@ mod tests {
         let back = Skill::load_yaml(&path).await.unwrap();
         assert_eq!(back.id, sk.id);
         assert!(matches!(back.state, SkillState::Draft));
+    }
+
+    #[tokio::test]
+    async fn md_round_trip_preserves_metadata() {
+        let mut p = std::env::temp_dir();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        p.push(format!("evo-skill-md-{stamp}"));
+        let sk = s();
+        let path = sk.save_md(&p).await.unwrap();
+        assert_eq!(path.extension().and_then(|s| s.to_str()), Some("md"));
+        let back = Skill::load_md(&path).await.unwrap();
+        assert_eq!(back.id, sk.id);
+        assert_eq!(back.name, sk.name);
+        assert!(matches!(back.state, SkillState::Draft));
+    }
+
+    #[test]
+    fn parse_md_ignores_body_after_frontmatter() {
+        let sk = s();
+        let frontmatter = render_yaml(&sk).unwrap();
+        let with_body = format!("---\n{frontmatter}---\n# Human notes\n\nIgnored content.\n");
+        let parsed = parse_md(&with_body).unwrap();
+        assert_eq!(parsed.id, sk.id);
+    }
+
+    #[test]
+    fn parse_md_falls_back_to_plain_yaml() {
+        let sk = s();
+        let yaml = render_yaml(&sk).unwrap();
+        // No `---` wrapper — should still parse.
+        let parsed = parse_md(&yaml).unwrap();
+        assert_eq!(parsed.id, sk.id);
+    }
+
+    #[test]
+    fn parse_md_rejects_unterminated_frontmatter() {
+        let bad = "---\nid: x\n";
+        assert!(parse_md(bad).is_err());
+    }
+
+    #[test]
+    fn parse_yaml_accepts_legacy_json_format() {
+        // Backward-compat: files written by the pre-serde_yaml renderer were
+        // JSON-as-YAML. They must still parse cleanly.
+        let sk = s();
+        let json = serde_json::to_string(&sk).unwrap();
+        let parsed = parse_yaml(&json).unwrap();
+        assert_eq!(parsed.id, sk.id);
     }
 
     #[test]
