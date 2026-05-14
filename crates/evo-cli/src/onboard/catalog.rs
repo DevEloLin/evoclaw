@@ -120,6 +120,15 @@ pub const PROVIDERS: &[ProviderProfile] = &[
     },
     // ---- Other International vendors (其他国际厂商) -----------------
     ProviderProfile {
+        id: "azure",
+        name: "Azure AI Foundry / Azure OpenAI",
+        base_url: "",
+        default_model: "",
+        key_url: Some("https://learn.microsoft.com/azure/ai-services/openai/how-to/create-resource"),
+        fallback: &[],
+        local: false,
+    },
+    ProviderProfile {
         id: "mistral",
         name: "Mistral AI",
         base_url: "https://api.mistral.ai/v1",
