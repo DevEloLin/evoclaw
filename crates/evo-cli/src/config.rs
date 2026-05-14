@@ -123,6 +123,10 @@ pub(crate) fn skills_dir() -> Result<PathBuf> {
     Ok(evoclaw_dir()?.join("skills"))
 }
 
+pub(crate) fn playbooks_dir() -> Result<PathBuf> {
+    Ok(evoclaw_dir()?.join("playbooks"))
+}
+
 pub(crate) fn memory_dir() -> Result<PathBuf> {
     Ok(evoclaw_dir()?.join("memory"))
 }
@@ -215,6 +219,7 @@ pub(crate) async fn ensure_layout() -> Result<()> {
     for sub in [
         "workspace",
         "skills",
+        "playbooks",
         "browser_profiles",
         "secrets",
         "plugins",

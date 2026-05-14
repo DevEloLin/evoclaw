@@ -1,0 +1,912 @@
+# UAE events daily digest — comprehensive multi-source playbook
+#
+# Scrapes 18 free, no-API-key, publicly accessible UAE events sources,
+# deduplicates fuzzy matches, classifies by category and emirate, scores
+# relevance, and renders a Markdown digest grouped by date and city.
+#
+# Install once (after running `evoclaw shell` at least once so the layout
+# is created):
+#   cp uae-events-daily.yaml ~/.evoclaw/playbooks/
+#
+# Optional Telegram credentials (only needed if telegram_push=true):
+#   ~/.evoclaw/secrets/credentials.toml
+#     [telegram]
+#     bot_token = "1234567:ABCDEF..."
+#     chat_id   = "123456789"
+#
+# Run on demand:
+#   evoclaw run --skill uae-events-daily \
+#     --param output_dir=$HOME/uae-events \
+#     --param lookahead_days=14 \
+#     --param telegram_push=false \
+#     --param min_relevance=0.4
+#
+# Schedule daily at 12:00 — see the `schedule:` section at the bottom.
+
+id: uae-events-daily
+name: UAE events — daily comprehensive digest (18 sources)
+description: >
+  Fetch today's and the next N days' events across all 7 UAE emirates from
+  18 free public sources (tourism boards, ticketing, editorial media,
+  cultural institutions, venues, community boards). Deduplicate using a
+  three-condition fuzzy match (title + date + venue), classify into 12
+  canonical categories, score by source consensus and metadata
+  completeness, then render a Markdown digest grouped by date and emirate.
+
+parameters:
+  - name: output_dir
+    description: Directory where the daily Markdown digest is written.
+    required: true
+    example: "~/uae-events"
+
+  - name: lookahead_days
+    description: How many days into the future to include (1..=30).
+    required: true
+    example: "14"
+
+  - name: telegram_push
+    description: '"true" to push the highlights to Telegram, else "false".'
+    required: false
+    example: "false"
+
+  - name: min_relevance
+    description: >
+      Minimum keep score (0.0..1.0). Events below this are dropped. Use 0.3
+      for liberal coverage, 0.5 balanced, 0.7 only big-name events.
+      Default 0.4.
+    required: false
+    example: "0.4"
+
+  - name: emirates
+    description: >
+      Comma-separated allowlist of emirates to include
+      (Dubai,Abu Dhabi,Sharjah,Ajman,Ras Al Khaimah,Fujairah,Umm Al Quwain).
+      Leave empty / omit to include all seven.
+    required: false
+    example: "Dubai,Abu Dhabi"
+
+# ──────────────────────────────────────────────────────────────────
+# Execution rules — the model reads this top-to-bottom as instructions.
+# ──────────────────────────────────────────────────────────────────
+steps: |
+
+  You are EvoClaw running the `uae-events-daily` skill. Follow every step
+  in order, tolerate per-source failures, and produce the Markdown file
+  + one-line stdout summary at the end.
+
+  ## STEP 0 — Bootstrap and date window
+
+  All times are computed in Asia/Dubai (UTC+4, no DST). Capture today,
+  end_date, the current weekday, and the current ISO timestamp once for
+  reuse in headers and filtering.
+
+  ```
+  $today          = run_shell("TZ=Asia/Dubai date +%Y-%m-%d")
+  $today_weekday  = run_shell("TZ=Asia/Dubai date +%A")
+  $end_date       = run_shell("TZ=Asia/Dubai date -v+{lookahead_days}d +%Y-%m-%d")
+                    # Linux: date -d \"+{lookahead_days} days\" +%Y-%m-%d
+  $now_iso        = run_shell("date -u +%Y-%m-%dT%H:%M:%SZ")
+  ```
+
+  Emirate allowlist parsing: if {emirates} is non-empty, split on `,`,
+  trim, and treat as a case-insensitive filter applied at STEP 4. If
+  empty/omitted, accept all 7.
+
+  ## STEP 1 — Fetch from 18 public sources in this exact order
+
+  GLOBAL RULES applied to every fetch:
+
+    1. **Failure tolerance** — On non-2xx, timeout (15s), or parse error,
+       log `"[source_id] FAIL: <reason>"` and CONTINUE. Never abort the
+       run because one source is down.
+    2. **Per-source cap** — Keep at most 50 events per source. If a source
+       returns more, keep the first 50 by ascending start date.
+    3. **HTML hygiene** — Ignore navigation, side ads, "related articles",
+       newsletter banners, footer links. Extract only the event card region.
+    4. **Date filter** — Drop any event whose start date falls outside
+       `[${today}, ${end_date}]`.
+    5. **Tally** — Maintain a per-source counter for the final summary line.
+    6. **Structured data first** — Whenever a page exposes JSON-LD
+       (`<script type="application/ld+json">` with `@type: "Event"` or
+       `ItemList`), prefer parsing that over visual HTML parsing.
+
+  ────────────────────────────────────────────────────────────────────────
+  ### GROUP A — Official tourism boards (canonical, slow updates)
+  ────────────────────────────────────────────────────────────────────────
+
+  #### 1A. visit_dubai
+  ```
+  GET https://www.visitdubai.com/en/events
+  GET https://www.visitdubai.com/en/events?page=2
+  GET https://www.visitdubai.com/en/events?page=3
+  ```
+  Stop paging when a page returns 0 cards. Cards typically contain:
+    title  : <h2>/<h3> in <article>
+    date   : <time datetime="..."> or "12 May 2026" / "12 May – 15 May 2026"
+    venue  : `Venue: …` label or `<span class*="venue">`
+    url    : <a> on title (prepend https://www.visitdubai.com if relative)
+    chips  : "Music"/"Family"/"Sports" → preliminary category hint
+
+  Default city: "Dubai" (override only when venue clearly names another emirate).
+
+  #### 1B. visit_abu_dhabi
+  ```
+  GET https://visitabudhabi.ae/en/things-to-do/events
+  ```
+  Same structural pattern as 1A. Default city: "Abu Dhabi" (also Al Ain, Yas).
+
+  #### 1C. dubai_calendar
+  ```
+  GET https://www.dubaicalendar.ae/en/events.html
+  ```
+  Official DCT Tourism calendar. Prefer JSON-LD `Event` objects if present
+  in `<script type="application/ld+json">`. Fields:
+    title  ← name
+    start  ← startDate / end ← endDate
+    venue  ← location.name
+    city   ← location.address.addressLocality
+    url    ← url
+
+  ────────────────────────────────────────────────────────────────────────
+  ### GROUP B — Ticketing and aggregators (best price/date data)
+  ────────────────────────────────────────────────────────────────────────
+
+  #### 1D. platinumlist
+  Primary:
+  ```
+  GET https://www.platinumlist.net/uae/upcoming-events
+  ```
+  If primary returns < 10 tiles, also fetch per-emirate:
+  ```
+  GET https://www.platinumlist.net/dubai/upcoming-events
+  GET https://www.platinumlist.net/abu-dhabi/upcoming-events
+  GET https://www.platinumlist.net/sharjah/upcoming-events
+  GET https://www.platinumlist.net/ras-al-khaimah/upcoming-events
+  ```
+  Tile fields:
+    title  : <h2>
+    date   : "Sun, 12 May 2026" or "12 May – 14 May 2026"
+    time   : "8:00 PM" if listed
+    venue  : line after the date
+    city   : sometimes embedded in venue
+    price  : `<span class*="price">` — "AED 150" / "AED 150 – 500";
+             absent/"Free" → free
+    url    : main anchor, normalize to absolute
+
+  Platinumlist has the BEST UAE price data — prefer its `price_aed` during
+  merge.
+
+  #### 1E. eventbrite_uae
+  Three city searches (Eventbrite public listings, no key required):
+  ```
+  GET https://www.eventbrite.com/d/united-arab-emirates--dubai/all-events/
+  GET https://www.eventbrite.com/d/united-arab-emirates--abu-dhabi/all-events/
+  GET https://www.eventbrite.com/d/united-arab-emirates--sharjah/all-events/
+  ```
+  Each page embeds events in `<script type="application/ld+json">` as
+  `Event` objects. PREFER that data. Fields (JSON-LD path):
+    name → title; startDate / endDate (ISO 8601);
+    location.name → venue; location.address.addressLocality → city;
+    offers[0].price → price_min; offers[0].priceCurrency → currency;
+    url → canonical event URL.
+  Convert non-AED currency at the rates in STEP 2.
+
+  #### 1F. headout
+  ```
+  GET https://www.headout.com/dubai-events/
+  GET https://www.headout.com/abu-dhabi-events/
+  ```
+  Headout aggregates tours + attractions + special events. Tile fields:
+    title  : event card title
+    date   : "From DD Month — TT Month" or "Daily until DD Month"
+    venue  : not always present (use city as fallback)
+    price  : starting-from price, usually in AED already
+    url    : tile anchor
+
+  Treat "Daily until …" as a recurring event — emit ONE record with
+  start = ${today}, end = the last date. Mark category as appropriate
+  (often "art" or "family").
+
+  #### 1G. bandsintown_dubai
+  ```
+  GET https://www.bandsintown.com/c/dubai-united-arab-emirates
+  GET https://www.bandsintown.com/c/abu-dhabi-united-arab-emirates
+  ```
+  Bandsintown lists international touring artists hitting UAE. Structured
+  HTML/JSON-LD with artist + venue + date. All events here are
+  category=music. Fields:
+    title  : artist name + " · Live" (synth if needed)
+    date   : ISO from JSON-LD
+    venue  : venue name + city
+    url    : event detail URL
+
+  #### 1H. residentadvisor_uae
+  ```
+  GET https://ra.co/events/ae
+  ```
+  Electronic music / club events. Tile fields:
+    title  : event/party name (often artist-led, e.g. "Solomun at Soho Garden")
+    date   : displayed top-of-card
+    venue  : "@" prefix in title, or separate field
+    city   : usually "Dubai" or "Abu Dhabi"
+    url    : tile anchor (prepend https://ra.co)
+
+  All RA events → category=music with subcategory hint "electronic".
+
+  ────────────────────────────────────────────────────────────────────────
+  ### GROUP C — Editorial media (curated, good categorisation)
+  ────────────────────────────────────────────────────────────────────────
+
+  #### 1I. timeout_dubai
+  ```
+  GET https://www.timeoutdubai.com/things-to-do
+  GET https://www.timeoutdubai.com/things-to-do/kids
+  GET https://www.timeoutdubai.com/nightlife
+  ```
+  Time Out structures content as editorial roundup articles. Two-level
+  crawl:
+    1. On each listing page, find article cards whose title contains
+       "events", "this week", "what's on", "weekend", "happening",
+       "things to do", "this month" — at most 3 articles per listing.
+    2. Fetch each article and extract individual events as sub-sections
+       (each typically has its own h2/h3 + venue + date + sometimes price).
+
+  Default city: "Dubai" (parse venue for refinement).
+
+  #### 1J. timeout_abu_dhabi
+  ```
+  GET https://www.timeoutabudhabi.com/things-to-do
+  GET https://www.timeoutabudhabi.com/things-to-do/kids
+  ```
+  Same two-level strategy as 1I. Default city: "Abu Dhabi".
+
+  #### 1K. gulfnews_whatson
+  ```
+  GET https://gulfnews.com/whats-on
+  ```
+  Gulf News editorial. Look for article cards under "Events" / "What's On"
+  rails. Often roundup articles — treat like Time Out (two-level).
+
+  #### 1L. khaleejtimes_events
+  ```
+  GET https://www.khaleejtimes.com/lifestyle/events
+  ```
+  Khaleej Times lifestyle section. Same editorial pattern — extract
+  upcoming items mentioned in articles.
+
+  ────────────────────────────────────────────────────────────────────────
+  ### GROUP D — Cultural institutions (high-quality, low volume)
+  ────────────────────────────────────────────────────────────────────────
+
+  #### 1M. louvre_abu_dhabi
+  ```
+  GET https://www.louvreabudhabi.ae/en/whats-on
+  ```
+  Museum exhibitions, talks, family programmes. City: "Abu Dhabi"
+  (Saadiyat). Default category: "art".
+
+  #### 1N. sharjah_art_foundation
+  ```
+  GET https://sharjahart.org/sharjah-art-foundation/programmes
+  ```
+  Exhibitions and programmes. City: "Sharjah". Default category: "art".
+
+  #### 1O. cultural_foundation_ad
+  ```
+  GET https://culturalfoundation.ae/en/whats-on
+  ```
+  Cultural Foundation Abu Dhabi (Al Hosn area) — heritage/art events.
+  City: "Abu Dhabi". Default category: "art" or "community".
+
+  ────────────────────────────────────────────────────────────────────────
+  ### GROUP E — Marquee venues (concerts, shows, fixed locations)
+  ────────────────────────────────────────────────────────────────────────
+
+  #### 1P. coca_cola_arena
+  ```
+  GET https://www.coca-cola-arena.com/events
+  ```
+  Dubai's largest indoor arena (City Walk). Concerts + family shows +
+  sports. All events: city="Dubai", venue="Coca-Cola Arena".
+
+  #### 1Q. etihad_arena
+  ```
+  GET https://etihadarena.ae/en/events
+  ```
+  Yas Island's premier venue. All events: city="Abu Dhabi" (Yas Island
+  is in Abu Dhabi emirate), venue="Etihad Arena".
+
+  #### 1R. dubai_opera
+  ```
+  GET https://www.dubaiopera.com/en-GB/whats-on
+  ```
+  Downtown Dubai opera/theatre/concerts. All events: city="Dubai",
+  venue="Dubai Opera", default category="theatre" or "music".
+
+  ────────────────────────────────────────────────────────────────────────
+  ### GROUP F — Community + niche aggregators (broad reach, lower quality)
+  ────────────────────────────────────────────────────────────────────────
+
+  #### 1S. coming_soon_uae
+  ```
+  GET https://www.coming-soon.ae/category/event
+  GET https://www.coming-soon.ae/category/event/page/2
+  ```
+  Community aggregator. Best for smaller emirates (Ajman, Fujairah, UAQ).
+  Card fields:
+    title  : <h2> with link
+    date   : "Date: 12 May 2026" or range
+    venue  : "Venue: …"
+    city   : "City: …" — explicit, best parsing
+    url    : detail page
+
+  #### 1T. meetup_uae
+  ```
+  GET https://www.meetup.com/find/?location=ae&source=EVENTS
+  ```
+  Community / tech / language exchange. Heavy client-side rendering but
+  server HTML includes title + date + group + city. FILTER: drop events
+  whose venue contains "Online" unless title clearly names a UAE city.
+
+  ## STEP 2 — Normalise every event into the canonical record
+
+  Internal representation (do NOT print this to the user):
+
+  ```json
+  {
+    "title":     "string",                  // raw, trimmed, original case
+    "title_n":   "string",                  // normalised, for dedup only
+    "venue":     "string",
+    "venue_n":   "string",                  // normalised, for dedup only
+    "city":      "Dubai|Abu Dhabi|Sharjah|Ajman|Ras Al Khaimah|Fujairah|Umm Al Quwain|Unknown",
+    "start_local": "YYYY-MM-DD HH:MM",      // Asia/Dubai
+    "end_local":   "YYYY-MM-DD HH:MM",      // optional
+    "price_aed":   "free|<min>|<min>-<max>|unknown",
+    "currency_src": "AED",                  // before conversion (for audit)
+    "category":  "music|sports|theatre|art|food|family|business|tech|community|kids|nightlife|wellness|other",
+    "subcategory": "string",                // optional, free-form (e.g. "electronic", "stand-up")
+    "url":       "canonical URL",
+    "sources":   ["visit_dubai"],           // list grows during merge
+    "score":     0.0..1.0                   // assigned at STEP 4
+  }
+  ```
+
+  ### Title normalisation (`title_n`) — for dedup only
+
+    1. lowercase
+    2. strip parenthetical suffixes:  "Concert (Postponed)" → "concert"
+    3. strip year suffixes:           "Expo 2026 Dubai" → "expo dubai"
+    4. strip common edition tags:     " - day 1", "- night 2", "feat. …",
+                                       "live in concert", "presents",
+                                       "ft.", "& friends", "world tour"
+    5. remove punctuation, collapse whitespace
+    6. transliterate any Arabic characters to Latin (best-effort)
+
+  ### Venue normalisation (`venue_n`) — for dedup only
+
+  Step 1 — basic cleanup:
+    1. lowercase
+    2. drop leading "the "
+    3. strip city suffix: "Dubai Opera, Dubai" → "dubai opera"
+    4. punctuation + whitespace cleanup
+
+  Step 2 — apply the venue alias table (canonical form on the right):
+
+  | Variants in the wild                                          | Canonical (`venue_n`)            |
+  |---------------------------------------------------------------|----------------------------------|
+  | "Coca-Cola Arena", "Coca Cola Arena", "Cocacola Arena", "Coke Arena", "City Walk Arena" | "coca-cola arena"            |
+  | "Etihad Arena", "Etihad Arena Yas Island", "Etihad Yas"        | "etihad arena"                  |
+  | "Dubai Opera", "Dubai Opera House", "DOH"                      | "dubai opera"                   |
+  | "Dubai World Trade Centre", "DWTC", "World Trade Centre Dubai" | "dubai world trade centre"      |
+  | "Mall of the Emirates", "MOE", "Mall of Emirates"              | "mall of the emirates"          |
+  | "The Dubai Mall", "Dubai Mall", "TDM"                          | "dubai mall"                    |
+  | "Expo City Dubai", "Expo 2020 Site", "Expo City"               | "expo city dubai"               |
+  | "Yas Marina Circuit", "Yas Marina", "YMC"                      | "yas marina circuit"            |
+  | "Yas Island", "Yas"                                            | "yas island"                    |
+  | "Saadiyat Cultural District", "Saadiyat"                       | "saadiyat cultural district"    |
+  | "Sharjah Performing Arts Academy", "SPAA"                      | "sharjah performing arts academy"|
+  | "House of Wisdom", "Sharjah House of Wisdom"                   | "house of wisdom"               |
+  | "Louvre Abu Dhabi", "Louvre AD"                                | "louvre abu dhabi"              |
+  | "Manarat Al Saadiyat", "Manarat"                               | "manarat al saadiyat"           |
+  | "NYUAD Arts Center", "NYU Abu Dhabi Arts Center"               | "nyuad arts center"             |
+  | "Soho Garden", "Soho Garden DXB", "Soho Garden Meydan"         | "soho garden"                   |
+  | "Madinat Jumeirah", "Madinat", "Souk Madinat"                  | "madinat jumeirah"              |
+
+  ### City normalisation (canonical names)
+
+  Always map to the canonical set; ignore noise like "UAE", "Emirate of …":
+
+  | Source variant                                                     | Canonical         |
+  |--------------------------------------------------------------------|-------------------|
+  | "Dubai", "Bur Dubai", "Deira", "Downtown Dubai", "Jumeirah",       |                   |
+  |   "Marina", "Dubai Marina", "JBR", "Palm Jumeirah", "Business Bay" | Dubai             |
+  | "Abu Dhabi", "Yas Island", "Saadiyat Island", "Saadiyat",          |                   |
+  |   "Al Ain", "Corniche", "Al Maryah Island"                         | Abu Dhabi         |
+  | "Sharjah", "Khorfakkan", "Kalba"                                   | Sharjah           |
+  | "Ajman"                                                            | Ajman             |
+  | "Ras Al Khaimah", "RAK", "RAS AL KHAIMAH"                          | Ras Al Khaimah    |
+  | "Fujairah"                                                         | Fujairah          |
+  | "Umm Al Quwain", "UAQ"                                             | Umm Al Quwain     |
+  | anything else / unparseable                                        | Unknown           |
+
+  Note: Yas Island, Saadiyat, Al Ain are all administratively in the
+  emirate of Abu Dhabi. Khorfakkan and Kalba are in Sharjah.
+
+  ### Time normalisation (start_local / end_local)
+
+    - All sources display in Asia/Dubai already EXCEPT Eventbrite JSON-LD
+      which is full ISO 8601 — convert UTC offsets to Asia/Dubai.
+    - If only a date is given, set time to "00:00" (treated as all-day).
+    - If "TBA", "TBC", "Coming soon", or unparseable → DROP the event.
+    - Date ranges (e.g. "12–15 May 2026"): start = first date 00:00,
+      end = last date 23:59.
+    - "Daily until …" (Headout): start = ${today} 00:00, end = last date.
+    - "Every Friday at 8 PM": pick the next Friday inside window; emit
+      ONE record (don't multiplex).
+
+  ### Price normalisation (price_aed)
+
+  Currency conversion table (rough, hand-tuned annually):
+    1 USD = 3.67 AED
+    1 EUR = 4.00 AED
+    1 GBP = 4.65 AED
+    1 INR = 0.044 AED
+    1 SAR = 0.98 AED
+    1 PHP = 0.065 AED
+    1 EGP = 0.075 AED
+
+  Rules:
+    - Round to nearest integer AED.
+    - "Free", "Complimentary", "Free Entry", "On the house", 0 → "free"
+    - Range: "{min}-{max}" if min < max, else "{min}"
+    - Empty / "Starting from" with no value / "Contact for price" → "unknown"
+    - "Tickets from AED X" → just "X" (treat as min)
+
+  ### Category mapping (12 canonical + free-form subcategory)
+
+  Apply in order. The first matching rule wins.
+
+  | If title or source-category contains (case-insensitive)                                  | Canonical    |
+  |-------------------------------------------------------------------------------------------|--------------|
+  | "kid", "children", "toddler", "baby", "family-friendly" with age range                    | kids         |
+  | "club", "rave", "DJ", "nightclub", "afterparty", "afters", "bottle service"               | nightlife    |
+  | "yoga", "pilates", "meditation", "wellness", "spa", "fitness", "retreat", "marathon"      | wellness     |
+  | "concert", "music", "live", "band", "gig", "festival" (music), "tour" + artist            | music        |
+  | "sport", "match", "race", "F1", "tennis", "cricket", "rugby", "football"                  | sports       |
+  | "theatre", "play", "drama", "opera", "ballet", "stand-up", "comedy"                       | theatre      |
+  | "exhibition", "gallery", "art", "museum", "biennial", "installation", "sculpture"         | art          |
+  | "food", "dining", "brunch", "supper", "tasting", "wine", "chef"                           | food         |
+  | "expo", "conference", "summit", "business", "networking", "trade show"                    | business     |
+  | "tech", "startup", "hackathon", "AI", "web3", "developer", "engineering"                  | tech         |
+  | "family" (when not kids), "community", "charity", "volunteer", "neighbourhood"            | family       |
+  | (anything else)                                                                            | other        |
+
+  Subcategory is an optional free-form hint:
+    music → "electronic" (RA source), "classical" (Dubai Opera classical
+            programme), "arabic" (e.g. Tarab nights), "rock", "jazz"
+    sports → "F1", "tennis", "football", "esports"
+    theatre → "stand-up", "ballet", "drama"
+
+  ## STEP 3 — Deduplicate across all 18 sources
+
+  Run a single O(N²) pass. For each pair (i,j) with i < j, mark as
+  duplicates if ALL THREE conditions hold:
+
+  ```
+  similarity(title_n_i, title_n_j)  >= 0.85
+  abs(start_local_i - start_local_j) <= 24 hours
+  similarity(venue_n_i, venue_n_j)  >= 0.80
+    OR (venue_n_i == "" XOR venue_n_j == "")    // tolerate missing on one side
+  ```
+
+  Similarity = **token-set ratio**: split both strings on whitespace
+  (after applying STEP 2 normalisation), build sets A and B; ratio =
+  |A ∩ B| / max(|A|, |B|). The model may approximate for obvious matches.
+
+  ### Source ranking (used for field-by-field merge)
+
+  Hand-tuned for UAE coverage quality:
+
+  | Rank | Source ID              | Strength                                |
+  |------|------------------------|-----------------------------------------|
+  |  1   | dubai_calendar         | Official DCT, JSON-LD when present      |
+  |  2   | visit_dubai            | Official Dubai tourism board            |
+  |  3   | visit_abu_dhabi        | Official AD DCT                         |
+  |  4   | platinumlist           | Best UAE prices, accurate dates         |
+  |  5   | eventbrite_uae         | JSON-LD, structured                     |
+  |  6   | dubai_opera            | First-party venue, exact dates          |
+  |  7   | coca_cola_arena        | First-party venue, exact dates          |
+  |  8   | etihad_arena           | First-party venue, exact dates          |
+  |  9   | louvre_abu_dhabi       | First-party institution                 |
+  | 10   | sharjah_art_foundation | First-party institution                 |
+  | 11   | cultural_foundation_ad | First-party institution                 |
+  | 12   | timeout_dubai          | Editor-curated, good categories         |
+  | 13   | timeout_abu_dhabi      | Editor-curated                          |
+  | 14   | gulfnews_whatson       | Editorial                               |
+  | 15   | khaleejtimes_events    | Editorial                               |
+  | 16   | headout                | Tour-flavoured, dates may be ranges     |
+  | 17   | bandsintown_dubai      | Music-specific, accurate                |
+  | 18   | residentadvisor_uae    | Music (electronic) only                 |
+  | 19   | coming_soon_uae        | Broad aggregator, lower quality         |
+  | 20   | meetup_uae             | Community-scale, online noise risk      |
+
+  ### Field-level merge rules (when duplicates found)
+
+    title       ← keep the LONGEST of the two (descriptive wins)
+    venue       ← prefer non-empty; if both, prefer longer
+    city        ← prefer non-"Unknown"; on disagreement, take higher-rank
+                  source's value
+    start_local ← earliest of the two
+    end_local   ← latest of the two (or none if both none)
+    price_aed   ← prefer NOT "unknown"; if both numeric, widen range
+                  (min of mins, max of maxes); PREFER Platinumlist's
+                  numeric over any other
+    category    ← any non-"other" beats "other"; on tie, take higher-rank
+    subcategory ← keep non-empty; if both, take higher-rank
+    url         ← rank by source list above (lower number = better)
+    sources     ← UNION of the two source lists
+
+  Single pass — no recursive merges.
+
+  ## STEP 4 — Score relevance and apply emirate filter
+
+  ### Relevance score (clamped to [0, 1])
+
+    +0.30   if `sources` has ≥ 2 entries          (multi-source signal)
+    +0.10   additional if `sources` has ≥ 3       (very strong signal)
+    +0.20   if `price_aed` != "unknown"
+    +0.20   if `category` != "other"
+    +0.15   if `venue` is non-empty AND len(venue) > 3
+    +0.10   if `city` != "Unknown"
+    +0.05   if `end_local` is set
+    -0.30   if `start_local` < now                (already started)
+    -0.20   if title matches spam regex:
+              /(%\s*off|deal|voucher|coupon|newsletter|subscribe|discount)/i
+    -0.10   if title is ALL CAPS AND len(title) > 30
+    -0.10   if title is shorter than 5 chars
+    -0.10   if category == "other" AND `sources` length == 1
+
+  Drop events with `score < {min_relevance}` (default 0.4).
+
+  ### Emirate filter
+
+  If {emirates} is set (non-empty), drop any event whose canonical `city`
+  is not in the allowlist. Comparison is case-insensitive. Use trim on
+  each token.
+
+  ## STEP 5 — Group, sort, render Markdown
+
+  File path: `{output_dir}/uae-events-${today}.md` (overwrite if exists).
+
+  ### Time buckets (in order)
+
+    1. "Today"        — start_local date == ${today}
+    2. "Tomorrow"     — start_local date == ${today} + 1d
+    3. "This weekend" — start_local date falls on Fri/Sat in +0..+6d
+                        AND not already in Today/Tomorrow
+                        (UAE cultural weekend = Fri + Sat)
+    4. "This week"    — within +2..+6 days, excluding weekend bucket
+    5. "Next week"    — within +7..+13 days
+    6. "Beyond"       — +14d and further (only if lookahead_days > 14)
+
+  Within each bucket: sort by `start_local` ASC; for ties on the same
+  minute, sort by `score` DESC (higher relevance first).
+
+  ### Per-bucket emirate sub-grouping
+
+  Within each time bucket, further group by canonical city in this
+  order, only emitting sub-headers when an emirate has any events:
+    Dubai → Abu Dhabi → Sharjah → Ras Al Khaimah → Ajman → Fujairah →
+    Umm Al Quwain → Unknown.
+
+  ### Category emoji legend (used in line prefixes)
+
+  | Category    | Emoji |
+  |-------------|-------|
+  | music       | 🎵    |
+  | sports      | ⚽    |
+  | theatre     | 🎭    |
+  | art         | 🎨    |
+  | food        | 🍽️    |
+  | family      | 👨‍👩‍👧    |
+  | business    | 💼    |
+  | tech        | 💻    |
+  | community   | 🤝    |
+  | kids        | 🧒    |
+  | nightlife   | 🪩    |
+  | wellness    | 🧘    |
+  | other       | ✨    |
+
+  ### Markdown template
+
+  ```markdown
+  # UAE events — ${today} (next {lookahead_days} days)
+
+  _Generated by EvoClaw at ${now_iso}. <N_total> events from <M> active sources after dedup._
+  _Min relevance: {min_relevance}. Emirate filter: {emirates_or_all}._
+
+  ## At a glance
+
+  | Category | Today | This week | Total |
+  |----------|------:|----------:|------:|
+  | 🎵 music | <a> | <b> | <c> |
+  | ⚽ sports | … | … | … |
+  | 🎭 theatre | … | … | … |
+  | … (one row per non-zero category) | | | |
+  | **All** | <X> | <Y> | <N_total> |
+
+  ## Per-source counts (raw → kept after dedup + scoring)
+  - visit_dubai:           <raw> → <kept>
+  - visit_abu_dhabi:       <raw> → <kept>
+  - dubai_calendar:        <raw> → <kept>
+  - platinumlist:          <raw> → <kept>
+  - eventbrite_uae:        <raw> → <kept>
+  - headout:               <raw> → <kept>
+  - bandsintown_dubai:     <raw> → <kept>
+  - residentadvisor_uae:   <raw> → <kept>
+  - timeout_dubai:         <raw> → <kept>
+  - timeout_abu_dhabi:     <raw> → <kept>
+  - gulfnews_whatson:      <raw> → <kept>
+  - khaleejtimes_events:   <raw> → <kept>
+  - louvre_abu_dhabi:      <raw> → <kept>
+  - sharjah_art_foundation:<raw> → <kept>
+  - cultural_foundation_ad:<raw> → <kept>
+  - coca_cola_arena:       <raw> → <kept>
+  - etihad_arena:          <raw> → <kept>
+  - dubai_opera:           <raw> → <kept>
+  - coming_soon_uae:       <raw> → <kept>
+  - meetup_uae:            <raw> → <kept>
+
+  ## Top picks (score ≥ 0.75, max 5)
+
+  - <emoji> **HH:MM** — **<Title>** at <Venue>, <City> · AED <price>
+    [details](<url>)
+
+  ---
+
+  ## Today (${today}, ${today_weekday})
+
+  ### Dubai
+
+  - <emoji> **HH:MM** · _<Category>_ · **<Title>**
+    <Venue> · AED <price> · [details](<url>)
+    _seen on: <sources joined by ", ">_
+
+  ### Abu Dhabi
+
+  - ...
+
+  ### Sharjah
+
+  - ...
+
+  ## Tomorrow ...
+
+  ## This weekend ...
+
+  ## This week ...
+
+  ## Next week ...
+
+  ## Beyond ...
+
+  ---
+  _Sources (18): Visit Dubai · Visit Abu Dhabi · Dubai Calendar · Platinumlist · Eventbrite · Headout · Bandsintown · Resident Advisor · Time Out Dubai · Time Out Abu Dhabi · Gulf News · Khaleej Times · Louvre Abu Dhabi · Sharjah Art Foundation · Cultural Foundation AD · Coca-Cola Arena · Etihad Arena · Dubai Opera · Coming Soon · Meetup. All public, no API keys required._
+  ```
+
+  ### Render rules
+
+    - Times in 24-hour HH:MM format.
+    - "00:00" → "All day".
+    - Price free → "free"; numeric → "AED 150" or "AED 150–500" (en-dash).
+    - Category italicised; title bolded; emoji at line start.
+    - Empty bucket → header followed by "_(none)_".
+    - Empty emirate inside a non-empty bucket → omit that sub-header.
+    - Truncate any individual event line to 300 chars.
+    - Top picks block omitted if no event scores ≥ 0.75.
+
+  Then call `write_file("{output_dir}/uae-events-${today}.md", <rendered>)`.
+
+  ## STEP 6 — Optional Telegram push
+
+  Run only if {telegram_push} == "true". Build a compact message:
+    - Header: "🇦🇪 UAE events — ${today}"
+    - "Today" section (no sub-headers, just bullet lines)
+    - "Tomorrow" section
+    - Footer: "_Full digest with <N> events: {output_dir}/uae-events-${today}.md_"
+
+  Drop the "seen on:" subline in the compact version. Cap at 3800 chars.
+
+  Send via `run_shell` + `curl` (web_fetch is GET-only):
+
+  ```
+  run_shell(
+    "curl -sS --max-time 15 -X POST "
+    "'https://api.telegram.org/bot${SECRET:telegram_bot_token}/sendMessage' "
+    "-d chat_id=${SECRET:telegram_chat_id} "
+    "-d parse_mode=Markdown "
+    "--data-urlencode text=\"<compact message>\""
+  )
+  ```
+
+  Curl failure → log only, don't fail the run. Markdown file is the
+  primary deliverable.
+
+  ## STEP 7 — One-line summary to stdout
+
+  ```
+  Saved <N_total> events to <output_dir>/uae-events-${today}.md.
+  By source: vd=<a> vad=<b> dc=<c> pl=<d> eb=<e> ho=<f> bt=<g> ra=<h>
+             tod=<i> toad=<j> gn=<k> kt=<l>
+             lo=<m> saf=<n> cfa=<o>
+             cca=<p> ea=<q> do=<r>
+             cs=<s> mu=<t>.
+  Deduplicated <X> pairs. Filter: emirates={emirates_or_all}.
+  Pushed Telegram: <yes|no|skipped>.
+  ```
+
+# ──────────────────────────────────────────────────────────────────
+# Implementation notes
+# ──────────────────────────────────────────────────────────────────
+notes: |
+
+  Cost per run
+  ------------
+  18 sources × ~5 KB HTML each ≈ ~100 KB raw input. After STEP 2 + STEP 3
+  the model emits ~30 KB Markdown.
+
+  - DeepSeek deepseek-chat:    ~$0.20
+  - Kimi moonshot-v1-32k:      ~$0.25
+  - Qwen qwen-plus:            ~$0.30
+  - GPT-4o-mini:               ~$0.70
+  - Claude 3.5 Sonnet:         ~$1.40
+  - GPT-4o:                    ~$2.60
+
+  Recommendation: use DeepSeek or Kimi for daily runs — structured
+  extraction does not need the strongest model.
+
+  Why these 18 sources
+  --------------------
+  - 3 official tourism boards → canonical truth (slow updates)
+  - 5 ticketing/aggregators → best price + date data
+  - 4 editorial outlets → curation + non-ticketed events
+  - 3 cultural institutions → museum quality, low volume
+  - 3 marquee venues → first-party accuracy
+  - 2 community aggregators → coverage for smaller emirates
+
+  All are free, no API keys, no authentication.
+
+  Rate-limit etiquette
+  --------------------
+  Skill runs once daily by default. Per source: 1-3 page fetches max.
+  Total: ~25 HTTP requests/day. Identify as
+    "Mozilla/5.0 (compatible; EvoClaw/1.0)"
+  Respect robots.txt; all 18 sources allow general crawling of public
+  listing pages.
+
+  HTML parsing fragility
+  ----------------------
+  HTML scraping breaks when sites redesign. Designed to degrade:
+  as long as 6+ sources work, the digest stays useful (~70% coverage
+  comes from the top half of the source list).
+
+  When a source consistently returns 0 events for 3+ days, either:
+    1. Update the selectors in this skill (test locally first)
+    2. Comment its fetch block out at the top of STEP 1
+  The digest will continue to work with the remaining sources.
+
+  Coverage matrix (best-covered emirate per source group)
+  -------------------------------------------------------
+  | Emirate         | Best covered by                                |
+  |-----------------|------------------------------------------------|
+  | Dubai           | Visit Dubai, Dubai Calendar, Platinumlist,     |
+  |                 | Coca-Cola Arena, Dubai Opera, ToD, RA, Headout |
+  | Abu Dhabi       | Visit Abu Dhabi, Etihad Arena, Louvre AD,      |
+  |                 | Cultural Foundation AD, Time Out AD, Headout   |
+  | Sharjah         | Platinumlist (Sharjah), Sharjah Art Foundation,|
+  |                 | Coming Soon, Eventbrite                        |
+  | Ajman           | Coming Soon, Eventbrite                        |
+  | Ras Al Khaimah  | Platinumlist (RAK), Coming Soon                |
+  | Fujairah        | Coming Soon (sparse)                           |
+  | Umm Al Quwain   | Coming Soon (very sparse, often 0)             |
+
+  Why no SQLite by default
+  ------------------------
+  Skill writes Markdown only. Trade-offs:
+    + Simple to inspect, diff, share, version-control
+    - No precise cross-day dedup (an event seen yesterday will reappear)
+    - No SQL queries ("show me all music events in May")
+
+  To add cross-day persistence, replace STEP 5's `write_file` with a
+  `sqlite_insert` step using:
+    INSERT OR IGNORE INTO events(id, …)
+    VALUES (sha256(title_n || start_local || venue_n), …)
+  Other steps stay unchanged.
+
+  Cross-day comparison without SQLite
+  -----------------------------------
+  ```
+  diff -u ~/uae-events/uae-events-2026-05-13.md \
+          ~/uae-events/uae-events-2026-05-14.md
+  ```
+  Or pipe through `git`:
+  ```
+  cd ~/uae-events && git init && git add . && git commit -m "snap"
+  # next day's run: git diff HEAD --stat
+  ```
+
+  ToS reminder
+  ------------
+  All 18 sources are public web pages. Personal/local aggregation is
+  generally tolerated. Commercial redistribution requires per-source
+  licensing — particularly:
+    - Platinumlist (commercial ticketing)
+    - Eventbrite, Headout (commercial platforms)
+    - Bandsintown, Resident Advisor (artist-rights aware)
+    - Gulf News, Khaleej Times (publisher copyright)
+  Respect robots.txt and throttle politely.
+
+  Privacy
+  -------
+  No personal data flows through this skill. The only secrets touched
+  are the optional Telegram bot token + chat_id — never sent to the
+  LLM (resolved by EvoClaw's secret-injection layer at the tool
+  boundary).
+
+# ──────────────────────────────────────────────────────────────────
+# launchd snippet — daily run at 12:00 Asia/Dubai
+# ──────────────────────────────────────────────────────────────────
+schedule: |
+
+  Save as ~/Library/LaunchAgents/com.evoclaw.uae-events.plist:
+
+  ```xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.evoclaw.uae-events</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/sh</string>
+      <string>-c</string>
+      <string>/usr/local/bin/evoclaw run --skill uae-events-daily --param output_dir=$HOME/uae-events --param lookahead_days=14 --param telegram_push=false --param min_relevance=0.4</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+      <key>Hour</key>   <integer>12</integer>
+      <key>Minute</key> <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/evoclaw-uae-events.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/evoclaw-uae-events.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>TZ</key><string>Asia/Dubai</string>
+    </dict>
+  </dict>
+  </plist>
+  ```
+
+  Activate:
+    launchctl load ~/Library/LaunchAgents/com.evoclaw.uae-events.plist
+
+  Disable temporarily:
+    launchctl unload ~/Library/LaunchAgents/com.evoclaw.uae-events.plist
+
+  Run-on-demand once for testing:
+    launchctl start com.evoclaw.uae-events
+
+  Or test interactively before scheduling:
+    evoclaw run --skill uae-events-daily \\
+      --param output_dir=$HOME/uae-events \\
+      --param lookahead_days=14 \\
+      --param telegram_push=false \\
+      --param min_relevance=0.4
+
+  Filter to specific emirates only:
+    evoclaw run --skill uae-events-daily \\
+      --param output_dir=$HOME/uae-events \\
+      --param lookahead_days=14 \\
+      --param emirates="Dubai,Abu Dhabi"
