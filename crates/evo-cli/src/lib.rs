@@ -7,6 +7,7 @@ pub mod ui;
 
 pub(crate) mod commands;
 pub(crate) mod config;
+pub(crate) mod playbook;
 pub(crate) mod slash;
 pub(crate) mod task;
 pub(crate) mod terminal_ui;
@@ -47,8 +48,22 @@ struct Cli {
 enum Cmd {
     /// 5-minute setup: model, key, workspace, ~/.evoclaw layout
     Onboard,
-    /// Run a one-shot task (non-interactive)
-    Run { input: String },
+    /// Run a one-shot task (non-interactive).
+    ///
+    /// Two modes:
+    ///   evoclaw run "free-form prompt text"             ← ad-hoc prompt
+    ///   evoclaw run --skill <id> --param k=v --param …  ← playbook from
+    ///                                                     ~/.evoclaw/playbooks/
+    Run {
+        /// Playbook id to load from ~/.evoclaw/playbooks/<id>.{yaml,yml,md}.
+        #[arg(long)]
+        skill: Option<String>,
+        /// Playbook parameter overrides (repeatable). Format: --param k=v
+        #[arg(long = "param", value_name = "K=V")]
+        params: Vec<String>,
+        /// Free-form prompt text. Ignored when --skill is given.
+        input: Option<String>,
+    },
     /// Health check (config, model, fs)
     Doctor,
     /// Doctor sub-checks
@@ -162,9 +177,22 @@ enum DoctorCmd {
 
 #[derive(Subcommand, Debug)]
 enum SkillCmd {
+    /// List reflection-generated skills under ~/.evoclaw/skills/
     List,
+    /// Show a single reflection-generated skill's YAML body
     Show { id: String },
+    /// Render the skill tree index
     Tree,
+    /// List user-authored playbooks under ~/.evoclaw/playbooks/
+    Playbooks,
+    /// Show a single playbook's resolved fields
+    PlaybookShow { id: String },
+    /// Execute a playbook as a one-shot task. Use `--param k=v` per parameter.
+    Run {
+        id: String,
+        #[arg(long = "param", value_name = "K=V")]
+        params: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -221,7 +249,13 @@ pub async fn entry() -> Result<()> {
             SecretCmd::Remove { name } => secret::secret_remove(&name).await,
             SecretCmd::Test { input } => secret::secret_test(&input).await,
         },
-        Some(Cmd::Run { input }) => task::run_one_shot(&input).await,
+        Some(Cmd::Run { skill, params, input }) => match (skill, input) {
+            (Some(id), _) => skill::skill_run(&id, params).await,
+            (None, Some(text)) => task::run_one_shot(&text).await,
+            (None, None) => Err(eyre::eyre!(
+                "evoclaw run requires either a prompt or --skill <id>"
+            )),
+        },
         Some(Cmd::Doctor) => diag::doctor().await,
         Some(Cmd::DoctorOf(d)) => match d {
             DoctorCmd::Tokens => diag::doctor_tokens().await,
@@ -233,6 +267,9 @@ pub async fn entry() -> Result<()> {
             SkillCmd::List => skill::skill_list().await,
             SkillCmd::Show { id } => skill::skill_show(&id).await,
             SkillCmd::Tree => skill::skill_tree().await,
+            SkillCmd::Playbooks => skill::playbook_list().await,
+            SkillCmd::PlaybookShow { id } => skill::playbook_show(&id).await,
+            SkillCmd::Run { id, params } => skill::skill_run(&id, params).await,
         },
         Some(Cmd::Memory(m)) => match m {
             MemoryCmd::Search { query, limit } => skill::memory_search(&query, limit).await,
