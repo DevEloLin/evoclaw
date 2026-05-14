@@ -58,10 +58,12 @@ impl SkillTree {
         let mut entries = tokio::fs::read_dir(dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("yaml") {
-                continue;
-            }
-            if let Ok(sk) = Skill::load_yaml(&p).await {
+            let loaded = match p.extension().and_then(|s| s.to_str()) {
+                Some("yaml") | Some("yml") => Skill::load_yaml(&p).await.ok(),
+                Some("md") => Skill::load_md(&p).await.ok(),
+                _ => None,
+            };
+            if let Some(sk) = loaded {
                 nodes.push(SkillTreeNode::from(&sk));
             }
         }
@@ -216,6 +218,34 @@ mod tests {
         let t = SkillTree::rebuild_from_dir(&dir).await.unwrap();
         assert_eq!(t.nodes.len(), 1);
         assert_eq!(t.nodes[0].id, "s1");
+    }
+
+    #[tokio::test]
+    async fn rebuild_picks_up_md_files() {
+        let dir = unique_dir("pickup-md");
+        let s = mk_skill("md-1", "from md", 0.7, SkillState::Active, vec!["md"]);
+        s.save_md(&dir).await.unwrap();
+        let t = SkillTree::rebuild_from_dir(&dir).await.unwrap();
+        assert_eq!(t.nodes.len(), 1);
+        assert_eq!(t.nodes[0].id, "md-1");
+    }
+
+    #[tokio::test]
+    async fn rebuild_handles_mixed_yaml_and_md() {
+        let dir = unique_dir("mixed");
+        mk_skill("y1", "yaml one", 0.8, SkillState::Active, vec![])
+            .save_yaml(&dir)
+            .await
+            .unwrap();
+        mk_skill("m1", "md one", 0.6, SkillState::Active, vec![])
+            .save_md(&dir)
+            .await
+            .unwrap();
+        let t = SkillTree::rebuild_from_dir(&dir).await.unwrap();
+        assert_eq!(t.nodes.len(), 2);
+        let ids: std::collections::HashSet<_> = t.nodes.iter().map(|n| n.id.clone()).collect();
+        assert!(ids.contains("y1"));
+        assert!(ids.contains("m1"));
     }
 
     #[tokio::test]
