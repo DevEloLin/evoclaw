@@ -20,19 +20,19 @@ ok()   { echo "OK   $*"; }
 
 # Parallel arrays — bash 3.2 compatible (macOS default).
 # Caps reflect v1.0.1-beta.1 actual scope (multi-channel + headless browser tools):
-# - evo-cli: event-driven TUI + REPL + onboard wizard (21 providers) +
+# - evo-cli: event-driven TUI + REPL + onboard wizard (25 providers) +
 #            agent/mcp/secret subcommands + mcp_tools bridge + welcome banner + replay +
 #            Slack/Discord/Telegram channel commands
 # - evo-core: full learning loop (skill/memory/reflection/distillation/compression/skill_tree) +
 #             Telegram + Slack (Socket Mode) + Discord (Gateway WS) adapters
-# - evo-providers: OpenAI-compat + Anthropic + Copilot + ACP adapter (with /v1/models fetcher)
+# - evo-providers: OpenAI-compat + Anthropic + Copilot + ACP + Azure adapter (with /v1/models fetcher)
 # - evo-policy: permission ladder + cost engine + Vault/Redactor (PRD §13.4)
 # - evo-tools: 12 registered tools (7 core + 5 headless browser); cap is ≤15 (PRD §43) + browser session pool
 #              (browser_session, browser_profile, login_detect, secret_inject modules)
 #              + credential injection (credentials.toml + TOTP auto-2FA) — max 15 (PRD §43)
-# Hard fail triggers at total > 24090 LOC (21900 target + 10% slack).
+# Hard fail triggers at total > 24640 LOC (22400 target + 10% slack).
 crates=(evo-cli   evo-core evo-tools evo-providers evo-policy)
-caps=(  9000      5000     3200       2200          2000)
+caps=(  9000      5000     3200       2400          2000)
 core_total=0
 echo "== LOC budget =="
 for i in "${!crates[@]}"; do
@@ -50,8 +50,8 @@ for i in "${!crates[@]}"; do
   fi
   core_total=$((core_total + loc))
 done
-echo "core total: $core_total / 22200 LOC ($(( 100 * core_total / 22200 ))%)"
-(( core_total > 24420 )) && fail "core total > 22200 by >10%"
+echo "core total: $core_total / 22400 LOC ($(( 100 * core_total / 22400 ))%)"
+(( core_total > 24640 )) && fail "core total > 22400 by >10%"
 
 echo
 echo "== docs sync =="

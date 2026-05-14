@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod acp;
 pub mod anthropic;
+pub mod azure;
 pub mod browser;
 pub mod copilot;
 pub mod fingerprint;
@@ -15,6 +16,7 @@ pub mod openai;
 
 pub use acp::AcpProvider;
 pub use anthropic::AnthropicProvider;
+pub use azure::AzureProvider;
 pub use browser::{
     AuthMethod, BrowserAuthShape, BrowserProfile, BrowserProvider, BrowserShapeRepr,
 };
