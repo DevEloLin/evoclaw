@@ -11,7 +11,7 @@ use crate::{mcp_tools, onboard, ui};
 use evo_core::{ConversationRuntime, Memory, Session};
 use evo_policy::{BudgetCfg, CostEngine, PolicyConfig, Redactor, Vault};
 use evo_providers::{
-    AcpProvider, AnthropicProvider, AuthMethod, BrowserProvider, CopilotProvider,
+    AcpProvider, AnthropicProvider, AuthMethod, AzureProvider, BrowserProvider, CopilotProvider,
     OpenAiCompatProvider, Provider,
 };
 use evo_tools::{ToolContext, ToolRegistry};
@@ -68,6 +68,12 @@ pub(crate) async fn build_provider(cfg: &Config) -> Result<(Arc<dyn Provider>, b
                 "anthropic" => Arc::new(AnthropicProvider::new(api_key, cfg.model.default.clone()))
                     as Arc<dyn Provider>,
                 "copilot" => Arc::new(CopilotProvider::new(api_key, cfg.model.default.clone())),
+                "azure" => Arc::new(AzureProvider::new(
+                    cfg.model.base_url.clone(),
+                    api_key,
+                    cfg.model.default.clone(),
+                    None,
+                )),
                 _ => Arc::new(OpenAiCompatProvider::new(
                     cfg.model.base_url.clone(),
                     api_key,

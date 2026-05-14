@@ -125,7 +125,7 @@ async fn pick_provider_full_list() -> Result<ProviderChoice> {
         }
 
         if let Some(profile) = PROVIDERS.get(n - 1) {
-            if matches!(profile.id, "custom" | "litellm" | "private-gateway") {
+            if matches!(profile.id, "custom" | "litellm" | "private-gateway" | "azure") {
                 return prompt_gateway(profile.id);
             }
             return Ok(profile_to_choice(profile));
@@ -226,6 +226,17 @@ pub fn prompt_gateway(kind: &str) -> Result<ProviderChoice> {
             println!("  Supports both OpenAI models and Anthropic Claude models —");
             println!("  the correct Messages API endpoint is chosen automatically.");
         }
+        "azure" => {
+            println!("  Azure AI Foundry / Azure OpenAI setup");
+            println!("  ─────────────────────────────────────────────────────────────");
+            println!("  Azure OpenAI:  https://<resource>.openai.azure.com");
+            println!("    default_model = your deployment name (e.g. gpt-4o-prod)");
+            println!("  Azure AI Inference (non-OpenAI models):");
+            println!("    https://<resource>.services.ai.azure.com/models");
+            println!("    default_model = the model id (e.g. Mistral-large)");
+            println!();
+            println!("  api-key auth + api-version query are injected automatically.");
+        }
         _ => {
             println!("  Custom OpenAI-compatible endpoint setup");
             println!("  ─────────────────────────────────────────────────────────────");
@@ -234,12 +245,17 @@ pub fn prompt_gateway(kind: &str) -> Result<ProviderChoice> {
         }
     }
     println!();
-    let id = read_nonempty(&format!("provider id (kebab-case, e.g. {kind})"))?;
+    let id = if kind == "azure" {
+        "azure".to_string()
+    } else {
+        read_nonempty(&format!("provider id (kebab-case, e.g. {kind})"))?
+    };
     let base_url = read_nonempty("base_url (e.g. https://gateway.example.com/api/llm/v1)")?;
     let default_model = read_nonempty("default model (e.g. gpt-4o-mini or claude-opus-4-5)")?;
     let name = match kind {
         "litellm" => "LiteLLM Gateway".into(),
         "private-gateway" => "Private Gateway".into(),
+        "azure" => "Azure AI Foundry".into(),
         _ => "Custom".into(),
     };
     Ok(ProviderChoice {

@@ -24,6 +24,12 @@ pub struct OpenAiCompatProvider {
     api_key: String,
     pub model: String,
     client: reqwest::Client,
+    /// When `Some("api-key")`, send the key in that header instead of
+    /// `Authorization: Bearer`. Used by Azure OpenAI.
+    auth_header: Option<String>,
+    /// Extra URL query parameters appended to every request. Used by Azure
+    /// to inject `api-version`.
+    query_params: Vec<(String, String)>,
 }
 
 impl OpenAiCompatProvider {
@@ -37,10 +43,26 @@ impl OpenAiCompatProvider {
             api_key: api_key.into(),
             model: model.into(),
             client: reqwest::Client::new(),
+            auth_header: None,
+            query_params: Vec::new(),
         }
     }
 
-    fn endpoint(&self) -> String {
+    /// Send the API key in a custom header (e.g. `api-key`) instead of the
+    /// default `Authorization: Bearer`. Required by Azure OpenAI.
+    pub fn with_header_auth(mut self, header_name: impl Into<String>) -> Self {
+        self.auth_header = Some(header_name.into());
+        self
+    }
+
+    /// Append a query parameter to every request URL. Required by Azure
+    /// (`api-version=…`).
+    pub fn with_query(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.query_params.push((key.into(), value.into()));
+        self
+    }
+
+    pub(crate) fn endpoint(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }
 }
@@ -52,13 +74,15 @@ impl Provider for OpenAiCompatProvider {
         req: ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
         let body = build_body(&req);
-        let resp = self
-            .client
-            .post(self.endpoint())
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?;
+        let mut request = self.client.post(self.endpoint());
+        if !self.query_params.is_empty() {
+            request = request.query(&self.query_params);
+        }
+        request = match &self.auth_header {
+            Some(name) => request.header(name.as_str(), &self.api_key),
+            None => request.bearer_auth(&self.api_key),
+        };
+        let resp = request.json(&body).send().await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
@@ -324,6 +348,15 @@ mod tests {
     fn endpoint_strips_trailing_slash() {
         let p = OpenAiCompatProvider::new("https://api.example.com/v1/", "k", "m");
         assert_eq!(p.endpoint(), "https://api.example.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn azure_builders_set_auth_header_and_query() {
+        let p = OpenAiCompatProvider::new("https://x.openai.azure.com/openai/deployments/d", "k", "d")
+            .with_header_auth("api-key")
+            .with_query("api-version", "2024-08-01-preview");
+        assert_eq!(p.auth_header.as_deref(), Some("api-key"));
+        assert_eq!(p.query_params, vec![("api-version".to_string(), "2024-08-01-preview".to_string())]);
     }
 
     #[test]
