@@ -252,6 +252,8 @@ pub(crate) fn spawn_task(
 
 /// Runs the AI provider for a single task and returns `(usage_summary, model)`.
 /// All output goes through the `delta_tx` channel; nothing is printed to stdout.
+#[allow(clippy::too_many_arguments)] // Each arg is genuinely needed; bundling
+                                      // into a struct buys nothing semantically.
 async fn run_task_interactive(
     input: &str,
     provider: Arc<dyn Provider>,
@@ -317,11 +319,19 @@ async fn run_task_interactive(
         runtime.set_history(history_snapshot);
     }
 
-    let outcome = runtime.run(input).await?;
+    let run_result = runtime.run(input).await;
 
+    // Persist the updated history back to the REPL-wide store BEFORE
+    // returning, regardless of success/failure. On error the runtime still
+    // holds the partial conversation (user message + any assistant turns
+    // that completed before the failure) — losing that would mean the user
+    // can't ask "what went wrong?" in a follow-up because the assistant
+    // wouldn't even see the original question.
     if !is_acp {
         *shared_history.lock().await = runtime.take_history();
     }
+
+    let outcome = run_result?;
     let usage = &outcome.usage;
     let usage_summary = if usage.turns_with_usage == 0 {
         "unavailable".to_string()

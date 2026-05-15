@@ -185,6 +185,14 @@ pub trait Tool: Send + Sync + 'static {
     fn description(&self) -> &str;
     fn permission(&self) -> Permission;
     fn schema(&self) -> Value;
+    /// When `true`, the registry will NOT apply `smart_format`'s
+    /// `max_observation_chars` cap to this tool's output. Used by tools that
+    /// emit *instructions* (not observations) — e.g. `load_skill` returns a
+    /// skill body the agent must follow in full; truncating it silently
+    /// drops most of the steps.
+    fn skip_observation_truncation(&self) -> bool {
+        false
+    }
     async fn run(&self, ctx: &ToolContext, args: Value) -> Result<String, ToolError>;
     fn spec(&self) -> ToolSpec {
         ToolSpec {
@@ -261,7 +269,11 @@ impl ToolRegistry {
             }
         }
         let raw = tool.run(ctx, args).await?;
-        Ok(smart_format(&raw, ctx.max_observation_chars))
+        if tool.skip_observation_truncation() {
+            Ok(raw)
+        } else {
+            Ok(smart_format(&raw, ctx.max_observation_chars))
+        }
     }
 }
 

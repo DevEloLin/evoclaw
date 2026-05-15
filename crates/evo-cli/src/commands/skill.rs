@@ -24,10 +24,13 @@ pub(crate) async fn skill_list() -> Result<()> {
     );
     while let Some(entry) = entries.next_entry().await? {
         let p = entry.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("yaml") {
-            continue;
-        }
-        match Skill::load_yaml(&p).await {
+        let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let loaded = match ext {
+            "yaml" | "yml" => Skill::load_yaml(&p).await,
+            "md" => Skill::load_md(&p).await,
+            _ => continue,
+        };
+        match loaded {
             Ok(sk) => println!(
                 "{:<24} {:<10} {:>5.2} v{:<7} {}",
                 sk.id,
@@ -47,12 +50,21 @@ pub(crate) async fn skill_list() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn skill_show(id: &str) -> Result<()> {
-    let path = skills_dir()?.join(format!("{id}.yaml"));
-    let content = tokio::fs::read_to_string(&path)
-        .await
-        .wrap_err_with(|| format!("read {}", path.display()))?;
-    println!("{content}");
-    Ok(())
+    let dir = skills_dir()?;
+    for ext in ["yaml", "yml", "md"] {
+        let path = dir.join(format!("{id}.{ext}"));
+        if path.exists() {
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .wrap_err_with(|| format!("read {}", path.display()))?;
+            println!("{content}");
+            return Ok(());
+        }
+    }
+    Err(eyre::eyre!(
+        "skill '{id}' not found in {} (looked for .yaml / .yml / .md)",
+        dir.display()
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +93,7 @@ pub(crate) async fn playbook_list() -> Result<()> {
         println!("Drop a *.yaml or *.md file there with `id:`, `name:`, `steps:` fields.");
         return Ok(());
     }
-    println!("{:<28} {:<6} {}", "ID", "PARAMS", "NAME");
+    println!("{:<28} {:<6} NAME", "ID", "PARAMS");
     for pb in pbs {
         println!("{:<28} {:<6} {}", pb.id, pb.parameters.len(), pb.name);
     }
