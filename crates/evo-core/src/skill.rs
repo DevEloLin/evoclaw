@@ -278,11 +278,19 @@ pub fn render_md(skill: &Skill) -> Result<String, serde_yaml::Error> {
 pub fn parse_md(text: &str) -> Result<Skill, String> {
     let trimmed = text.trim_start_matches('\u{feff}');
     if let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) {
+        // Require a proper closing `---` on its own line (LF or CRLF).
+        // The previous fallback to bare `\n---` was too lenient — a YAML
+        // multi-line string containing the literal characters `\n---` would
+        // be wrongly treated as the frontmatter terminator, truncating
+        // the schema mid-way.
         let end = rest
             .find("\n---\n")
             .or_else(|| rest.find("\n---\r\n"))
-            .or_else(|| rest.find("\n---"))
-            .ok_or_else(|| "markdown frontmatter missing closing '---'".to_string())?;
+            // Tolerate a file that ends exactly with `\n---` and no trailing newline.
+            .or_else(|| if rest.ends_with("\n---") { Some(rest.len() - 4) } else { None })
+            .ok_or_else(|| {
+                "markdown frontmatter missing closing '---' on its own line".to_string()
+            })?;
         let frontmatter = &rest[..end];
         parse_yaml(frontmatter)
     } else {
@@ -413,6 +421,28 @@ mod tests {
     fn parse_md_rejects_unterminated_frontmatter() {
         let bad = "---\nid: x\n";
         assert!(parse_md(bad).is_err());
+    }
+
+    #[test]
+    fn parse_md_closing_marker_must_be_on_own_line() {
+        // Regression: an earlier fallback matched any `\n---` anywhere,
+        // including inside a YAML multi-line string — which silently
+        // truncated the frontmatter mid-field. The new closer must be on
+        // its own line (`\n---\n`, `\n---\r\n`, or trailing `\n---`).
+        //
+        // Inject `\n---inline` inside the description field's quoted value.
+        // The literal characters `\n` (backslash-n) inside a JSON-style
+        // YAML string become a real newline at parse time, so the rendered
+        // body actually contains a `\n---inline` substring — but it's NOT
+        // followed by EOL, so the tighter terminator check must reject it
+        // and find the REAL closing `---` on its own line below.
+        let mut sk = Skill::new_draft("s", "n", SkillKind::Sop, "t");
+        sk.description = "line1\n---inline still part of description".into();
+        let frontmatter = render_yaml(&sk).unwrap();
+        let md = format!("---\n{frontmatter}---\n");
+        let parsed = parse_md(&md).expect("should reach the genuine end marker");
+        assert_eq!(parsed.id, "s");
+        assert!(parsed.description.contains("---inline"));
     }
 
     #[test]
