@@ -12,7 +12,7 @@ use evo_core::{ConversationRuntime, Memory, Session};
 use evo_policy::{BudgetCfg, CostEngine, PolicyConfig, Redactor, Vault};
 use evo_providers::{
     AcpProvider, AnthropicProvider, AuthMethod, AzureProvider, BrowserProvider, CopilotProvider,
-    OpenAiCompatProvider, Provider,
+    Message, OpenAiCompatProvider, Provider,
 };
 use evo_tools::{ToolContext, ToolRegistry};
 use eyre::{Result, WrapErr};
@@ -20,6 +20,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Conversation history shared across REPL turns. The interactive event loop
+/// owns one instance, clones the Arc into every `spawn_task`, and the task
+/// runner copies it into the `ConversationRuntime` before `run()` so prior
+/// turns are visible to the model. After `run()` the updated history is
+/// written back. Cleared by the `/reset` slash command.
+pub(crate) type SharedHistory = Arc<tokio::sync::Mutex<Vec<Message>>>;
 
 // ---------------------------------------------------------------------------
 // Provider construction
@@ -153,6 +160,7 @@ pub(crate) fn spawn_task(
     session_log: std::path::PathBuf,
     ui_tx: tokio::sync::mpsc::Sender<ui::UiEvent>,
     ask_tx: tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<String>)>,
+    shared_history: SharedHistory,
 ) {
     let ts = chrono::Local::now().format("%H:%M:%S").to_string();
     let provider_label = cfg
@@ -194,6 +202,7 @@ pub(crate) fn spawn_task(
             &session_log,
             delta_raw_tx, // dropped here, closes delta_raw_rx
             ask_tx,
+            shared_history,
         )
         .await;
 
@@ -251,6 +260,7 @@ async fn run_task_interactive(
     log_path: &Path,
     delta_tx: tokio::sync::mpsc::UnboundedSender<String>,
     ask_tx: tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<String>)>,
+    shared_history: SharedHistory,
 ) -> Result<(String, String)> {
     ensure_layout().await?;
     let mut registry = ToolRegistry::with_builtins();
@@ -298,7 +308,20 @@ async fn run_task_interactive(
     .with_redactor(redactor)
     .with_delta_sender(delta_tx);
 
+    // Inject the REPL-wide conversation history so prior turns remain
+    // visible to the model. ACP providers manage history upstream — skip
+    // sync to avoid double-billing tokens (the runtime also clears on
+    // every ACP run as a safety net).
+    if !is_acp {
+        let history_snapshot = shared_history.lock().await.clone();
+        runtime.set_history(history_snapshot);
+    }
+
     let outcome = runtime.run(input).await?;
+
+    if !is_acp {
+        *shared_history.lock().await = runtime.take_history();
+    }
     let usage = &outcome.usage;
     let usage_summary = if usage.turns_with_usage == 0 {
         "unavailable".to_string()
