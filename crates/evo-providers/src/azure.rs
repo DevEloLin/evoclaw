@@ -23,8 +23,11 @@ use crate::{ChatRequest, OpenAiCompatProvider, Provider, ProviderError, StreamEv
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-/// Default Azure REST API version (GA-aligned, supports tool calling).
-pub const DEFAULT_API_VERSION: &str = "2024-08-01-preview";
+/// Default Azure REST API version — stable (GA) release, not preview.
+/// Many enterprise Azure tenants disable preview API versions for
+/// compliance reasons; a stable default keeps the adapter usable
+/// out-of-the-box. Users on cutting-edge resources can override.
+pub const DEFAULT_API_VERSION: &str = "2024-10-21";
 
 #[derive(Debug, Clone)]
 pub struct AzureProvider {
@@ -60,19 +63,31 @@ impl AzureProvider {
 }
 
 /// Compute the base URL whose `/chat/completions` suffix yields the right
-/// Azure wire URL. See the module docs for the three shapes recognised.
+/// Azure wire URL. Handles five user-facing shapes:
+///
+/// 1. Fully resolved deployment URL: `…/openai/deployments/<name>` → unchanged
+/// 2. Resource root: `https://x.openai.azure.com` → append `/openai/deployments/<dep>`
+/// 3. Resource root + `/openai`: `https://x.openai.azure.com/openai` →
+///    strip `/openai` then treat as case 2 (avoids `/openai/openai/...`)
+/// 4. Inference root: `https://x.services.ai.azure.com/models` → unchanged
+/// 5. Anything else → unchanged (user wired it manually)
 fn resolve_base_url(url: &str, deployment_or_model: &str) -> String {
     if url.contains("/openai/deployments/") {
-        // Fully resolved (user pasted the deployment path).
-        url.to_string()
-    } else if url.contains(".openai.azure.com") {
-        // Resource root for Azure OpenAI — append the deployment path.
-        format!("{url}/openai/deployments/{deployment_or_model}")
-    } else {
-        // Assume Azure AI Inference (`.services.ai.azure.com/models`) or a
-        // custom path the user has wired up themselves.
-        url.to_string()
+        return url.to_string();
     }
+    if url.contains(".openai.azure.com") {
+        // Normalise the `/openai` (or `/openai/`) suffix that some users
+        // paste from Azure docs, otherwise we'd produce
+        //   …/openai/openai/deployments/<dep>
+        // and Azure returns DeploymentNotFound.
+        let stripped = url
+            .strip_suffix("/openai/")
+            .or_else(|| url.strip_suffix("/openai"))
+            .unwrap_or(url);
+        return format!("{stripped}/openai/deployments/{deployment_or_model}");
+    }
+    // Inference endpoint or custom path — use verbatim.
+    url.to_string()
 }
 
 #[async_trait]
@@ -92,6 +107,18 @@ mod tests {
     #[test]
     fn resource_root_gets_deployment_appended() {
         let base = resolve_base_url("https://myrsc.openai.azure.com", "gpt-4o");
+        assert_eq!(base, "https://myrsc.openai.azure.com/openai/deployments/gpt-4o");
+    }
+
+    #[test]
+    fn resource_root_with_openai_suffix_does_not_double() {
+        // Regression: users sometimes paste the URL with "/openai" already
+        // appended (Azure docs show it that way). The previous resolver
+        // produced ".../openai/openai/deployments/..." → DeploymentNotFound.
+        let base = resolve_base_url("https://myrsc.openai.azure.com/openai", "gpt-4o");
+        assert_eq!(base, "https://myrsc.openai.azure.com/openai/deployments/gpt-4o");
+
+        let base = resolve_base_url("https://myrsc.openai.azure.com/openai/", "gpt-4o");
         assert_eq!(base, "https://myrsc.openai.azure.com/openai/deployments/gpt-4o");
     }
 

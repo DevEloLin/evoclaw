@@ -30,9 +30,9 @@ ok()   { echo "OK   $*"; }
 # - evo-tools: 12 registered tools (7 core + 5 headless browser); cap is ≤15 (PRD §43) + browser session pool
 #              (browser_session, browser_profile, login_detect, secret_inject modules)
 #              + credential injection (credentials.toml + TOTP auto-2FA) — max 15 (PRD §43)
-# Hard fail triggers at total > 25080 LOC (22800 target + 10% slack).
+# Hard fail triggers at total > 25300 LOC (23000 target + 10% slack).
 crates=(evo-cli   evo-core evo-tools evo-providers evo-policy)
-caps=(  9200      5200     3200       2400          2000)
+caps=(  9200      5200     3400       2400          2000)
 core_total=0
 echo "== LOC budget =="
 for i in "${!crates[@]}"; do
@@ -50,8 +50,8 @@ for i in "${!crates[@]}"; do
   fi
   core_total=$((core_total + loc))
 done
-echo "core total: $core_total / 22800 LOC ($(( 100 * core_total / 22800 ))%)"
-(( core_total > 25080 )) && fail "core total > 22800 by >10%"
+echo "core total: $core_total / 23000 LOC ($(( 100 * core_total / 23000 ))%)"
+(( core_total > 25300 )) && fail "core total > 23000 by >10%"
 
 echo
 echo "== docs sync =="

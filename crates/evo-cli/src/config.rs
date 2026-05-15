@@ -321,9 +321,9 @@ const POLICY_TEMPLATE: &str = r#"# EvoClaw policy — edit with any text editor 
 #
 # [deny]
 # bash = [
-#   "* .ssh*",          # block any bash command touching .ssh
+#   "*.ssh*",           # block any bash command touching .ssh (cat ~/.ssh/x, etc.)
 #   "rm -rf *",         # block destructive deletes
-#   "* gpg *",          # block GPG operations
+#   "* gpg *",          # block GPG operations (literal space + "gpg" + space)
 # ]
 # write_file = [
 #   "~/.ssh/**",        # block writes to SSH directory
@@ -345,7 +345,7 @@ const POLICY_TEMPLATE: &str = r#"# EvoClaw policy — edit with any text editor 
 
 [deny]
 bash = [
-    "* .ssh*",
+    "*.ssh*",
     "*~/.ssh*",
 ]
 "#;
