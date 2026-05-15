@@ -100,11 +100,19 @@ pub(crate) struct FastModeOpts {
     pub temperature: Option<f32>,
 }
 
-/// Apply caller-supplied fast-mode overrides onto a freshly-defaulted
-/// `RuntimeConfig`. Pulled out into a pure function so it has tests that
-/// don't need a real provider, config file, or network — see this module's
-/// `tests` block.
-pub(crate) fn apply_fast_mode_opts(
+/// Apply the *runtime-config* slice of `FastModeOpts` onto a freshly-
+/// defaulted `RuntimeConfig`.
+///
+/// **Scope**: only fields that live on `RuntimeConfig` — `reflection_enabled`,
+/// `max_turns`, `max_tokens`, `temperature`. The `no_tools` flag is NOT
+/// touched here; it's consumed separately in `channel_run_one_shot_text`
+/// where the tool registry is constructed (an empty `ToolRegistry::new()`
+/// vs the standard `with_builtins()` + MCP install).
+///
+/// This split exists because the `RuntimeConfig` overlay is pure (and
+/// thus unit-testable in isolation), while registry construction needs
+/// async MCP setup and a real `ToolRegistry`. Don't merge them.
+pub(crate) fn apply_fast_mode_runtime_cfg(
     cfg: &mut evo_core::runtime::RuntimeConfig,
     opts: &FastModeOpts,
 ) {
@@ -457,7 +465,7 @@ pub(crate) async fn channel_run_one_shot_text(
         channel_hint: Some(channel_format_hint(channel_kind)),
         ..Default::default()
     };
-    apply_fast_mode_opts(&mut runtime_cfg, opts);
+    apply_fast_mode_runtime_cfg(&mut runtime_cfg, opts);
     let mut runtime = ConversationRuntime::new(
         provider,
         registry,
@@ -560,7 +568,7 @@ mod tests {
     fn fast_mode_default_leaves_runtime_cfg_untouched() {
         let mut cfg = RuntimeConfig::default();
         let original = cfg.clone();
-        apply_fast_mode_opts(&mut cfg, &FastModeOpts::default());
+        apply_fast_mode_runtime_cfg(&mut cfg, &FastModeOpts::default());
         assert_eq!(cfg.reflection_enabled, original.reflection_enabled);
         assert_eq!(cfg.max_turns, original.max_turns);
         assert_eq!(cfg.max_tokens, original.max_tokens);
@@ -571,7 +579,7 @@ mod tests {
     fn fast_mode_no_reflection_flips_only_reflection() {
         let mut cfg = RuntimeConfig::default();
         let original_max_turns = cfg.max_turns;
-        apply_fast_mode_opts(
+        apply_fast_mode_runtime_cfg(
             &mut cfg,
             &FastModeOpts {
                 no_reflection: true,
@@ -588,7 +596,7 @@ mod tests {
     #[test]
     fn fast_mode_max_turns_override_applies() {
         let mut cfg = RuntimeConfig::default();
-        apply_fast_mode_opts(
+        apply_fast_mode_runtime_cfg(
             &mut cfg,
             &FastModeOpts {
                 max_turns: Some(1),
@@ -601,7 +609,7 @@ mod tests {
     #[test]
     fn fast_mode_max_tokens_override_applies() {
         let mut cfg = RuntimeConfig::default();
-        apply_fast_mode_opts(
+        apply_fast_mode_runtime_cfg(
             &mut cfg,
             &FastModeOpts {
                 max_tokens: Some(300),
@@ -614,7 +622,7 @@ mod tests {
     #[test]
     fn fast_mode_temperature_override_applies() {
         let mut cfg = RuntimeConfig::default();
-        apply_fast_mode_opts(
+        apply_fast_mode_runtime_cfg(
             &mut cfg,
             &FastModeOpts {
                 temperature: Some(0.7),
@@ -627,10 +635,10 @@ mod tests {
     #[test]
     fn fast_mode_all_overrides_compose() {
         // Lock down the "WeChat plugin recommended" configuration so any
-        // future refactor of `apply_fast_mode_opts` that drops a branch
+        // future refactor of `apply_fast_mode_runtime_cfg` that drops a branch
         // gets caught.
         let mut cfg = RuntimeConfig::default();
-        apply_fast_mode_opts(
+        apply_fast_mode_runtime_cfg(
             &mut cfg,
             &FastModeOpts {
                 no_reflection: true,
@@ -647,10 +655,33 @@ mod tests {
     }
 
     #[test]
+    fn fast_mode_runtime_cfg_does_not_consume_no_tools() {
+        // Documents the scope split: `apply_fast_mode_runtime_cfg` is the
+        // RuntimeConfig overlay only. `no_tools` lives in `FastModeOpts`
+        // because the CLI bundles all flags together, but its effect (an
+        // empty `ToolRegistry`) lands in `channel_run_one_shot_text`'s
+        // registry-construction branch. Setting it here must not mutate
+        // any RuntimeConfig field.
+        let mut cfg = evo_core::runtime::RuntimeConfig::default();
+        let original = cfg.clone();
+        apply_fast_mode_runtime_cfg(
+            &mut cfg,
+            &FastModeOpts {
+                no_tools: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(cfg.reflection_enabled, original.reflection_enabled);
+        assert_eq!(cfg.max_turns, original.max_turns);
+        assert_eq!(cfg.max_tokens, original.max_tokens);
+        assert_eq!(cfg.temperature, original.temperature);
+    }
+
+    #[test]
     fn fast_mode_max_turns_none_preserves_default() {
         let mut cfg = RuntimeConfig::default();
         let default_max_turns = cfg.max_turns;
-        apply_fast_mode_opts(
+        apply_fast_mode_runtime_cfg(
             &mut cfg,
             &FastModeOpts {
                 no_reflection: true, // unrelated flag
