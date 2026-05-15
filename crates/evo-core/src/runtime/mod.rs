@@ -164,6 +164,13 @@ pub struct ConversationRuntime<P: Provider + ?Sized> {
     /// Optional channel for forwarding streaming deltas to a UI renderer.
     /// Each message is the raw (pre-scrub) assistant text chunk.
     pub(crate) delta_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Conversation history persisted across `run()` invocations so the
+    /// agent remembers prior turns in a REPL session. The first entry is
+    /// the system prompt; subsequent entries are user / assistant / tool
+    /// messages added during each turn loop. Cleared explicitly via
+    /// `reset_history()` and re-cleared on every run when the provider is
+    /// an ACP agent (which owns its own history upstream).
+    pub(crate) history: Vec<Message>,
 }
 
 impl<P: Provider + ?Sized> ConversationRuntime<P> {
@@ -193,6 +200,7 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             distill_via_model: true,
             redactor: None,
             delta_tx: None,
+            history: Vec::new(),
         }
     }
 
@@ -202,6 +210,42 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
     pub fn with_delta_sender(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
         self.delta_tx = Some(tx);
         self
+    }
+
+    /// Runtime-time setter for the streaming-delta channel. Used in REPL
+    /// mode where the same `ConversationRuntime` instance is reused across
+    /// many tasks but each task has its own delta forwarding channel.
+    pub fn set_delta_sender(
+        &mut self,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) {
+        self.delta_tx = tx;
+    }
+
+    /// Clear conversation history. The next `run()` starts a fresh thread
+    /// (a new system prompt is prepended). Use this when the user types
+    /// `/reset` in the REPL or switches topics intentionally.
+    pub fn reset_history(&mut self) {
+        self.history.clear();
+    }
+
+    /// How many messages are currently in the conversation history,
+    /// including the system prompt. Useful for status displays and tests.
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Detach the conversation history. The runtime is left empty; the next
+    /// `run()` will start a fresh thread. Used by REPL drivers in other
+    /// crates that hold the shared history outside the runtime instance.
+    pub fn take_history(&mut self) -> Vec<Message> {
+        std::mem::take(&mut self.history)
+    }
+
+    /// Replace the conversation history with `history`. Used by REPL drivers
+    /// to restore a session-wide history before invoking `run()`.
+    pub fn set_history(&mut self, history: Vec<Message>) {
+        self.history = history;
     }
 
     pub fn with_cost_engine(mut self, cost: Arc<CostEngine>) -> Self {

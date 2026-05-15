@@ -17,7 +17,7 @@ use crate::commands::channel::channel_handler;
 use crate::commands::{agent, diag, gateway, mcp, secret, skill};
 use crate::config::{config_path, ensure_layout, init_logs_dir, load_config, session_log_path};
 use crate::slash::{handle_slash, SlashOutcome};
-use crate::task::{build_provider, print_banner, spawn_task};
+use crate::task::{build_provider, print_banner, spawn_task, SharedHistory};
 use crate::terminal_ui::history_path;
 use crate::theme::Theme;
 use clap::{Parser, Subcommand};
@@ -355,6 +355,13 @@ async fn interactive() -> Result<()> {
     // ask_user channel: tools → event loop (avoids raw-mode stdin conflict).
     let (ask_tx, mut ask_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, tokio::sync::oneshot::Sender<String>)>();
+
+    // Shared conversation history — REPL-wide so successive turns remember
+    // prior context. Each spawn_task receives a clone of the Arc; the task
+    // runner injects the snapshot into `ConversationRuntime` before `run()`
+    // and writes the updated history back when `run()` completes.
+    // Cleared by the `/reset` slash command.
+    let shared_history: SharedHistory = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let ask_bridge_tx = ui_tx.clone();
     tokio::spawn(async move {
         while let Some((prompt, resp_tx)) = ask_rx.recv().await {
@@ -488,6 +495,11 @@ async fn interactive() -> Result<()> {
                             return Ok(());
                         }
                         SlashOutcome::Reload => {
+                            // Switching providers invalidates accumulated
+                            // history — the new provider's system prompt
+                            // may differ and replaying old turns would mix
+                            // two threads. Clear and start fresh.
+                            *shared_history.lock().await = Vec::new();
                             cfg = load_config().await?;
                             match build_provider(&cfg).await {
                                 Ok((p, acp)) => {
@@ -517,6 +529,9 @@ async fn interactive() -> Result<()> {
                                     crossterm::terminal::enable_raw_mode().ok();
                                 }
                             }
+                        }
+                        SlashOutcome::ResetHistory => {
+                            *shared_history.lock().await = Vec::new();
                         }
                         SlashOutcome::Continue => {}
                     }
@@ -561,6 +576,7 @@ async fn interactive() -> Result<()> {
                         session_log.clone(),
                         ui_tx.clone(),
                         ask_tx.clone(),
+                        shared_history.clone(),
                     );
                     renderer.render(&state);
                 }
@@ -583,6 +599,7 @@ async fn interactive() -> Result<()> {
                         session_log.clone(),
                         ui_tx.clone(),
                         ask_tx.clone(),
+                        shared_history.clone(),
                     );
                 }
             }

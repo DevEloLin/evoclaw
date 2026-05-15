@@ -17,6 +17,10 @@ pub(crate) enum SlashOutcome {
     Continue,
     Exit,
     Reload,
+    /// Clear the REPL-wide conversation history. The next user turn starts
+    /// a fresh thread (a new system prompt is prepended). Used by `/reset`
+    /// and `/new`.
+    ResetHistory,
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +82,10 @@ pub(crate) async fn handle_slash(rest: &str) -> Result<SlashOutcome> {
             use std::io::Write as _;
             print!("\x1b[2J\x1b[H");
             std::io::stdout().flush().ok();
+        }
+        "reset" | "new" => {
+            println!("conversation history cleared — next turn starts a fresh thread");
+            return Ok(SlashOutcome::ResetHistory);
         }
         "doctor" => diag::doctor().await?,
         "tokens" => diag::doctor_tokens().await?,
@@ -164,6 +172,7 @@ pub(crate) fn print_help() {
     println!("  /replay [path]       pretty-print a session (latest by default)");
     println!("  /doctor              health check");
     println!("  /clear               clear screen");
+    println!("  /reset  /new         clear conversation history (start fresh thread)");
     println!("  /exit  /quit  /q     exit (also Ctrl-D, or Ctrl-C twice)");
     println!();
     println!("keyboard shortcuts:");
