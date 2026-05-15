@@ -41,6 +41,11 @@ pub struct Playbook {
     pub steps: String,
     #[serde(default)]
     pub notes: Option<String>,
+    /// Free-form scheduling hint (typically a launchd plist or crontab
+    /// snippet) shown to the user when they run `evoclaw skill playbook-show`.
+    /// EvoClaw itself does NOT execute this — the user installs it manually.
+    /// Kept around so playbook authors have a documented place to record
+    /// expected cadence alongside the rest of the spec.
     #[serde(default)]
     pub schedule: Option<String>,
 }

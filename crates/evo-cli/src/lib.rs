@@ -495,11 +495,22 @@ async fn interactive() -> Result<()> {
                             return Ok(());
                         }
                         SlashOutcome::Reload => {
-                            // Switching providers invalidates accumulated
-                            // history — the new provider's system prompt
-                            // may differ and replaying old turns would mix
-                            // two threads. Clear and start fresh.
-                            *shared_history.lock().await = Vec::new();
+                            // Refuse to clear shared_history while a task is
+                            // running or queued — the in-flight task already
+                            // holds a snapshot it will write back, and
+                            // queued tasks would read an empty history,
+                            // silently losing the user's context.
+                            if task_running || !task_queue.is_empty() {
+                                eprintln!(
+                                    "{warn}reload deferred — wait for {n} task(s) to finish, then retry{reset}",
+                                    warn = theme.warn(),
+                                    n = task_queue.len() + if task_running { 1 } else { 0 },
+                                    reset = theme.reset(),
+                                );
+                            } else {
+                                // Switching providers invalidates history.
+                                *shared_history.lock().await = Vec::new();
+                            }
                             cfg = load_config().await?;
                             match build_provider(&cfg).await {
                                 Ok((p, acp)) => {
@@ -531,7 +542,16 @@ async fn interactive() -> Result<()> {
                             }
                         }
                         SlashOutcome::ResetHistory => {
-                            *shared_history.lock().await = Vec::new();
+                            if task_running || !task_queue.is_empty() {
+                                eprintln!(
+                                    "{warn}/reset deferred — wait for {n} task(s) to finish, then retry{reset}",
+                                    warn = theme.warn(),
+                                    n = task_queue.len() + if task_running { 1 } else { 0 },
+                                    reset = theme.reset(),
+                                );
+                            } else {
+                                *shared_history.lock().await = Vec::new();
+                            }
                         }
                         SlashOutcome::Continue => {}
                     }

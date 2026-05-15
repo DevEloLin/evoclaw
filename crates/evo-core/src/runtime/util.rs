@@ -432,6 +432,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn acp_provider_detection_is_case_insensitive_and_trims() {
+        // Regression: previous `starts_with("acp:")` missed "ACP:claude",
+        // " acp:codex", and "Acp:Cursor" — those slipped through and
+        // accumulated history that the upstream ACP agent already tracks,
+        // double-billing tokens on every turn.
+        for pid in ["ACP:claude", " acp:codex", "Acp:Cursor", "  acp:gemini  "] {
+            let (provider, _slot) = RecordingProvider::new();
+            let registry = Arc::new(ToolRegistry::with_builtins());
+            let session = Session::open(unique_log()).await.unwrap();
+            let redactor = evo_policy::Redactor::from_vault(&evo_policy::Vault::default());
+            let mut rt = ConversationRuntime::new(
+                provider,
+                registry,
+                session,
+                ToolContext::default(),
+                RuntimeConfig {
+                    provider_id: Some(pid.into()),
+                    ..Default::default()
+                },
+            )
+            .with_redactor(redactor);
+            rt.run("first").await.unwrap();
+            let first = rt.history_len();
+            rt.run("second").await.unwrap();
+            assert_eq!(
+                first,
+                rt.history_len(),
+                "ACP provider id '{pid}' should not accumulate history",
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn acp_provider_does_not_accumulate_history() {
         let (provider, _slot) = RecordingProvider::new();
         let registry = Arc::new(ToolRegistry::with_builtins());
