@@ -377,6 +377,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn history_persists_across_runs_for_native_providers() {
+        let (provider, _slot) = RecordingProvider::new();
+        let registry = Arc::new(ToolRegistry::with_builtins());
+        let session = Session::open(unique_log()).await.unwrap();
+        let redactor = evo_policy::Redactor::from_vault(&evo_policy::Vault::default());
+        let mut rt = ConversationRuntime::new(
+            provider,
+            registry,
+            session,
+            ToolContext::default(),
+            RuntimeConfig::default(),
+        )
+        .with_redactor(redactor);
+        assert_eq!(rt.history_len(), 0, "fresh runtime has empty history");
+
+        rt.run("我叫李伟").await.unwrap();
+        let after_first = rt.history_len();
+        assert!(
+            after_first >= 3,
+            "after one run history should hold system+user+assistant (got {after_first})"
+        );
+
+        rt.run("我叫什么").await.unwrap();
+        let after_second = rt.history_len();
+        assert!(
+            after_second > after_first,
+            "second run must extend history, not reset it ({after_first} → {after_second})"
+        );
+        let serialised = serde_json::to_string(&rt.history).unwrap();
+        assert!(serialised.contains("我叫李伟"), "first user msg must persist");
+        assert!(serialised.contains("我叫什么"), "second user msg must persist");
+    }
+
+    #[tokio::test]
+    async fn history_resets_via_reset_history() {
+        let (provider, _slot) = RecordingProvider::new();
+        let registry = Arc::new(ToolRegistry::with_builtins());
+        let session = Session::open(unique_log()).await.unwrap();
+        let redactor = evo_policy::Redactor::from_vault(&evo_policy::Vault::default());
+        let mut rt = ConversationRuntime::new(
+            provider,
+            registry,
+            session,
+            ToolContext::default(),
+            RuntimeConfig::default(),
+        )
+        .with_redactor(redactor);
+
+        rt.run("first").await.unwrap();
+        assert!(rt.history_len() > 0);
+        rt.reset_history();
+        assert_eq!(rt.history_len(), 0, "reset_history clears all entries");
+    }
+
+    #[tokio::test]
+    async fn acp_provider_does_not_accumulate_history() {
+        let (provider, _slot) = RecordingProvider::new();
+        let registry = Arc::new(ToolRegistry::with_builtins());
+        let session = Session::open(unique_log()).await.unwrap();
+        let redactor = evo_policy::Redactor::from_vault(&evo_policy::Vault::default());
+        let mut rt = ConversationRuntime::new(
+            provider,
+            registry,
+            session,
+            ToolContext::default(),
+            RuntimeConfig {
+                provider_id: Some("acp:claude".into()),
+                ..Default::default()
+            },
+        )
+        .with_redactor(redactor);
+
+        rt.run("first").await.unwrap();
+        let len_after_first = rt.history_len();
+        rt.run("second").await.unwrap();
+        let len_after_second = rt.history_len();
+        assert_eq!(
+            len_after_first, len_after_second,
+            "ACP runs should not accumulate (each run resets to fresh)"
+        );
+    }
+
+    #[tokio::test]
     async fn max_turns_yields_error() {
         let provider = Arc::new(evo_mock_provider::MockProvider::looping_tool_call(
             "read_file",

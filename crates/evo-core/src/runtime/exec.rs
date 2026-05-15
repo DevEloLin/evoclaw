@@ -112,8 +112,24 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
             }
         }
 
-        let system_msg = Message::system(build_system_prompt(&self.prompt_ctx));
-        let mut history: Vec<Message> = vec![system_msg];
+        // Conversation history is now persisted on `self.history` across
+        // `run()` invocations so a REPL session remembers prior turns.
+        //
+        // ACP providers manage their own history upstream — keeping a
+        // parallel copy here would double-bill tokens, so we clear on every
+        // run for ACP. For native providers we accumulate.
+        let is_acp = self
+            .config
+            .provider_id
+            .as_deref()
+            .map_or(false, |p| p.starts_with("acp:"));
+        if is_acp {
+            self.history.clear();
+        }
+        if self.history.is_empty() {
+            self.history
+                .push(Message::system(build_system_prompt(&self.prompt_ctx)));
+        }
         // Model-mode user input: outbound to provider / ACP. Vault and
         // known-prefix patterns are still redacted; generic high-entropy
         // is not. See acp.md.
@@ -127,10 +143,10 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         let mut total_usage = RunUsage::default();
 
         while turn < self.config.max_turns {
-            history.push(next_user_payload.clone());
+            self.history.push(next_user_payload.clone());
 
             // PRD §42.5 — periodic tag-level compression of older history.
-            compress_if_due(&mut history, turn, self.compression_cfg);
+            compress_if_due(&mut self.history, turn, self.compression_cfg);
 
             // PRD §35 — pre-flight budget check. Soft warns are surfaced via
             // `tracing::warn!`; transient I/O errors are tolerated up to
@@ -165,7 +181,7 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
 
             let req = ChatRequest {
                 model: self.config.model.clone(),
-                messages: history.clone(),
+                messages: self.history.clone(),
                 tools: payload,
                 max_tokens: self.config.max_tokens,
                 temperature: self.config.temperature,
@@ -239,7 +255,7 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                     arguments: self.scrub_value_for_model(&c.arguments),
                 })
                 .collect();
-            history.push(Message {
+            self.history.push(Message {
                 role: evo_providers::Role::Assistant,
                 content: assistant_text_safe_model,
                 tool_calls: safe_calls_for_model,
