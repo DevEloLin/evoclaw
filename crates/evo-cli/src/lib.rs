@@ -17,7 +17,7 @@ use crate::commands::channel::channel_handler;
 use crate::commands::{agent, diag, gateway, mcp, secret, skill};
 use crate::config::{config_path, ensure_layout, init_logs_dir, load_config, session_log_path};
 use crate::slash::{handle_slash, SlashOutcome};
-use crate::task::{build_provider, print_banner, spawn_task, SharedHistory};
+use crate::task::{build_provider, print_banner, SharedHistory, TaskEnv};
 use crate::terminal_ui::history_path;
 use crate::theme::Theme;
 use clap::{Parser, Subcommand};
@@ -357,10 +357,10 @@ async fn interactive() -> Result<()> {
         tokio::sync::mpsc::unbounded_channel::<(String, tokio::sync::oneshot::Sender<String>)>();
 
     // Shared conversation history — REPL-wide so successive turns remember
-    // prior context. Each spawn_task receives a clone of the Arc; the task
-    // runner injects the snapshot into `ConversationRuntime` before `run()`
-    // and writes the updated history back when `run()` completes.
-    // Cleared by the `/reset` slash command.
+    // prior context. The `TaskEnv` built below clones the Arc into every
+    // spawned task; the task runner injects the snapshot into
+    // `ConversationRuntime` before `run()` and writes the updated history
+    // back when `run()` completes. Cleared by the `/reset` slash command.
     let shared_history: SharedHistory = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let ask_bridge_tx = ui_tx.clone();
     tokio::spawn(async move {
@@ -400,6 +400,20 @@ async fn interactive() -> Result<()> {
     // Task queue (serial execution model per PRD §5)
     let mut task_queue: std::collections::VecDeque<(String, String)> = Default::default();
     let mut task_running = false;
+
+    // Long-lived bundle of REPL state shared by every spawned task. Cloning
+    // is cheap (Arc + sender clones + Config Clone), and the struct removes
+    // the 9-arg call site that earlier needed `#[allow(too_many_arguments)]`.
+    // Mutated in place by `/reload` so subsequent tasks see the new provider.
+    let mut task_env = TaskEnv {
+        provider: provider.clone(),
+        is_acp,
+        cfg: cfg.clone(),
+        session_log: session_log.clone(),
+        ui_tx: ui_tx.clone(),
+        ask_tx: ask_tx.clone(),
+        shared_history: shared_history.clone(),
+    };
 
     // Main event loop
     loop {
@@ -516,6 +530,14 @@ async fn interactive() -> Result<()> {
                                 Ok((p, acp)) => {
                                     provider = p;
                                     is_acp = acp;
+                                    // Refresh the task env so subsequent
+                                    // spawn() calls see the new provider /
+                                    // config — otherwise the loop would keep
+                                    // dispatching against the old (possibly
+                                    // disconnected) provider.
+                                    task_env.provider = provider.clone();
+                                    task_env.is_acp = is_acp;
+                                    task_env.cfg = cfg.clone();
                                     crossterm::terminal::disable_raw_mode().ok();
                                     let prov_id = cfg
                                         .model
@@ -587,17 +609,7 @@ async fn interactive() -> Result<()> {
                     renderer.render(&state);
                 } else {
                     task_running = true;
-                    spawn_task(
-                        task_id.clone(),
-                        content.clone(),
-                        provider.clone(),
-                        is_acp,
-                        cfg.clone(),
-                        session_log.clone(),
-                        ui_tx.clone(),
-                        ask_tx.clone(),
-                        shared_history.clone(),
-                    );
+                    task_env.clone().spawn(task_id.clone(), content.clone());
                     renderer.render(&state);
                 }
                 continue;
@@ -610,17 +622,7 @@ async fn interactive() -> Result<()> {
                     task_running = true;
                     let queued_count = task_queue.len();
                     state.task.queued_count = queued_count;
-                    spawn_task(
-                        next_id,
-                        next_content,
-                        provider.clone(),
-                        is_acp,
-                        cfg.clone(),
-                        session_log.clone(),
-                        ui_tx.clone(),
-                        ask_tx.clone(),
-                        shared_history.clone(),
-                    );
+                    task_env.clone().spawn(next_id, next_content);
                 }
             }
 

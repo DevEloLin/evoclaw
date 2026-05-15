@@ -64,6 +64,19 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         );
 
         let task_id = format!("task-{}", Utc::now().format("%Y%m%dT%H%M%S%.3f"));
+        // ACP detection: trim+lowercase prefix check. Catches "ACP:claude",
+        // " acp:codex", "Acp:Cursor" etc. Used both for the JSONL audit
+        // `acp_agent` field and the history-reset branch below — keeping
+        // one normalisation prevents post-mortems where the audit says
+        // "native" but the runtime treated the run as ACP.
+        let acp_agent = self
+            .config
+            .provider_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| p.to_ascii_lowercase().starts_with("acp:"))
+            .map(|p| p[4..].to_string());
+        let is_acp = acp_agent.is_some();
         self.session
             .append(&SessionRecord::Task(TaskRecord {
                 task_id: task_id.clone(),
@@ -71,12 +84,7 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 source: "cli".into(),
                 model: self.config.model.clone(),
                 provider: self.config.provider_id.clone(),
-                acp_agent: self
-                    .config
-                    .provider_id
-                    .as_ref()
-                    .filter(|p| p.starts_with("acp:"))
-                    .map(|p| p.strip_prefix("acp:").unwrap_or(p).to_string()),
+                acp_agent,
                 mcp_servers: self.config.mcp_servers.clone(),
                 skills_used: Vec::new(), // Reserved for future reflection-stage backfill.
                                           // Today's audit trail relies on RecordedToolCall
@@ -116,20 +124,11 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
 
         // Conversation history is now persisted on `self.history` across
         // `run()` invocations so a REPL session remembers prior turns.
-        //
         // ACP providers manage their own history upstream — keeping a
         // parallel copy here would double-bill tokens, so we clear on every
-        // run for ACP. For native providers we accumulate.
-        // Robust ACP detection: trim whitespace, lowercase, then check prefix.
-        // Catches "ACP:claude", " acp:codex", "Acp:Cursor" etc. which would
-        // otherwise slip through and double-bill tokens against an upstream
-        // agent that maintains its own history.
-        let is_acp = self
-            .config
-            .provider_id
-            .as_deref()
-            .map(|p| p.trim().to_ascii_lowercase())
-            .is_some_and(|p| p.starts_with("acp:"));
+        // run for ACP. For native providers we accumulate. `is_acp` is
+        // derived from the same trim/lowercase detection used above for
+        // the JSONL `acp_agent` audit field.
         if is_acp {
             self.history.clear();
         }

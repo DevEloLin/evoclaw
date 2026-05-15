@@ -323,13 +323,24 @@ impl Tool for LoadSkillTool {
              Description: {}\n\n",
             id, pb.name, pb.description
         );
-        // INTENTIONALLY skip `smart_format` here: a loaded skill is the
-        // agent's instruction set, not a tool observation. Truncating it
-        // (8000-char default) would silently drop most of the steps for
-        // any non-trivial skill — UAE events digest is 40 KB. The model
-        // needs every step; let the provider-level context window handle
-        // overflow instead of clipping mid-step.
-        Ok(format!("{}{}", header, rendered))
+        // Skip the registry's 8 KB observation cap (a loaded skill is the
+        // agent's instruction set, not an observation), but still apply a
+        // larger safety net at the tool layer: a malicious or careless
+        // skill file could otherwise blow past the provider's context
+        // window in a single call. 64 KB covers every legitimate skill we
+        // ship (UAE events digest is ~40 KB) while bounding the worst case.
+        const MAX_SKILL_BODY_BYTES: usize = 64 * 1024;
+        if rendered.len() > MAX_SKILL_BODY_BYTES {
+            let truncated: String = rendered.chars().take(MAX_SKILL_BODY_BYTES).collect();
+            return Ok(format!(
+                "{header}{truncated}\n\n\
+                 [skill body truncated at {MAX_SKILL_BODY_BYTES} bytes — \
+                 original was {} bytes. Split the playbook into smaller \
+                 steps or load follow-up sections in a second call.]",
+                rendered.len()
+            ));
+        }
+        Ok(format!("{header}{rendered}"))
     }
 }
 
@@ -562,6 +573,33 @@ steps: |
         // Lock the contract: load_skill must NOT be truncated by the
         // registry. Otherwise a 40 KB skill body loses STEP 1B..STEP 7.
         assert!(LoadSkillTool.skip_observation_truncation());
+    }
+
+    #[tokio::test]
+    async fn oversize_skill_body_is_truncated() {
+        // Build a synthetic skill whose rendered body exceeds the 64 KB cap.
+        // The tool should return a body capped at 64 KB plus a clear marker.
+        let big_step: String = "x".repeat(70 * 1024);
+        let yaml = format!(
+            "id: big\nname: Big skill\ndescription: oversized\nparameters: []\nsteps: |\n  {big_step}\n"
+        );
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let evoclaw = std::env::temp_dir().join(format!("evo-tools-skill-big-{stamp}"));
+        let pb_dir = evoclaw.join("playbooks");
+        tokio::fs::create_dir_all(&pb_dir).await.unwrap();
+        tokio::fs::write(pb_dir.join("big.yaml"), yaml).await.unwrap();
+        let ctx = ToolContext {
+            evoclaw_dir: Some(evoclaw),
+            ..ToolContext::default()
+        };
+        let out = LoadSkillTool.run(&ctx, json!({"id": "big"})).await.unwrap();
+        assert!(out.contains("[skill body truncated"));
+        // Header (~200 bytes) + 64 KB body + truncation marker (~120 bytes).
+        // Hard upper bound generous enough to ignore header/marker drift.
+        assert!(out.len() < 64 * 1024 + 1024);
     }
 
     #[tokio::test]
