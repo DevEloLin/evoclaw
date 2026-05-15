@@ -75,7 +75,9 @@ pub(crate) async fn handle_slash(rest: &str) -> Result<SlashOutcome> {
         },
         "channel" => match args.as_slice() {
             [] | ["list"] => channel::channel_list().await?,
-            ["run", kind] => channel::channel_run(kind).await?,
+            ["run", kind] => {
+                channel::channel_run(kind, channel::FastModeOpts::default()).await?
+            }
             _ => println!("usage: /channel [list|run <kind>]   (built-in: local-pipe)"),
         },
         "clear" => {

@@ -212,7 +212,19 @@ pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
 }
 
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolRegistry {
+    /// Empty registry. Use when the agent should run without ANY tools —
+    /// e.g. tight-latency channels (WeChat 5s window) where a tool-call
+    /// round would blow the budget.
+    pub fn new() -> Self {
+        Self { tools: Vec::new() }
+    }
     pub fn with_builtins() -> Self {
         let tools = inventory::iter::<ToolFactory>()
             .map(|f| (f.build)())
@@ -409,6 +421,16 @@ mod tests {
         p.push(format!("evo-tools-{name}-{stamp}"));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn tool_registry_new_is_empty() {
+        // Used by `evo channel run --no-tools` so the model can't enter
+        // tool-call loops in latency-bounded channels (WeChat 5s window).
+        let r = ToolRegistry::new();
+        assert!(r.names().is_empty());
+        assert!(r.specs().is_empty());
+        assert_eq!(ToolRegistry::default().names().len(), 0);
     }
 
     #[test]
