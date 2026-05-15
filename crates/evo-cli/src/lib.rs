@@ -121,6 +121,29 @@ pub(crate) enum ChannelCmd {
     Run {
         #[arg(long)]
         kind: String,
+        /// Skip the reflection-round after each task. Trims 1-3s off the
+        /// per-message latency at the cost of skipping skill score updates.
+        /// Strongly recommended when the channel has a tight response
+        /// budget (e.g. the 5-second WeChat passive-reply window).
+        #[arg(long)]
+        no_reflection: bool,
+        /// Run with NO tools registered at all. Forces the model to answer
+        /// in a single turn — same fast-response rationale as
+        /// `--no-reflection`. When false, the registry keeps the standard
+        /// built-ins + any attached MCP tools.
+        #[arg(long)]
+        no_tools: bool,
+        /// Override `RuntimeConfig.max_turns` (default 25). Set to 1 with
+        /// `--no-tools` for the strict "answer once, return" mode.
+        #[arg(long)]
+        max_turns: Option<u64>,
+        /// Override `RuntimeConfig.max_tokens` (default 4096). Cap output
+        /// to keep replies short for SMS-like channels.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+        /// Override `RuntimeConfig.temperature` (default 0.2).
+        #[arg(long)]
+        temperature: Option<f32>,
     },
 }
 

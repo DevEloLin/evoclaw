@@ -65,8 +65,39 @@ pub(crate) async fn channel_handler(sub: crate::ChannelCmd) -> Result<()> {
         ChannelCmd::Status => channel_status().await,
         ChannelCmd::Add { kind } => channel_add(&kind).await,
         ChannelCmd::Remove { kind } => channel_remove(&kind).await,
-        ChannelCmd::Run { kind } => channel_run(&kind).await,
+        ChannelCmd::Run {
+            kind,
+            no_reflection,
+            no_tools,
+            max_turns,
+            max_tokens,
+            temperature,
+        } => {
+            channel_run(
+                &kind,
+                FastModeOpts {
+                    no_reflection,
+                    no_tools,
+                    max_turns,
+                    max_tokens,
+                    temperature,
+                },
+            )
+            .await
+        }
     }
+}
+
+/// Subset of `RuntimeConfig` fields that callers of `evo channel run` can
+/// override on the command line. Bundled into one struct so we don't have
+/// to update every signature when adding a new knob.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FastModeOpts {
+    pub no_reflection: bool,
+    pub no_tools: bool,
+    pub max_turns: Option<u64>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +248,7 @@ pub(crate) async fn channel_remove(kind: &str) -> Result<()> {
 // channel_run
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn channel_run(kind: &str) -> Result<()> {
+pub(crate) async fn channel_run(kind: &str, opts: FastModeOpts) -> Result<()> {
     use evo_core::channel::{ChannelAdapter, ChannelKind, OutboundKind, OutboundMessage};
     use evo_core::channel_router::{self, ChannelRouter};
     use evo_core::discord::DiscordAdapter;
@@ -278,7 +309,7 @@ pub(crate) async fn channel_run(kind: &str) -> Result<()> {
         }
         let conv_id = msg.conversation_id.clone();
         let ck = channel_kind.clone();
-        let reply = match channel_run_one_shot_text(&msg.text, &ck).await {
+        let reply = match channel_run_one_shot_text(&msg.text, &ck, &opts).await {
             Ok(text) => OutboundMessage {
                 conversation_id: conv_id,
                 text,
@@ -309,6 +340,7 @@ pub(crate) async fn channel_run(kind: &str) -> Result<()> {
 pub(crate) async fn channel_run_one_shot_text(
     input: &str,
     channel_kind: &evo_core::channel::ChannelKind,
+    opts: &FastModeOpts,
 ) -> Result<String> {
     let cfg = load_config().await?;
     ensure_layout().await?;
@@ -364,8 +396,18 @@ pub(crate) async fn channel_run_one_shot_text(
             }
         }
     };
-    let mut registry = ToolRegistry::with_builtins();
-    let _attached = mcp_tools::install_all(&mut registry).await;
+    // Empty registry when `--no-tools` is set so the model can't trigger
+    // multi-turn tool loops that blow past tight channel response budgets
+    // (e.g. WeChat's 5-second passive-reply deadline). Otherwise keep the
+    // standard built-ins + any attached MCP tools.
+    let mut registry = if opts.no_tools {
+        ToolRegistry::new()
+    } else {
+        ToolRegistry::with_builtins()
+    };
+    if !opts.no_tools {
+        let _attached = mcp_tools::install_all(&mut registry).await;
+    }
     let registry = Arc::new(registry);
     let task_id = format!("task-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f"));
     let log_path = logs_dir()?.join(format!("{task_id}.jsonl"));
@@ -383,20 +425,35 @@ pub(crate) async fn channel_run_one_shot_text(
     let memory = Memory::at(memory_dir()?);
     let vault = Vault::load(&vault_path()?).await.unwrap_or_default();
     let redactor = Redactor::from_vault(&vault);
+    // Start from the defaults so future RuntimeConfig fields keep working,
+    // then overlay any caller-supplied performance overrides.
+    let mut runtime_cfg = evo_core::runtime::RuntimeConfig {
+        model: cfg.model.default.clone(),
+        provider_id: cfg.model.provider.clone(),
+        mcp_servers: crate::slash::get_active_mcp_servers()
+            .await
+            .unwrap_or_default(),
+        channel_hint: Some(channel_format_hint(channel_kind)),
+        ..Default::default()
+    };
+    if opts.no_reflection {
+        runtime_cfg.reflection_enabled = false;
+    }
+    if let Some(n) = opts.max_turns {
+        runtime_cfg.max_turns = n;
+    }
+    if let Some(n) = opts.max_tokens {
+        runtime_cfg.max_tokens = n;
+    }
+    if let Some(t) = opts.temperature {
+        runtime_cfg.temperature = t;
+    }
     let mut runtime = ConversationRuntime::new(
         provider,
         registry,
         session,
         tool_ctx,
-        evo_core::runtime::RuntimeConfig {
-            model: cfg.model.default.clone(),
-            provider_id: cfg.model.provider.clone(),
-            mcp_servers: crate::slash::get_active_mcp_servers()
-                .await
-                .unwrap_or_default(),
-            channel_hint: Some(channel_format_hint(channel_kind)),
-            ..Default::default()
-        },
+        runtime_cfg,
     )
     .with_cost_engine(cost_engine)
     .with_memory(memory)
