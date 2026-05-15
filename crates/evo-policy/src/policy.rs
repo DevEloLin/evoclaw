@@ -199,8 +199,12 @@ mod tests {
     #[test]
     fn glob_star() {
         assert!(glob_match("cargo *", "cargo build --release"));
-        assert!(glob_match("* .ssh/*", "cat ~/.ssh/id_rsa"));
+        assert!(glob_match("*.ssh/*", "cat ~/.ssh/id_rsa"));
+        assert!(glob_match("*.ssh*", "cat ~/.ssh/id_rsa"));
         assert!(!glob_match("cargo *", "git status"));
+        // Whitespace IS significant inside a pattern — " .ssh" demands a
+        // literal space before ".ssh", which the SSH paths below do NOT have.
+        assert!(!glob_match("* .ssh*", "cat ~/.ssh/id_rsa"));
     }
 
     #[test]
@@ -212,7 +216,7 @@ mod tests {
     #[test]
     fn deny_beats_allow() {
         let mut cfg = PolicyConfig::default();
-        cfg.deny.tools.insert("bash".into(), vec!["* .ssh*".into()]);
+        cfg.deny.tools.insert("bash".into(), vec!["*.ssh*".into()]);
         cfg.allow.tools.insert("bash".into(), vec!["*".into()]);
         assert!(matches!(
             cfg.check_rules("bash", "cat ~/.ssh/id_rsa"),
