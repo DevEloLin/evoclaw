@@ -22,10 +22,10 @@ use std::sync::Arc;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Conversation history shared across REPL turns. The interactive event loop
-/// owns one instance, clones the Arc into every `spawn_task`, and the task
-/// runner copies it into the `ConversationRuntime` before `run()` so prior
-/// turns are visible to the model. After `run()` the updated history is
-/// written back. Cleared by the `/reset` slash command.
+/// owns one instance, the `TaskEnv` clones the Arc into every spawned task,
+/// and the task runner copies it into the `ConversationRuntime` before
+/// `run()` so prior turns are visible to the model. After `run()` the
+/// updated history is written back. Cleared by the `/reset` slash command.
 pub(crate) type SharedHistory = Arc<tokio::sync::Mutex<Vec<Message>>>;
 
 // ---------------------------------------------------------------------------
@@ -144,204 +144,195 @@ pub(crate) async fn print_banner(cfg: &Config) {
 }
 
 // ---------------------------------------------------------------------------
-// Task spawning
+// Task environment
 // ---------------------------------------------------------------------------
 
-/// Spawn a task that runs the AI provider and forwards streaming deltas and
-/// completion as `UiEvent`s. The task runs on the tokio thread pool; the
-/// caller's event loop is never blocked.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_task(
-    task_id: String,
-    content: String,
-    provider: Arc<dyn Provider>,
-    is_acp: bool,
-    cfg: Config,
-    session_log: std::path::PathBuf,
-    ui_tx: tokio::sync::mpsc::Sender<ui::UiEvent>,
-    ask_tx: tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<String>)>,
-    shared_history: SharedHistory,
-) {
-    let ts = chrono::Local::now().format("%H:%M:%S").to_string();
-    let provider_label = cfg
-        .model
-        .provider
-        .clone()
-        .unwrap_or_else(|| "default".into());
-
-    // Announce task start immediately (PRD §2: user message → task panel).
-    let _ = ui_tx.try_send(ui::UiEvent::AssistantStarted {
-        task_id: task_id.clone(),
-        provider: provider_label.clone(),
-        timestamp: ts,
-    });
-
-    tokio::spawn(async move {
-        let started = std::time::Instant::now();
-
-        // Create a delta forwarding channel.
-        let (delta_raw_tx, mut delta_raw_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let fwd_task_id = task_id.clone();
-        let fwd_tx = ui_tx.clone();
-        let fwd_handle = tokio::spawn(async move {
-            while let Some(delta) = delta_raw_rx.recv().await {
-                let _ = fwd_tx
-                    .send(ui::UiEvent::AssistantDelta {
-                        task_id: fwd_task_id.clone(),
-                        delta,
-                    })
-                    .await;
-            }
-        });
-
-        let result = run_task_interactive(
-            &content,
-            provider,
-            is_acp,
-            &cfg,
-            &session_log,
-            delta_raw_tx, // dropped here, closes delta_raw_rx
-            ask_tx,
-            shared_history,
-        )
-        .await;
-
-        // Wait for the forwarding task to drain all buffered deltas before
-        // sending AssistantDone. Without this, AssistantDone can race ahead
-        // of the final delta batch, leaving the streaming block empty or
-        // truncated when it is flushed to the scroll buffer.
-        let _ = fwd_handle.await;
-
-        let elapsed = started.elapsed().as_secs_f32();
-
-        match result {
-            Ok((usage_summary, model)) => {
-                let _ = ui_tx
-                    .send(ui::UiEvent::AssistantDone {
-                        task_id,
-                        usage_summary,
-                        elapsed_secs: elapsed,
-                        model,
-                        provider: provider_label,
-                    })
-                    .await;
-            }
-            Err(e) => {
-                let _ = ui_tx
-                    .send(ui::UiEvent::Error {
-                        message: format!("{e:#}"),
-                    })
-                    .await;
-                let _ = ui_tx
-                    .send(ui::UiEvent::AssistantDone {
-                        task_id,
-                        usage_summary: "error".into(),
-                        elapsed_secs: elapsed,
-                        model: cfg.model.default.clone(),
-                        provider: provider_label,
-                    })
-                    .await;
-            }
-        }
-    });
+/// Bundle of long-lived REPL state required to spawn or run a task. The
+/// interactive event loop constructs one `TaskEnv` after building the provider
+/// and clones it (cheap: every field is an `Arc`, a `Sender`, or a small
+/// `Config`) into each task it dispatches.
+#[derive(Clone)]
+pub(crate) struct TaskEnv {
+    pub provider: Arc<dyn Provider>,
+    pub is_acp: bool,
+    pub cfg: Config,
+    pub session_log: std::path::PathBuf,
+    pub ui_tx: tokio::sync::mpsc::Sender<ui::UiEvent>,
+    pub ask_tx: tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<String>)>,
+    pub shared_history: SharedHistory,
 }
 
-// ---------------------------------------------------------------------------
-// Interactive task runner
-// ---------------------------------------------------------------------------
+impl TaskEnv {
+    /// Spawn a task that runs the AI provider and forwards streaming deltas
+    /// and completion as `UiEvent`s. The task runs on the tokio thread pool;
+    /// the caller's event loop is never blocked.
+    pub(crate) fn spawn(self, task_id: String, content: String) {
+        let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+        let provider_label = self
+            .cfg
+            .model
+            .provider
+            .clone()
+            .unwrap_or_else(|| "default".into());
 
-/// Runs the AI provider for a single task and returns `(usage_summary, model)`.
-/// All output goes through the `delta_tx` channel; nothing is printed to stdout.
-#[allow(clippy::too_many_arguments)] // Each arg is genuinely needed; bundling
-                                      // into a struct buys nothing semantically.
-async fn run_task_interactive(
-    input: &str,
-    provider: Arc<dyn Provider>,
-    is_acp: bool,
-    cfg: &Config,
-    log_path: &Path,
-    delta_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    ask_tx: tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<String>)>,
-    shared_history: SharedHistory,
-) -> Result<(String, String)> {
-    ensure_layout().await?;
-    let mut registry = ToolRegistry::with_builtins();
-    mcp_tools::install_all(&mut registry).await;
-    let registry = Arc::new(registry);
-    let session = Session::open(log_path).await?;
-    let policy = PolicyConfig::load(&policy_path()?).await;
-    let tool_ctx = ToolContext {
-        workspace: workspace_dir()?,
-        allow_user_prompt: true,
-        ask_tx: Some(ask_tx),
-        vault_path: vault_path().ok(),
-        evoclaw_dir: evoclaw_dir().ok(),
-        policy: Some(Arc::new(policy)),
-        ..Default::default()
-    };
-    let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
-    let memory = Memory::at(memory_dir()?);
-    let vault = Vault::load(&vault_path()?).await.wrap_err_with(|| {
-        format!(
-            "read vault at {}",
-            vault_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default()
-        )
-    })?;
-    let redactor = Redactor::from_vault(&vault);
+        // Announce task start immediately (PRD §2: user message → task panel).
+        let _ = self.ui_tx.try_send(ui::UiEvent::AssistantStarted {
+            task_id: task_id.clone(),
+            provider: provider_label.clone(),
+            timestamp: ts,
+        });
 
-    let mut runtime = ConversationRuntime::new(
-        provider,
-        registry,
-        session,
-        tool_ctx,
-        evo_core::runtime::RuntimeConfig {
-            model: cfg.model.default.clone(),
-            reflection_enabled: !is_acp,
-            provider_id: cfg.model.provider.clone(),
-            mcp_servers: get_active_mcp_servers().await.unwrap_or_default(),
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+
+            // Create a delta forwarding channel.
+            let (delta_raw_tx, mut delta_raw_rx) =
+                tokio::sync::mpsc::unbounded_channel::<String>();
+            let fwd_task_id = task_id.clone();
+            let fwd_tx = self.ui_tx.clone();
+            let fwd_handle = tokio::spawn(async move {
+                while let Some(delta) = delta_raw_rx.recv().await {
+                    let _ = fwd_tx
+                        .send(ui::UiEvent::AssistantDelta {
+                            task_id: fwd_task_id.clone(),
+                            delta,
+                        })
+                        .await;
+                }
+            });
+
+            let result = self.run_interactive(&content, delta_raw_tx).await;
+
+            // Wait for the forwarding task to drain all buffered deltas before
+            // sending AssistantDone. Without this, AssistantDone can race ahead
+            // of the final delta batch, leaving the streaming block empty or
+            // truncated when it is flushed to the scroll buffer.
+            let _ = fwd_handle.await;
+
+            let elapsed = started.elapsed().as_secs_f32();
+
+            match result {
+                Ok((usage_summary, model)) => {
+                    let _ = self
+                        .ui_tx
+                        .send(ui::UiEvent::AssistantDone {
+                            task_id,
+                            usage_summary,
+                            elapsed_secs: elapsed,
+                            model,
+                            provider: provider_label,
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    let _ = self
+                        .ui_tx
+                        .send(ui::UiEvent::Error {
+                            message: format!("{e:#}"),
+                        })
+                        .await;
+                    let _ = self
+                        .ui_tx
+                        .send(ui::UiEvent::AssistantDone {
+                            task_id,
+                            usage_summary: "error".into(),
+                            elapsed_secs: elapsed,
+                            model: self.cfg.model.default.clone(),
+                            provider: provider_label,
+                        })
+                        .await;
+                }
+            }
+        });
+    }
+
+    /// Run the AI provider for a single task and return `(usage_summary,
+    /// model)`. All output goes through `delta_tx`; nothing is printed to
+    /// stdout.
+    async fn run_interactive(
+        &self,
+        input: &str,
+        delta_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<(String, String)> {
+        ensure_layout().await?;
+        let mut registry = ToolRegistry::with_builtins();
+        mcp_tools::install_all(&mut registry).await;
+        let registry = Arc::new(registry);
+        let session = Session::open(self.session_log.as_path()).await?;
+        let policy = PolicyConfig::load(&policy_path()?).await;
+        let tool_ctx = ToolContext {
+            workspace: workspace_dir()?,
+            allow_user_prompt: true,
+            ask_tx: Some(self.ask_tx.clone()),
+            vault_path: vault_path().ok(),
+            evoclaw_dir: evoclaw_dir().ok(),
+            policy: Some(Arc::new(policy)),
             ..Default::default()
-        },
-    )
-    .with_cost_engine(cost_engine)
-    .with_memory(memory)
-    .with_skills_dir(skills_dir()?)
-    .with_redactor(redactor)
-    .with_delta_sender(delta_tx);
+        };
+        let cost_engine = Arc::new(CostEngine::at(cost_log_path()?, BudgetCfg::default()));
+        let memory = Memory::at(memory_dir()?);
+        let vault = Vault::load(&vault_path()?).await.wrap_err_with(|| {
+            format!(
+                "read vault at {}",
+                vault_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            )
+        })?;
+        let redactor = Redactor::from_vault(&vault);
 
-    // Inject the REPL-wide conversation history so prior turns remain
-    // visible to the model. ACP providers manage history upstream — skip
-    // sync to avoid double-billing tokens (the runtime also clears on
-    // every ACP run as a safety net).
-    if !is_acp {
-        let history_snapshot = shared_history.lock().await.clone();
-        runtime.set_history(history_snapshot);
-    }
-
-    let run_result = runtime.run(input).await;
-
-    // Persist the updated history back to the REPL-wide store BEFORE
-    // returning, regardless of success/failure. On error the runtime still
-    // holds the partial conversation (user message + any assistant turns
-    // that completed before the failure) — losing that would mean the user
-    // can't ask "what went wrong?" in a follow-up because the assistant
-    // wouldn't even see the original question.
-    if !is_acp {
-        *shared_history.lock().await = runtime.take_history();
-    }
-
-    let outcome = run_result?;
-    let usage = &outcome.usage;
-    let usage_summary = if usage.turns_with_usage == 0 {
-        "unavailable".to_string()
-    } else {
-        format!(
-            "{}↑ {}↓ {}cached",
-            usage.input_tokens, usage.output_tokens, usage.cached_tokens,
+        let mut runtime = ConversationRuntime::new(
+            self.provider.clone(),
+            registry,
+            session,
+            tool_ctx,
+            evo_core::runtime::RuntimeConfig {
+                model: self.cfg.model.default.clone(),
+                reflection_enabled: !self.is_acp,
+                provider_id: self.cfg.model.provider.clone(),
+                mcp_servers: get_active_mcp_servers().await.unwrap_or_default(),
+                ..Default::default()
+            },
         )
-    };
-    Ok((usage_summary, cfg.model.default.clone()))
+        .with_cost_engine(cost_engine)
+        .with_memory(memory)
+        .with_skills_dir(skills_dir()?)
+        .with_redactor(redactor)
+        .with_delta_sender(delta_tx);
+
+        // Inject the REPL-wide conversation history so prior turns remain
+        // visible to the model. ACP providers manage history upstream — skip
+        // sync to avoid double-billing tokens (the runtime also clears on
+        // every ACP run as a safety net).
+        if !self.is_acp {
+            let history_snapshot = self.shared_history.lock().await.clone();
+            runtime.set_history(history_snapshot);
+        }
+
+        let run_result = runtime.run(input).await;
+
+        // Persist the updated history back to the REPL-wide store BEFORE
+        // returning, regardless of success/failure. On error the runtime still
+        // holds the partial conversation (user message + any assistant turns
+        // that completed before the failure) — losing that would mean the user
+        // can't ask "what went wrong?" in a follow-up because the assistant
+        // wouldn't even see the original question.
+        if !self.is_acp {
+            *self.shared_history.lock().await = runtime.take_history();
+        }
+
+        let outcome = run_result?;
+        let usage = &outcome.usage;
+        let usage_summary = if usage.turns_with_usage == 0 {
+            "unavailable".to_string()
+        } else {
+            format!(
+                "{}↑ {}↓ {}cached",
+                usage.input_tokens, usage.output_tokens, usage.cached_tokens,
+            )
+        };
+        Ok((usage_summary, self.cfg.model.default.clone()))
+    }
 }
 
 // ---------------------------------------------------------------------------
