@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "evo-acp-client"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "evo-cli"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "evo-core"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "evo-gateway"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "evo-mcp-client"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "evo-mock-provider"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "async-trait",
  "evo-providers",
@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "evo-policy"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "chrono",
  "hex",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "evo-providers"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "evo-stdio-rpc"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "evo-tools"
-version = "1.0.1-beta.1"
+version = "1.0.1-beta.2"
 dependencies = [
  "async-trait",
  "chromiumoxide",

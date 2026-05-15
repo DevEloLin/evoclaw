@@ -134,17 +134,39 @@ pub(crate) enum ChannelCmd {
         #[arg(long)]
         no_tools: bool,
         /// Override `RuntimeConfig.max_turns` (default 25). Set to 1 with
-        /// `--no-tools` for the strict "answer once, return" mode.
-        #[arg(long)]
+        /// `--no-tools` for the strict "answer once, return" mode. Must be
+        /// ≥ 1 — passing 0 would make the agent loop exit before the first
+        /// model call and return `MaxTurns` error.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         max_turns: Option<u64>,
         /// Override `RuntimeConfig.max_tokens` (default 4096). Cap output
-        /// to keep replies short for SMS-like channels.
-        #[arg(long)]
+        /// to keep replies short for SMS-like channels. Must be ≥ 1.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         max_tokens: Option<u32>,
-        /// Override `RuntimeConfig.temperature` (default 0.2).
-        #[arg(long)]
+        /// Override `RuntimeConfig.temperature` (default 0.2). Bounded
+        /// 0.0..=2.0 — most providers reject anything outside that range
+        /// (OpenAI: 0..=2, Anthropic: 0..=1).
+        #[arg(long, value_parser = parse_temperature)]
         temperature: Option<f32>,
     },
+}
+
+/// Clap value parser for `--temperature`. Bounds the value to a range
+/// every supported provider tolerates so we fail at CLI-parse time rather
+/// than mid-stream with a cryptic provider error.
+fn parse_temperature(s: &str) -> std::result::Result<f32, String> {
+    let v: f32 = s
+        .parse()
+        .map_err(|e| format!("'{s}' is not a valid f32: {e}"))?;
+    if !v.is_finite() {
+        return Err(format!("temperature must be finite (got {v})"));
+    }
+    if !(0.0..=2.0).contains(&v) {
+        return Err(format!(
+            "temperature {v} out of range (must be 0.0..=2.0)"
+        ));
+    }
+    Ok(v)
 }
 
 #[derive(Subcommand, Debug)]
@@ -684,6 +706,41 @@ impl Drop for RawModeGuard {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod parser_tests {
+    use super::parse_temperature;
+
+    #[test]
+    fn parses_typical_temperature_values() {
+        assert!((parse_temperature("0.0").unwrap() - 0.0).abs() < 1e-6);
+        assert!((parse_temperature("0.7").unwrap() - 0.7).abs() < 1e-6);
+        assert!((parse_temperature("2.0").unwrap() - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rejects_out_of_range_values() {
+        assert!(parse_temperature("-0.1").is_err());
+        assert!(parse_temperature("2.01").is_err());
+        assert!(parse_temperature("999").is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_values() {
+        // `inf` and `nan` parse as f32 but must not be accepted as
+        // temperature values — providers reject them too.
+        assert!(parse_temperature("inf").is_err());
+        assert!(parse_temperature("nan").is_err());
+        assert!(parse_temperature("-inf").is_err());
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_temperature("hot").is_err());
+        assert!(parse_temperature("").is_err());
+        assert!(parse_temperature("1.0.0").is_err());
+    }
+}
 
 #[cfg(test)]
 mod ui_tests {
