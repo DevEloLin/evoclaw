@@ -78,7 +78,9 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                     .filter(|p| p.starts_with("acp:"))
                     .map(|p| p.strip_prefix("acp:").unwrap_or(p).to_string()),
                 mcp_servers: self.config.mcp_servers.clone(),
-                skills_used: Vec::new(), // Populated during execution
+                skills_used: Vec::new(), // Reserved for future reflection-stage backfill.
+                                          // Today's audit trail relies on RecordedToolCall
+                                          // (grep for `"name":"load_skill"` in the JSONL).
                 started_at: Utc::now(),
             }))
             .await?;
@@ -118,11 +120,16 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         // ACP providers manage their own history upstream — keeping a
         // parallel copy here would double-bill tokens, so we clear on every
         // run for ACP. For native providers we accumulate.
+        // Robust ACP detection: trim whitespace, lowercase, then check prefix.
+        // Catches "ACP:claude", " acp:codex", "Acp:Cursor" etc. which would
+        // otherwise slip through and double-bill tokens against an upstream
+        // agent that maintains its own history.
         let is_acp = self
             .config
             .provider_id
             .as_deref()
-            .map_or(false, |p| p.starts_with("acp:"));
+            .map(|p| p.trim().to_ascii_lowercase())
+            .is_some_and(|p| p.starts_with("acp:"));
         if is_acp {
             self.history.clear();
         }

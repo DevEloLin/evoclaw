@@ -237,7 +237,10 @@ pub(crate) async fn count_skills() -> Result<usize> {
     let mut entries = tokio::fs::read_dir(&dir).await?;
     let mut n = 0;
     while let Some(e) = entries.next_entry().await? {
-        if e.path().extension().and_then(|s| s.to_str()) == Some("yaml") {
+        if matches!(
+            e.path().extension().and_then(|s| s.to_str()),
+            Some("yaml") | Some("yml") | Some("md")
+        ) {
             n += 1;
         }
     }

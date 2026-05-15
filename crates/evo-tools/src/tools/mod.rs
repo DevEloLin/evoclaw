@@ -8,5 +8,6 @@ pub(crate) mod patch;
 pub(crate) mod read;
 pub(crate) mod secret_inject;
 pub(crate) mod shell;
+pub(crate) mod skill;
 pub(crate) mod web;
 pub(crate) mod write;

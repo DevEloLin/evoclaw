@@ -212,16 +212,6 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
         self
     }
 
-    /// Runtime-time setter for the streaming-delta channel. Used in REPL
-    /// mode where the same `ConversationRuntime` instance is reused across
-    /// many tasks but each task has its own delta forwarding channel.
-    pub fn set_delta_sender(
-        &mut self,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    ) {
-        self.delta_tx = tx;
-    }
-
     /// Clear conversation history. The next `run()` starts a fresh thread
     /// (a new system prompt is prepended). Use this when the user types
     /// `/reset` in the REPL or switches topics intentionally.
