@@ -100,6 +100,28 @@ pub(crate) struct FastModeOpts {
     pub temperature: Option<f32>,
 }
 
+/// Apply caller-supplied fast-mode overrides onto a freshly-defaulted
+/// `RuntimeConfig`. Pulled out into a pure function so it has tests that
+/// don't need a real provider, config file, or network — see this module's
+/// `tests` block.
+pub(crate) fn apply_fast_mode_opts(
+    cfg: &mut evo_core::runtime::RuntimeConfig,
+    opts: &FastModeOpts,
+) {
+    if opts.no_reflection {
+        cfg.reflection_enabled = false;
+    }
+    if let Some(n) = opts.max_turns {
+        cfg.max_turns = n;
+    }
+    if let Some(n) = opts.max_tokens {
+        cfg.max_tokens = n;
+    }
+    if let Some(t) = opts.temperature {
+        cfg.temperature = t;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // channel_list
 // ---------------------------------------------------------------------------
@@ -400,15 +422,13 @@ pub(crate) async fn channel_run_one_shot_text(
     // multi-turn tool loops that blow past tight channel response budgets
     // (e.g. WeChat's 5-second passive-reply deadline). Otherwise keep the
     // standard built-ins + any attached MCP tools.
-    let mut registry = if opts.no_tools {
-        ToolRegistry::new()
+    let registry = if opts.no_tools {
+        Arc::new(ToolRegistry::new())
     } else {
-        ToolRegistry::with_builtins()
+        let mut r = ToolRegistry::with_builtins();
+        let _attached = mcp_tools::install_all(&mut r).await;
+        Arc::new(r)
     };
-    if !opts.no_tools {
-        let _attached = mcp_tools::install_all(&mut registry).await;
-    }
-    let registry = Arc::new(registry);
     let task_id = format!("task-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f"));
     let log_path = logs_dir()?.join(format!("{task_id}.jsonl"));
     let session = Session::open(&log_path).await?;
@@ -426,7 +446,8 @@ pub(crate) async fn channel_run_one_shot_text(
     let vault = Vault::load(&vault_path()?).await.unwrap_or_default();
     let redactor = Redactor::from_vault(&vault);
     // Start from the defaults so future RuntimeConfig fields keep working,
-    // then overlay any caller-supplied performance overrides.
+    // then overlay any caller-supplied performance overrides via a pure
+    // helper so the overlay logic is unit-tested in isolation.
     let mut runtime_cfg = evo_core::runtime::RuntimeConfig {
         model: cfg.model.default.clone(),
         provider_id: cfg.model.provider.clone(),
@@ -436,18 +457,7 @@ pub(crate) async fn channel_run_one_shot_text(
         channel_hint: Some(channel_format_hint(channel_kind)),
         ..Default::default()
     };
-    if opts.no_reflection {
-        runtime_cfg.reflection_enabled = false;
-    }
-    if let Some(n) = opts.max_turns {
-        runtime_cfg.max_turns = n;
-    }
-    if let Some(n) = opts.max_tokens {
-        runtime_cfg.max_tokens = n;
-    }
-    if let Some(t) = opts.temperature {
-        runtime_cfg.temperature = t;
-    }
+    apply_fast_mode_opts(&mut runtime_cfg, opts);
     let mut runtime = ConversationRuntime::new(
         provider,
         registry,
@@ -538,5 +548,115 @@ pub(crate) fn channel_format_hint(kind: &evo_core::channel::ChannelKind) -> Stri
             "and code blocks where appropriate. Keep answers focused and structured."
         )
         .into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evo_core::runtime::RuntimeConfig;
+
+    #[test]
+    fn fast_mode_default_leaves_runtime_cfg_untouched() {
+        let mut cfg = RuntimeConfig::default();
+        let original = cfg.clone();
+        apply_fast_mode_opts(&mut cfg, &FastModeOpts::default());
+        assert_eq!(cfg.reflection_enabled, original.reflection_enabled);
+        assert_eq!(cfg.max_turns, original.max_turns);
+        assert_eq!(cfg.max_tokens, original.max_tokens);
+        assert_eq!(cfg.temperature, original.temperature);
+    }
+
+    #[test]
+    fn fast_mode_no_reflection_flips_only_reflection() {
+        let mut cfg = RuntimeConfig::default();
+        let original_max_turns = cfg.max_turns;
+        apply_fast_mode_opts(
+            &mut cfg,
+            &FastModeOpts {
+                no_reflection: true,
+                ..Default::default()
+            },
+        );
+        assert!(!cfg.reflection_enabled, "--no-reflection must clear flag");
+        assert_eq!(
+            cfg.max_turns, original_max_turns,
+            "unrelated fields must not move"
+        );
+    }
+
+    #[test]
+    fn fast_mode_max_turns_override_applies() {
+        let mut cfg = RuntimeConfig::default();
+        apply_fast_mode_opts(
+            &mut cfg,
+            &FastModeOpts {
+                max_turns: Some(1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(cfg.max_turns, 1);
+    }
+
+    #[test]
+    fn fast_mode_max_tokens_override_applies() {
+        let mut cfg = RuntimeConfig::default();
+        apply_fast_mode_opts(
+            &mut cfg,
+            &FastModeOpts {
+                max_tokens: Some(300),
+                ..Default::default()
+            },
+        );
+        assert_eq!(cfg.max_tokens, 300);
+    }
+
+    #[test]
+    fn fast_mode_temperature_override_applies() {
+        let mut cfg = RuntimeConfig::default();
+        apply_fast_mode_opts(
+            &mut cfg,
+            &FastModeOpts {
+                temperature: Some(0.7),
+                ..Default::default()
+            },
+        );
+        assert!((cfg.temperature - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fast_mode_all_overrides_compose() {
+        // Lock down the "WeChat plugin recommended" configuration so any
+        // future refactor of `apply_fast_mode_opts` that drops a branch
+        // gets caught.
+        let mut cfg = RuntimeConfig::default();
+        apply_fast_mode_opts(
+            &mut cfg,
+            &FastModeOpts {
+                no_reflection: true,
+                no_tools: true,
+                max_turns: Some(1),
+                max_tokens: Some(300),
+                temperature: Some(0.4),
+            },
+        );
+        assert!(!cfg.reflection_enabled);
+        assert_eq!(cfg.max_turns, 1);
+        assert_eq!(cfg.max_tokens, 300);
+        assert!((cfg.temperature - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fast_mode_max_turns_none_preserves_default() {
+        let mut cfg = RuntimeConfig::default();
+        let default_max_turns = cfg.max_turns;
+        apply_fast_mode_opts(
+            &mut cfg,
+            &FastModeOpts {
+                no_reflection: true, // unrelated flag
+                ..Default::default()
+            },
+        );
+        assert_eq!(cfg.max_turns, default_max_turns);
     }
 }
