@@ -299,8 +299,10 @@ pub(crate) async fn channel_run(kind: &str, opts: FastModeOpts) -> Result<()> {
         }
         "telegram" => {
             let token = resolve_channel_token("telegram", "TELEGRAM_BOT_TOKEN").await?;
+            let adapter = TelegramAdapter::new(token)
+                .wrap_err("initialize telegram adapter (system TLS misconfigured?)")?;
             eprintln!("→ channel: telegram adapter ready (long-polling).");
-            (Arc::new(TelegramAdapter::new(token)), ChannelKind::Telegram)
+            (Arc::new(adapter), ChannelKind::Telegram)
         }
         "slack" => {
             let bot_token = resolve_channel_token("slack", "SLACK_BOT_TOKEN").await?;

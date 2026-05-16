@@ -43,7 +43,7 @@ evoclaw
       ▄▄ ▄▄                      /skill   browse skills
   //  ██ ██  \\
                                   Status
-  EvoClaw  v1.0.1-beta.1                 ──────────────────────────
+  EvoClaw  v1.0.1-beta.2                 ──────────────────────────
   self-evolving agent runtime     auth    ✓ ready
                                   model   deepseek-chat
 

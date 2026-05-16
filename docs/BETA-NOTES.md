@@ -1,4 +1,4 @@
-# EvoClaw v1.0.1-beta.1 — Release Notes
+# EvoClaw v1.0.1-beta.2 — Release Notes
 
 > **Release date**: 2026-05-05
 > **Branch**: `main`

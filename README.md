@@ -20,11 +20,11 @@
 
 <p align="center">
   <b>🌐 Website</b>: <a href="https://develolin.github.io/EvoClawSite/">develolin.github.io/EvoClawSite</a> ·
-  <b>📦 Version</b>: <a href="./version"><code>v1.0.1-beta.1</code></a> ·
+  <b>📦 Version</b>: <a href="./version"><code>v1.0.1-beta.2</code></a> ·
   <b>🇨🇳 中文文档</b>: <a href="./docs/zh/README.md">docs/zh/README.md</a>
 </p>
 
-> **Beta release — v1.0.1-beta.1**: Core agent runtime, tools, and multi-channel adapters are stable. The full TUI and release pipeline are new in this cycle. APIs may evolve before the 1.0 GA. [Report issues](https://github.com/develolin/EvoClaw/issues).
+> **Beta release — v1.0.1-beta.2**: Core agent runtime, tools, and multi-channel adapters are stable. The full TUI and release pipeline are new in this cycle. APIs may evolve before the 1.0 GA. [Report issues](https://github.com/develolin/EvoClaw/issues).
 
 ---
 
@@ -134,7 +134,7 @@ brew install develolin/tap/evoclaw
 **Option B — Direct download:**
 
 ```bash
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.1/evoclaw-macos-arm64.dmg
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.2/evoclaw-macos-arm64.dmg
 shasum -a 256 -c evoclaw-macos-arm64.dmg.sha256
 open evoclaw-macos-arm64.dmg
 # Drag evoclaw to /usr/local/bin or any directory in your PATH
@@ -146,7 +146,7 @@ evoclaw
 **Debian / Ubuntu — .deb:**
 
 ```bash
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.1/evoclaw-linux-amd64.deb
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.2/evoclaw-linux-amd64.deb
 sha256sum -c evoclaw-linux-amd64.deb.sha256
 sudo dpkg -i evoclaw-linux-amd64.deb
 evoclaw
@@ -155,7 +155,7 @@ evoclaw
 **RHEL / Fedora / CentOS — .rpm:**
 
 ```bash
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.1/evoclaw-linux-x86_64.rpm
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.2/evoclaw-linux-x86_64.rpm
 sha256sum -c evoclaw-linux-x86_64.rpm.sha256
 sudo rpm -i evoclaw-linux-x86_64.rpm
 evoclaw
@@ -164,7 +164,7 @@ evoclaw
 **Universal tarball (Alpine, containers, any distro):**
 
 ```bash
-curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.1/evoclaw-linux-x86_64.tar.gz
+curl -LO https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.2/evoclaw-linux-x86_64.tar.gz
 sha256sum -c evoclaw-linux-x86_64.tar.gz.sha256
 tar -xzf evoclaw-linux-x86_64.tar.gz
 chmod +x evoclaw && sudo mv evoclaw /usr/local/bin/
@@ -175,9 +175,9 @@ evoclaw
 
 ```powershell
 # Download and run the installer — installs to %LOCALAPPDATA%\Programs\EvoClaw
-Invoke-WebRequest -Uri "https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.1/evoclaw-windows-x64-setup.exe" -OutFile evoclaw-setup.exe
+Invoke-WebRequest -Uri "https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.2/evoclaw-windows-x64-setup.exe" -OutFile evoclaw-setup.exe
 # Verify checksum
-$expected = (Invoke-WebRequest "https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.1/evoclaw-windows-x64-setup.exe.sha256").Content.Trim().Split()[0]
+$expected = (Invoke-WebRequest "https://github.com/DevEloLin/evoclaw/releases/download/v1.0.1-beta.2/evoclaw-windows-x64-setup.exe.sha256").Content.Trim().Split()[0]
 $actual = (Get-FileHash evoclaw-setup.exe -Algorithm SHA256).Hash.ToLower()
 if ($expected -ne $actual) { throw "Checksum mismatch" }
 Start-Process evoclaw-setup.exe
@@ -215,7 +215,7 @@ $ evoclaw
       ▄▄ ▄▄             /skill   browse skills
   //  ██ ██  \\
 
-  EvoClaw  v1.0.1-beta.1       Status
+  EvoClaw  v1.0.1-beta.2       Status
   self-evolving agent   ──────────────────────────
   runtime               auth    ✓ ready
                         model   deepseek-chat
@@ -570,13 +570,13 @@ Live diagrams: [Architecture (EN)](https://develolin.github.io/EvoClawSite/archi
 | 4.6 — Secret-redaction     | ✓ shipped   | Week 8     | Vault + Redactor + `secret` subcommand |
 | 5   — Local Gateway core   | ✓ shipped   | Week 8–9   | HTTP daemon + WebChat + bearer-token allowlist + session isolation |
 | 6   — Hardening (CI gates) | ✓ shipped   | Week 9     | doctor closure + mock-provider tests + LOC enforcer + `evo replay` + doc-sync check + GitHub Actions CI |
-| 7   — Multi-channel        | ✓ shipped   | v1.0.1-beta.1     | Telegram (long-poll) + Slack (Socket Mode) + Discord (Gateway WS); group @-mention detection; per-channel Markdown hints |
-| 8   — TUI + Release pipeline | ✓ shipped  | v1.0.1-beta.1 | Full event-driven TUI rewrite (streaming REPL, scroll buffer, delta ordering fix) + multi-platform CI/CD release pipeline + beta release process |
-| 8.1 — Policy layer         | ✓ shipped  | v1.0.1-beta.1 | User-configurable `policy.toml`: per-tool allow/deny glob rules + pre-exec hooks; TUI streaming divider fix |
+| 7   — Multi-channel        | ✓ shipped   | v1.0.1-beta.2     | Telegram (long-poll) + Slack (Socket Mode) + Discord (Gateway WS); group @-mention detection; per-channel Markdown hints |
+| 8   — TUI + Release pipeline | ✓ shipped  | v1.0.1-beta.2 | Full event-driven TUI rewrite (streaming REPL, scroll buffer, delta ordering fix) + multi-platform CI/CD release pipeline + beta release process |
+| 8.1 — Policy layer         | ✓ shipped  | v1.0.1-beta.2 | User-configurable `policy.toml`: per-tool allow/deny glob rules + pre-exec hooks; TUI streaming divider fix |
 | 9   — Deep hardening       | ⏳ planned  | v1.0 GA    | unshare-based sandbox + capability drop, OWASP scan in CI, 100-concurrent load test, performance baseline |
 
 Phase 7 (Multi-channel): shipped with Telegram, Slack, and Discord adapters.
-Phase 8 (TUI + Release pipeline): v1.0.1-beta.1 public beta — full TUI rewrite with event-driven REPL and multi-platform CI/CD release pipeline.
+Phase 8 (TUI + Release pipeline): v1.0.1-beta.2 public beta — full TUI rewrite with event-driven REPL and multi-platform CI/CD release pipeline.
 Phase 9 (Deep hardening): planned for v1.0 GA — kernel-level sandbox and load testing are not blockers for solo-developer use today.
 
 ---
@@ -602,7 +602,7 @@ The version of this code is recorded in [`./version`](./version). The site repo 
 - `EvoClawSite/version`
 
 For **stable releases**, both repos must be bumped together — they stay in sync.
-For **pre-release versions** (beta/rc), only the code repo is bumped; EvoClawSite continues to reflect the latest stable version. The code repo currently reads **`v1.0.1-beta.1`** (stable baseline) on `main`; `beta-v1` is at **`v1.0.1-beta.1`**.
+For **pre-release versions** (beta/rc), only the code repo is bumped; EvoClawSite continues to reflect the latest stable version. The code repo currently reads **`v1.0.1-beta.2`** (stable baseline) on `main`; `beta-v1` is at **`v1.0.1-beta.2`**.
 
 ---
 
