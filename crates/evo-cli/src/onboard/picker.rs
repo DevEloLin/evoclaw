@@ -125,7 +125,10 @@ async fn pick_provider_full_list() -> Result<ProviderChoice> {
         }
 
         if let Some(profile) = PROVIDERS.get(n - 1) {
-            if matches!(profile.id, "custom" | "litellm" | "private-gateway" | "azure") {
+            if matches!(
+                profile.id,
+                "custom" | "litellm" | "private-gateway" | "azure"
+            ) {
                 return prompt_gateway(profile.id);
             }
             return Ok(profile_to_choice(profile));

@@ -86,9 +86,7 @@ fn parse_text(text: &str) -> Result<PlaybookFile, String> {
 /// Anything containing `/`, starting with `~`, or starting with `.` is
 /// treated as a path. Everything else is a bare name.
 async fn load_by_id_or_path(ctx: &ToolContext, raw: &str) -> Result<PlaybookFile, ToolError> {
-    let looks_like_path = raw.contains('/')
-        || raw.starts_with('~')
-        || raw.starts_with('.');
+    let looks_like_path = raw.contains('/') || raw.starts_with('~') || raw.starts_with('.');
 
     if looks_like_path {
         let expanded = expand_tilde(raw);
@@ -108,10 +106,7 @@ async fn load_by_id_or_path(ctx: &ToolContext, raw: &str) -> Result<PlaybookFile
         // so the agent cannot be coaxed into reading /etc/passwd, vault
         // files, ~/.ssh/, etc.
         let resolved = tokio::fs::canonicalize(&path).await.map_err(|e| {
-            ToolError::Internal(format!(
-                "cannot canonicalize {}: {e}",
-                path.display()
-            ))
+            ToolError::Internal(format!("cannot canonicalize {}: {e}", path.display()))
         })?;
         let mut allowed_roots: Vec<PathBuf> = Vec::new();
         if let Ok(ws) = tokio::fs::canonicalize(&ctx.workspace).await {
@@ -368,7 +363,9 @@ mod tests {
         let evoclaw = unique_dir(name);
         let pb_dir = evoclaw.join("playbooks");
         tokio::fs::create_dir_all(&pb_dir).await.unwrap();
-        tokio::fs::write(pb_dir.join("t.yaml"), content).await.unwrap();
+        tokio::fs::write(pb_dir.join("t.yaml"), content)
+            .await
+            .unwrap();
         let ctx = ToolContext {
             evoclaw_dir: Some(evoclaw.clone()),
             ..ToolContext::default()
@@ -469,7 +466,9 @@ steps: |
             .unwrap()
             .as_nanos();
         let ws = std::env::temp_dir().join(format!("evo-skill-ws-{stamp}"));
-        tokio::fs::create_dir_all(ws.join("my-skills")).await.unwrap();
+        tokio::fs::create_dir_all(ws.join("my-skills"))
+            .await
+            .unwrap();
         tokio::fs::write(ws.join("my-skills").join("rel.yaml"), SAMPLE)
             .await
             .unwrap();
@@ -527,7 +526,9 @@ steps: |
         let ws = std::env::temp_dir().join(format!("evo-skill-ws-secure-{stamp}"));
         let evoclaw = std::env::temp_dir().join(format!("evo-skill-evo-secure-{stamp}"));
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        tokio::fs::create_dir_all(evoclaw.join("playbooks")).await.unwrap();
+        tokio::fs::create_dir_all(evoclaw.join("playbooks"))
+            .await
+            .unwrap();
         let mut ctx = ToolContext::default_for_workspace(ws);
         ctx.evoclaw_dir = Some(evoclaw);
 
@@ -539,7 +540,10 @@ steps: |
             .await
             .unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("outside"), "expected escape denied, got: {msg}");
+        assert!(
+            msg.contains("outside"),
+            "expected escape denied, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -590,7 +594,9 @@ steps: |
         let evoclaw = std::env::temp_dir().join(format!("evo-tools-skill-big-{stamp}"));
         let pb_dir = evoclaw.join("playbooks");
         tokio::fs::create_dir_all(&pb_dir).await.unwrap();
-        tokio::fs::write(pb_dir.join("big.yaml"), yaml).await.unwrap();
+        tokio::fs::write(pb_dir.join("big.yaml"), yaml)
+            .await
+            .unwrap();
         let ctx = ToolContext {
             evoclaw_dir: Some(evoclaw),
             ..ToolContext::default()
@@ -617,7 +623,8 @@ steps: |
             evoclaw_dir: Some(evoclaw),
             ..ToolContext::default()
         };
-        let out = LoadSkillTool.run(&ctx, json!({"id": "t", "params": {"out_dir": "/x"}}))
+        let out = LoadSkillTool
+            .run(&ctx, json!({"id": "t", "params": {"out_dir": "/x"}}))
             .await
             .unwrap();
         assert!(out.contains("/x"));

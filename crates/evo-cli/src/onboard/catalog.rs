@@ -124,7 +124,9 @@ pub const PROVIDERS: &[ProviderProfile] = &[
         name: "Azure AI Foundry / Azure OpenAI",
         base_url: "",
         default_model: "",
-        key_url: Some("https://learn.microsoft.com/azure/ai-services/openai/how-to/create-resource"),
+        key_url: Some(
+            "https://learn.microsoft.com/azure/ai-services/openai/how-to/create-resource",
+        ),
         fallback: &[],
         local: false,
     },

@@ -468,17 +468,11 @@ pub(crate) async fn channel_run_one_shot_text(
         ..Default::default()
     };
     apply_fast_mode_runtime_cfg(&mut runtime_cfg, opts);
-    let mut runtime = ConversationRuntime::new(
-        provider,
-        registry,
-        session,
-        tool_ctx,
-        runtime_cfg,
-    )
-    .with_cost_engine(cost_engine)
-    .with_memory(memory)
-    .with_skills_dir(skills_dir()?)
-    .with_redactor(redactor);
+    let mut runtime = ConversationRuntime::new(provider, registry, session, tool_ctx, runtime_cfg)
+        .with_cost_engine(cost_engine)
+        .with_memory(memory)
+        .with_skills_dir(skills_dir()?)
+        .with_redactor(redactor);
     let outcome = runtime.run(input).await?;
     Ok(outcome.final_text)
 }
