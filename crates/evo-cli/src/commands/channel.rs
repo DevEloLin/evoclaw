@@ -72,6 +72,9 @@ pub(crate) async fn channel_handler(sub: crate::ChannelCmd) -> Result<()> {
             max_turns,
             max_tokens,
             temperature,
+            session_dir,
+            session_max_turns,
+            session_ttl_days,
         } => {
             channel_run(
                 &kind,
@@ -81,6 +84,11 @@ pub(crate) async fn channel_handler(sub: crate::ChannelCmd) -> Result<()> {
                     max_turns,
                     max_tokens,
                     temperature,
+                },
+                SessionOpts {
+                    dir: session_dir,
+                    max_turns: session_max_turns,
+                    ttl_days: session_ttl_days,
                 },
             )
             .await
@@ -98,6 +106,17 @@ pub(crate) struct FastModeOpts {
     pub max_turns: Option<u64>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+}
+
+/// Per-conversation history persistence options. When `dir` is set the
+/// channel loop loads existing history before each message and saves the
+/// resulting history (incl. the new assistant reply) atomically after.
+/// `None` leaves the legacy stateless behaviour untouched.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SessionOpts {
+    pub dir: Option<PathBuf>,
+    pub max_turns: u32,
+    pub ttl_days: u32,
 }
 
 /// Apply the *runtime-config* slice of `FastModeOpts` onto a freshly-
@@ -278,16 +297,34 @@ pub(crate) async fn channel_remove(kind: &str) -> Result<()> {
 // channel_run
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn channel_run(kind: &str, opts: FastModeOpts) -> Result<()> {
+pub(crate) async fn channel_run(
+    kind: &str,
+    opts: FastModeOpts,
+    session_opts: SessionOpts,
+) -> Result<()> {
     use evo_core::channel::{ChannelAdapter, ChannelKind, OutboundKind, OutboundMessage};
     use evo_core::channel_router::{self, ChannelRouter};
     use evo_core::discord::DiscordAdapter;
     use evo_core::local_pipe::LocalPipe;
+    use evo_core::session_store::SessionStore;
     use evo_core::slack::SlackAdapter;
     use evo_core::telegram::TelegramAdapter;
 
     ensure_layout().await?;
     tokio::fs::create_dir_all(channels_dir()?).await.ok();
+
+    // Build the session store once if --session-dir was passed; passing it
+    // into each per-message handler by Arc avoids re-stat'ing the root dir
+    // on the hot path. Absent => legacy stateless mode.
+    let session_store: Option<Arc<SessionStore>> = match &session_opts.dir {
+        Some(dir) => {
+            let store = SessionStore::new(dir.clone(), session_opts.max_turns as usize)
+                .wrap_err_with(|| format!("open session dir {}", dir.display()))?;
+            Some(Arc::new(store))
+        }
+        None => None,
+    };
+    let _ = session_opts.ttl_days; // reserved for an external GC tool
 
     let (adapter, channel_kind): (Arc<dyn ChannelAdapter>, ChannelKind) = match kind {
         "local-pipe" => {
@@ -341,7 +378,15 @@ pub(crate) async fn channel_run(kind: &str, opts: FastModeOpts) -> Result<()> {
         }
         let conv_id = msg.conversation_id.clone();
         let ck = channel_kind.clone();
-        let reply = match channel_run_one_shot_text(&msg.text, &ck, &opts).await {
+        let reply = match channel_run_one_shot_text(
+            &msg.text,
+            &conv_id,
+            &ck,
+            &opts,
+            session_store.as_ref(),
+        )
+        .await
+        {
             Ok(text) => OutboundMessage {
                 conversation_id: conv_id,
                 text,
@@ -371,8 +416,10 @@ pub(crate) async fn channel_run(kind: &str, opts: FastModeOpts) -> Result<()> {
 /// reply travels through the adapter rather than stdout-as-CLI.
 pub(crate) async fn channel_run_one_shot_text(
     input: &str,
+    conversation_id: &str,
     channel_kind: &evo_core::channel::ChannelKind,
     opts: &FastModeOpts,
+    session_store: Option<&Arc<evo_core::session_store::SessionStore>>,
 ) -> Result<String> {
     let cfg = load_config().await?;
     ensure_layout().await?;
@@ -473,7 +520,52 @@ pub(crate) async fn channel_run_one_shot_text(
         .with_memory(memory)
         .with_skills_dir(skills_dir()?)
         .with_redactor(redactor);
+
+    // Pre-seed history from disk so the LLM sees this user's prior turns.
+    // The runtime checks `if self.history.is_empty()` to decide whether to
+    // push the system prompt, so a non-empty load skips re-adding it —
+    // which is what we want (the saved entry at [0] is already the system
+    // prompt from the first turn).
+    if let Some(store) = session_store {
+        match store.load(conversation_id) {
+            Ok(history) if !history.is_empty() => {
+                tracing::debug!(
+                    cid = %conversation_id,
+                    turns = history.len(),
+                    "session: loaded history"
+                );
+                runtime.set_history(history);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // Soft-fail: a corrupt session file should not break the
+                // user's reply. Surface the error in logs and proceed with
+                // a fresh history so they at least get an answer this turn.
+                tracing::warn!(
+                    cid = %conversation_id,
+                    error = ?e,
+                    "session: load failed; proceeding with empty history"
+                );
+            }
+        }
+    }
+
     let outcome = runtime.run(input).await?;
+
+    if let Some(store) = session_store {
+        let history = runtime.take_history();
+        if let Err(e) = store.append_and_truncate(conversation_id, &history) {
+            // Also soft-fail on save — the user already got their reply;
+            // a write error means next turn will start fresh, not a
+            // catastrophe.
+            tracing::warn!(
+                cid = %conversation_id,
+                error = ?e,
+                "session: save failed; user history not persisted this turn"
+            );
+        }
+    }
+
     Ok(outcome.final_text)
 }
 

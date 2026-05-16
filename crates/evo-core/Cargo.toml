@@ -23,6 +23,7 @@ evo-providers = { workspace = true }
 evo-tools     = { workspace = true }
 evo-policy    = { workspace = true }
 reqwest           = { workspace = true }
+sha1              = { workspace = true }
 sha2              = { workspace = true }
 hex               = { workspace = true }
 tokio-tungstenite = { workspace = true }

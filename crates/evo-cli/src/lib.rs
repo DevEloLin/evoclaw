@@ -148,6 +148,20 @@ pub(crate) enum ChannelCmd {
         /// (OpenAI: 0..=2, Anthropic: 0..=1).
         #[arg(long, value_parser = parse_temperature)]
         temperature: Option<f32>,
+        /// Persist per-`conversation_id` history under this directory so
+        /// multi-turn dialogs survive across `channel run` invocations.
+        /// Files are jsonl; one per cid; sharded by `sha1(cid)[..2]`.
+        /// Absent = stateless per-message (legacy behaviour).
+        #[arg(long)]
+        session_dir: Option<std::path::PathBuf>,
+        /// Cap on stored user/assistant turn pairs per cid. Excess older
+        /// turns are dropped on write. Default 20 ≈ 50 KB / user.
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
+        session_max_turns: u32,
+        /// Advisory expiry hint (days). Stored only as metadata for an
+        /// external GC tool; this command does not delete on its own.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
+        session_ttl_days: u32,
     },
 }
 
