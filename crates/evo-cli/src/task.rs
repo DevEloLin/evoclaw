@@ -186,8 +186,7 @@ impl TaskEnv {
             let started = std::time::Instant::now();
 
             // Create a delta forwarding channel.
-            let (delta_raw_tx, mut delta_raw_rx) =
-                tokio::sync::mpsc::unbounded_channel::<String>();
+            let (delta_raw_tx, mut delta_raw_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let fwd_task_id = task_id.clone();
             let fwd_tx = self.ui_tx.clone();
             let fwd_handle = tokio::spawn(async move {

@@ -53,7 +53,9 @@ pub fn resolve(text: &str, vault: &Vault) -> Resolved {
     if let Some(key) = extract_ref(text, "SECRET") {
         match vault.get(key) {
             Some(e) => Resolved::Value(e.value.clone()),
-            None => Resolved::Missing { key: key.to_owned() },
+            None => Resolved::Missing {
+                key: key.to_owned(),
+            },
         }
     } else if let Some(key) = extract_ref(text, "TOTP") {
         match vault.get(key) {
@@ -63,7 +65,9 @@ pub fn resolve(text: &str, vault: &Vault) -> Resolved {
                     key: format!("{key} (TOTP error: {err})"),
                 },
             },
-            None => Resolved::Missing { key: key.to_owned() },
+            None => Resolved::Missing {
+                key: key.to_owned(),
+            },
         }
     } else {
         Resolved::Plain
@@ -144,8 +148,7 @@ fn totp_now(seed_b32: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .as_secs()
         / 30;
-    let mut mac =
-        HmacSha1::new_from_slice(&seed).map_err(|e| format!("HMAC key: {e}"))?;
+    let mut mac = HmacSha1::new_from_slice(&seed).map_err(|e| format!("HMAC key: {e}"))?;
     mac.update(&step.to_be_bytes());
     let digest = mac.finalize().into_bytes();
     // Dynamic truncation per RFC 4226 §5.3
@@ -251,10 +254,22 @@ pass = "bankpass"
         let mut vault = Vault::default();
         merge_credentials_toml(toml, &mut vault);
 
-        assert_eq!(vault.get("google_work_user").map(|e| e.value.as_str()), Some("work@example.com"));
-        assert_eq!(vault.get("google_work_pass").map(|e| e.value.as_str()), Some("secret123"));
-        assert_eq!(vault.get("google_work_totp").map(|e| e.value.as_str()), Some("JBSWY3DPEHPK3PXP"));
-        assert_eq!(vault.get("hsbc_main_user").map(|e| e.value.as_str()), Some("bankuser"));
+        assert_eq!(
+            vault.get("google_work_user").map(|e| e.value.as_str()),
+            Some("work@example.com")
+        );
+        assert_eq!(
+            vault.get("google_work_pass").map(|e| e.value.as_str()),
+            Some("secret123")
+        );
+        assert_eq!(
+            vault.get("google_work_totp").map(|e| e.value.as_str()),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+        assert_eq!(
+            vault.get("hsbc_main_user").map(|e| e.value.as_str()),
+            Some("bankuser")
+        );
     }
 
     #[test]
@@ -265,7 +280,10 @@ another_key = "value"
 "#;
         let mut vault = Vault::default();
         merge_credentials_toml(toml, &mut vault);
-        assert_eq!(vault.get("my_api_key").map(|e| e.value.as_str()), Some("sk-abc123"));
+        assert_eq!(
+            vault.get("my_api_key").map(|e| e.value.as_str()),
+            Some("sk-abc123")
+        );
     }
 
     #[test]
@@ -278,6 +296,9 @@ another_key = "value"
 pass = "new_password"
 "#;
         merge_credentials_toml(toml, &mut vault);
-        assert_eq!(vault.get("google_work_pass").map(|e| e.value.as_str()), Some("new_password"));
+        assert_eq!(
+            vault.get("google_work_pass").map(|e| e.value.as_str()),
+            Some("new_password")
+        );
     }
 }

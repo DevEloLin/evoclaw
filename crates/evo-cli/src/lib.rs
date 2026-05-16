@@ -162,9 +162,7 @@ fn parse_temperature(s: &str) -> std::result::Result<f32, String> {
         return Err(format!("temperature must be finite (got {v})"));
     }
     if !(0.0..=2.0).contains(&v) {
-        return Err(format!(
-            "temperature {v} out of range (must be 0.0..=2.0)"
-        ));
+        return Err(format!("temperature {v} out of range (must be 0.0..=2.0)"));
     }
     Ok(v)
 }
@@ -294,7 +292,11 @@ pub async fn entry() -> Result<()> {
             SecretCmd::Remove { name } => secret::secret_remove(&name).await,
             SecretCmd::Test { input } => secret::secret_test(&input).await,
         },
-        Some(Cmd::Run { skill, params, input }) => match (skill, input) {
+        Some(Cmd::Run {
+            skill,
+            params,
+            input,
+        }) => match (skill, input) {
             (Some(id), _) => skill::skill_run(&id, params).await,
             (None, Some(text)) => task::run_one_shot(&text).await,
             (None, None) => Err(eyre::eyre!(

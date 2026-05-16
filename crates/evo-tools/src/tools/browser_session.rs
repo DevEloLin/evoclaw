@@ -98,7 +98,12 @@ fn find_chrome() -> Option<PathBuf> {
         }
     }
     let path_var = std::env::var("PATH").unwrap_or_default();
-    for name in ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"] {
+    for name in [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium-browser",
+        "chromium",
+    ] {
         for dir in path_var.split(':') {
             let full = Path::new(dir).join(name);
             if full.exists() {

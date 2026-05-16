@@ -81,9 +81,7 @@ pub(crate) async fn get_or_create<'a>(
     // changes the insert path can't turn a missing-entry case into a
     // process-killing panic.
     pool.get(&key).ok_or_else(|| {
-        ToolError::Internal(
-            "browser profile pool entry vanished immediately after insert".into(),
-        )
+        ToolError::Internal("browser profile pool entry vanished immediately after insert".into())
     })
 }
 
@@ -99,7 +97,10 @@ mod tests {
     fn profile_dir_path_construction() {
         let base = Path::new("/home/user/.evoclaw");
         let dir = profile_dir(base, "google_work");
-        assert_eq!(dir, PathBuf::from("/home/user/.evoclaw/browser_profiles/google_work"));
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/user/.evoclaw/browser_profiles/google_work")
+        );
     }
 
     #[test]

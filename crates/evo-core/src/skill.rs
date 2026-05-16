@@ -246,9 +246,8 @@ impl Skill {
             std::process::id(),
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
-        let rendered = render(self).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let rendered = render(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         tokio::fs::write(&tmp, rendered).await?;
         tokio::fs::rename(&tmp, &path).await?;
         Ok(path)
@@ -277,7 +276,10 @@ pub fn render_md(skill: &Skill) -> Result<String, serde_yaml::Error> {
 /// ignored. Plain YAML (no frontmatter) is also accepted as a fallback.
 pub fn parse_md(text: &str) -> Result<Skill, String> {
     let trimmed = text.trim_start_matches('\u{feff}');
-    if let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) {
+    if let Some(rest) = trimmed
+        .strip_prefix("---\n")
+        .or_else(|| trimmed.strip_prefix("---\r\n"))
+    {
         // Require a proper closing `---` on its own line (LF or CRLF).
         // The previous fallback to bare `\n---` was too lenient — a YAML
         // multi-line string containing the literal characters `\n---` would
@@ -287,7 +289,13 @@ pub fn parse_md(text: &str) -> Result<Skill, String> {
             .find("\n---\n")
             .or_else(|| rest.find("\n---\r\n"))
             // Tolerate a file that ends exactly with `\n---` and no trailing newline.
-            .or_else(|| if rest.ends_with("\n---") { Some(rest.len() - 4) } else { None })
+            .or_else(|| {
+                if rest.ends_with("\n---") {
+                    Some(rest.len() - 4)
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| {
                 "markdown frontmatter missing closing '---' on its own line".to_string()
             })?;

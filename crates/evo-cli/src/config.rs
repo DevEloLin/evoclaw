@@ -241,11 +241,7 @@ pub(crate) async fn ensure_layout() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let bp = evoclaw_dir()?.join("browser_profiles");
         if bp.exists() {
-            let _ = tokio::fs::set_permissions(
-                &bp,
-                std::fs::Permissions::from_mode(0o700),
-            )
-            .await;
+            let _ = tokio::fs::set_permissions(&bp, std::fs::Permissions::from_mode(0o700)).await;
         }
     }
 
@@ -258,12 +254,9 @@ pub(crate) async fn ensure_layout() -> Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(
-                &creds_path,
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .await
-            .wrap_err("chmod credentials.toml")?;
+            tokio::fs::set_permissions(&creds_path, std::fs::Permissions::from_mode(0o600))
+                .await
+                .wrap_err("chmod credentials.toml")?;
         }
     }
 
@@ -276,12 +269,9 @@ pub(crate) async fn ensure_layout() -> Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(
-                &policy_path,
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .await
-            .wrap_err("chmod policy.toml")?;
+            tokio::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o600))
+                .await
+                .wrap_err("chmod policy.toml")?;
         }
     }
 

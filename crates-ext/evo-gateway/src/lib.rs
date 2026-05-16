@@ -351,7 +351,8 @@ pub async fn handle_chat<P: Provider>(
     let session = Session::open(&log_path).await?;
     let memory = Memory::at(cfg.memory_dir.clone());
     let cost = Arc::new(CostEngine::at(cfg.cost_log.clone(), BudgetCfg::default()));
-    let policy_path = cfg.workspace
+    let policy_path = cfg
+        .workspace
         .parent()
         .map(|d| d.join("policy.toml"))
         .unwrap_or_else(|| cfg.workspace.join("policy.toml"));

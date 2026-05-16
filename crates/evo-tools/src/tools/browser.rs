@@ -4,8 +4,8 @@
 //! account profile is launched lazily on first use and reused across calls.
 //! Persistent profiles are stored under `{evoclaw_dir}/browser_profiles/`.
 
-use crate::tools::browser_profile::POOL;
 use crate::tools::browser_profile;
+use crate::tools::browser_profile::POOL;
 use crate::tools::login_detect::{classify, PageKind};
 use crate::tools::secret_inject::{load_secrets, resolve, Resolved};
 use crate::{smart_format, Tool, ToolContext, ToolError, ToolFactory};
@@ -30,11 +30,15 @@ pub struct BrowserNavigate;
 
 #[async_trait]
 impl Tool for BrowserNavigate {
-    fn name(&self) -> &str { "browser_navigate" }
+    fn name(&self) -> &str {
+        "browser_navigate"
+    }
     fn description(&self) -> &str {
         "Navigate headless browser to URL; return page text."
     }
-    fn permission(&self) -> Permission { Permission::P3 }
+    fn permission(&self) -> Permission {
+        Permission::P3
+    }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
@@ -71,12 +75,10 @@ impl Tool for BrowserNavigate {
             Arc::clone(&pool.get(key).unwrap().page)
         };
 
-        page
-            .goto(a.url.as_str())
+        page.goto(a.url.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("navigate: {e}")))?;
-        page
-            .wait_for_navigation()
+        page.wait_for_navigation()
             .await
             .map_err(|e| ToolError::Internal(format!("wait: {e}")))?;
 
@@ -114,7 +116,9 @@ impl Tool for BrowserNavigate {
     }
 }
 
-inventory::submit!(ToolFactory { build: || Box::new(BrowserNavigate) });
+inventory::submit!(ToolFactory {
+    build: || Box::new(BrowserNavigate)
+});
 
 // ---------------------------------------------------------------------------
 // browser_screenshot
@@ -132,11 +136,15 @@ pub struct BrowserScreenshot;
 
 #[async_trait]
 impl Tool for BrowserScreenshot {
-    fn name(&self) -> &str { "browser_screenshot" }
+    fn name(&self) -> &str {
+        "browser_screenshot"
+    }
     fn description(&self) -> &str {
         "Screenshot current page; save PNG to path, return path."
     }
-    fn permission(&self) -> Permission { Permission::P3 }
+    fn permission(&self) -> Permission {
+        Permission::P3
+    }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
@@ -156,7 +164,11 @@ impl Tool for BrowserScreenshot {
         let save_path = match a.path {
             Some(p) => {
                 let pb = std::path::PathBuf::from(&p);
-                if pb.is_absolute() { pb } else { ctx.workspace.join(pb) }
+                if pb.is_absolute() {
+                    pb
+                } else {
+                    ctx.workspace.join(pb)
+                }
             }
             None => ctx.workspace.join("screenshot.png"),
         };
@@ -190,7 +202,9 @@ impl Tool for BrowserScreenshot {
     }
 }
 
-inventory::submit!(ToolFactory { build: || Box::new(BrowserScreenshot) });
+inventory::submit!(ToolFactory {
+    build: || Box::new(BrowserScreenshot)
+});
 
 // ---------------------------------------------------------------------------
 // browser_click
@@ -205,11 +219,15 @@ pub struct BrowserClick;
 
 #[async_trait]
 impl Tool for BrowserClick {
-    fn name(&self) -> &str { "browser_click" }
+    fn name(&self) -> &str {
+        "browser_click"
+    }
     fn description(&self) -> &str {
         "Click element matching CSS selector in browser."
     }
-    fn permission(&self) -> Permission { Permission::P3 }
+    fn permission(&self) -> Permission {
+        Permission::P3
+    }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
@@ -240,8 +258,7 @@ impl Tool for BrowserClick {
             Arc::clone(&pool.get(key).unwrap().page)
         };
 
-        page
-            .find_element(a.selector.as_str())
+        page.find_element(a.selector.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("find '{}': {e}", a.selector)))?
             .click()
@@ -251,7 +268,9 @@ impl Tool for BrowserClick {
     }
 }
 
-inventory::submit!(ToolFactory { build: || Box::new(BrowserClick) });
+inventory::submit!(ToolFactory {
+    build: || Box::new(BrowserClick)
+});
 
 // ---------------------------------------------------------------------------
 // browser_type
@@ -269,11 +288,15 @@ pub struct BrowserType;
 
 #[async_trait]
 impl Tool for BrowserType {
-    fn name(&self) -> &str { "browser_type" }
+    fn name(&self) -> &str {
+        "browser_type"
+    }
     fn description(&self) -> &str {
         "Type text into form element matching CSS selector."
     }
-    fn permission(&self) -> Permission { Permission::P3 }
+    fn permission(&self) -> Permission {
+        Permission::P3
+    }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
@@ -336,8 +359,7 @@ impl Tool for BrowserType {
                 ))
                 .await;
         }
-        page
-            .find_element(a.selector.as_str())
+        page.find_element(a.selector.as_str())
             .await
             .map_err(|e| ToolError::Internal(format!("find '{}': {e}", a.selector)))?
             .type_str(real_text.as_str())
@@ -347,7 +369,9 @@ impl Tool for BrowserType {
     }
 }
 
-inventory::submit!(ToolFactory { build: || Box::new(BrowserType) });
+inventory::submit!(ToolFactory {
+    build: || Box::new(BrowserType)
+});
 
 // ---------------------------------------------------------------------------
 // browser_eval
@@ -362,11 +386,15 @@ pub struct BrowserEval;
 
 #[async_trait]
 impl Tool for BrowserEval {
-    fn name(&self) -> &str { "browser_eval" }
+    fn name(&self) -> &str {
+        "browser_eval"
+    }
     fn description(&self) -> &str {
         "Evaluate JavaScript in browser; return the result."
     }
-    fn permission(&self) -> Permission { Permission::P3 }
+    fn permission(&self) -> Permission {
+        Permission::P3
+    }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
@@ -407,7 +435,9 @@ impl Tool for BrowserEval {
     }
 }
 
-inventory::submit!(ToolFactory { build: || Box::new(BrowserEval) });
+inventory::submit!(ToolFactory {
+    build: || Box::new(BrowserEval)
+});
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -446,7 +476,12 @@ mod tests {
             &BrowserEval,
         ];
         for t in tools {
-            assert_eq!(t.permission(), Permission::P3, "{} should require P3", t.name());
+            assert_eq!(
+                t.permission(),
+                Permission::P3,
+                "{} should require P3",
+                t.name()
+            );
         }
     }
 }

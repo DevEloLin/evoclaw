@@ -352,11 +352,15 @@ mod tests {
 
     #[test]
     fn azure_builders_set_auth_header_and_query() {
-        let p = OpenAiCompatProvider::new("https://x.openai.azure.com/openai/deployments/d", "k", "d")
-            .with_header_auth("api-key")
-            .with_query("api-version", "2024-08-01-preview");
+        let p =
+            OpenAiCompatProvider::new("https://x.openai.azure.com/openai/deployments/d", "k", "d")
+                .with_header_auth("api-key")
+                .with_query("api-version", "2024-08-01-preview");
         assert_eq!(p.auth_header.as_deref(), Some("api-key"));
-        assert_eq!(p.query_params, vec![("api-version".to_string(), "2024-08-01-preview".to_string())]);
+        assert_eq!(
+            p.query_params,
+            vec![("api-version".to_string(), "2024-08-01-preview".to_string())]
+        );
     }
 
     #[test]
