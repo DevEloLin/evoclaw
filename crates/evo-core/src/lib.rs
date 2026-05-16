@@ -13,6 +13,7 @@ pub mod prompt;
 pub mod reflection;
 pub mod runtime;
 pub mod session;
+pub mod session_store;
 pub mod skill;
 pub mod skill_tree;
 pub mod slack;
