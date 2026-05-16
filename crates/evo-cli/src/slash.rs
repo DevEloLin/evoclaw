@@ -76,6 +76,11 @@ pub(crate) async fn handle_slash(rest: &str) -> Result<SlashOutcome> {
         "channel" => match args.as_slice() {
             [] | ["list"] => channel::channel_list().await?,
             ["run", kind] => {
+                // Note: the REPL `/channel run` shortcut is intentionally
+                // stateless — no per-cid session persistence. For
+                // multi-turn fans (typical of `evoclaw-plugin-wechat`),
+                // run the CLI form: `evoclaw channel run --kind <kind>
+                // --session-dir <path>`.
                 channel::channel_run(
                     kind,
                     channel::FastModeOpts::default(),

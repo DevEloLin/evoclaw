@@ -311,7 +311,13 @@ pub(crate) async fn channel_run(
     use evo_core::telegram::TelegramAdapter;
 
     ensure_layout().await?;
-    tokio::fs::create_dir_all(channels_dir()?).await.ok();
+    // Best-effort create; not strictly required for `channel run` itself
+    // (the channels dir holds user-defined `*.toml` adapter configs). A
+    // failure here is usually a permissions issue worth surfacing —
+    // previously this was `.ok()` and silently dropped, hiding the cause.
+    if let Err(e) = tokio::fs::create_dir_all(channels_dir()?).await {
+        tracing::warn!(error = %e, "could not create channels dir; continuing");
+    }
 
     // Build the session store once if --session-dir was passed; passing it
     // into each per-message handler by Arc avoids re-stat'ing the root dir
@@ -431,7 +437,7 @@ pub(crate) async fn channel_run_one_shot_text(
     let provider: Arc<dyn Provider> = if let Some(agent_id) = provider_id.strip_prefix("acp:") {
         let p = AcpProvider::spawn(agent_id)
             .await
-            .map_err(|e| eyre::eyre!("{e:#}"))?;
+            .map_err(|e| eyre::eyre!(e).wrap_err(format!("spawn ACP agent '{agent_id}'")))?;
         Arc::new(p)
     } else {
         match cfg.auth.parsed() {
@@ -483,7 +489,11 @@ pub(crate) async fn channel_run_one_shot_text(
         Arc::new(ToolRegistry::new())
     } else {
         let mut r = ToolRegistry::with_builtins();
-        let _attached = mcp_tools::install_all(&mut r).await;
+        let attached = mcp_tools::install_all(&mut r).await;
+        // Surface MCP attachment count so operators can tell whether a
+        // `mcp servers/*.toml` definition actually loaded (vs. silently
+        // failing with a typo or missing dependency).
+        tracing::debug!(attached, "channel: MCP tools attached to registry");
         Arc::new(r)
     };
     let task_id = format!("task-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f"));
