@@ -76,7 +76,15 @@ pub(crate) async fn get_or_create<'a>(
         pool.insert(key.clone(), session);
     }
 
-    Ok(pool.get(&key).unwrap())
+    // Logically unreachable (we either just inserted or it already
+    // existed), but defended explicitly so a future refactor that
+    // changes the insert path can't turn a missing-entry case into a
+    // process-killing panic.
+    pool.get(&key).ok_or_else(|| {
+        ToolError::Internal(
+            "browser profile pool entry vanished immediately after insert".into(),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -42,16 +42,22 @@ pub struct TelegramAdapter {
 
 impl TelegramAdapter {
     /// Construct with a resolved bot token string.
-    pub fn new(token: impl Into<String>) -> Self {
+    ///
+    /// Returns an error when the underlying reqwest client fails to
+    /// build — typically due to system TLS / OpenSSL misconfiguration.
+    /// Surfacing this through `Result` lets `evo channel run` print a
+    /// targeted diagnostic and exit cleanly instead of panicking the
+    /// whole runtime at startup.
+    pub fn new(token: impl Into<String>) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(POLL_SECS + 5))
             .build()
-            .expect("reqwest TLS client");
-        Self {
+            .wrap_err("build reqwest client for Telegram adapter")?;
+        Ok(Self {
             token: token.into(),
             client,
             offset: AtomicI64::new(0),
-        }
+        })
     }
 
     fn url(&self, method: &str) -> String {
@@ -214,14 +220,14 @@ mod tests {
 
     #[test]
     fn adapter_metadata() {
-        let a = TelegramAdapter::new("token");
+        let a = TelegramAdapter::new("token").expect("client builds on test host");
         assert_eq!(a.kind(), ChannelKind::Telegram);
         assert_eq!(a.name(), "telegram");
     }
 
     #[test]
     fn url_format() {
-        let a = TelegramAdapter::new("123:ABC");
+        let a = TelegramAdapter::new("123:ABC").expect("client builds on test host");
         assert_eq!(
             a.url("getUpdates"),
             "https://api.telegram.org/bot123:ABC/getUpdates"
