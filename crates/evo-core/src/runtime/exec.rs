@@ -87,8 +87,8 @@ impl<P: Provider + ?Sized> ConversationRuntime<P> {
                 acp_agent,
                 mcp_servers: self.config.mcp_servers.clone(),
                 skills_used: Vec::new(), // Reserved for future reflection-stage backfill.
-                                          // Today's audit trail relies on RecordedToolCall
-                                          // (grep for `"name":"load_skill"` in the JSONL).
+                // Today's audit trail relies on RecordedToolCall
+                // (grep for `"name":"load_skill"` in the JSONL).
                 started_at: Utc::now(),
             }))
             .await?;

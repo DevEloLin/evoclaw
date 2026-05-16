@@ -406,8 +406,14 @@ mod tests {
             "second run must extend history, not reset it ({after_first} → {after_second})"
         );
         let serialised = serde_json::to_string(&rt.history).unwrap();
-        assert!(serialised.contains("我叫李伟"), "first user msg must persist");
-        assert!(serialised.contains("我叫什么"), "second user msg must persist");
+        assert!(
+            serialised.contains("我叫李伟"),
+            "first user msg must persist"
+        );
+        assert!(
+            serialised.contains("我叫什么"),
+            "second user msg must persist"
+        );
     }
 
     #[tokio::test]

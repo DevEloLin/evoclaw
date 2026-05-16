@@ -246,7 +246,9 @@ notes: |
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("evo-playbook-{stamp}"));
         tokio::fs::create_dir_all(&dir).await.unwrap();
-        tokio::fs::write(dir.join("p1.yaml"), sample_yaml()).await.unwrap();
+        tokio::fs::write(dir.join("p1.yaml"), sample_yaml())
+            .await
+            .unwrap();
         let pb = Playbook::find(&dir, "p1").await.unwrap();
         assert_eq!(pb.id, "test");
     }
@@ -261,8 +263,12 @@ notes: |
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let yaml1 = sample_yaml().replace("id: test", "id: zeta");
         let yaml2 = sample_yaml().replace("id: test", "id: alpha");
-        tokio::fs::write(dir.join("zeta.yaml"), yaml1).await.unwrap();
-        tokio::fs::write(dir.join("alpha.yaml"), yaml2).await.unwrap();
+        tokio::fs::write(dir.join("zeta.yaml"), yaml1)
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("alpha.yaml"), yaml2)
+            .await
+            .unwrap();
         let pbs = Playbook::list_dir(&dir).await.unwrap();
         assert_eq!(pbs.len(), 2);
         assert_eq!(pbs[0].id, "alpha");

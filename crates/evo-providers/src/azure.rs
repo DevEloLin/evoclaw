@@ -107,7 +107,10 @@ mod tests {
     #[test]
     fn resource_root_gets_deployment_appended() {
         let base = resolve_base_url("https://myrsc.openai.azure.com", "gpt-4o");
-        assert_eq!(base, "https://myrsc.openai.azure.com/openai/deployments/gpt-4o");
+        assert_eq!(
+            base,
+            "https://myrsc.openai.azure.com/openai/deployments/gpt-4o"
+        );
     }
 
     #[test]
@@ -116,10 +119,16 @@ mod tests {
         // appended (Azure docs show it that way). The previous resolver
         // produced ".../openai/openai/deployments/..." → DeploymentNotFound.
         let base = resolve_base_url("https://myrsc.openai.azure.com/openai", "gpt-4o");
-        assert_eq!(base, "https://myrsc.openai.azure.com/openai/deployments/gpt-4o");
+        assert_eq!(
+            base,
+            "https://myrsc.openai.azure.com/openai/deployments/gpt-4o"
+        );
 
         let base = resolve_base_url("https://myrsc.openai.azure.com/openai/", "gpt-4o");
-        assert_eq!(base, "https://myrsc.openai.azure.com/openai/deployments/gpt-4o");
+        assert_eq!(
+            base,
+            "https://myrsc.openai.azure.com/openai/deployments/gpt-4o"
+        );
     }
 
     #[test]
@@ -128,7 +137,10 @@ mod tests {
             "https://myrsc.openai.azure.com/openai/deployments/gpt-4o",
             "ignored",
         );
-        assert_eq!(base, "https://myrsc.openai.azure.com/openai/deployments/gpt-4o");
+        assert_eq!(
+            base,
+            "https://myrsc.openai.azure.com/openai/deployments/gpt-4o"
+        );
     }
 
     #[test]
