@@ -38,8 +38,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Maximum cid length we accept on disk. Keeps filenames well under any
 /// reasonable filesystem `NAME_MAX` (typically 255) while leaving room for
-/// the `.jsonl` extension and tmp suffixes during atomic write.
-const MAX_CID_LEN: usize = 128;
+/// the `.jsonl` extension and tmp suffixes during atomic write. Plugin
+/// builders must enforce the same upper bound so they never produce a
+/// cid that this store rejects — see
+/// `evoclaw-plugin-wechat/src/wechat/handler.rs::build_conversation_id`.
+const MAX_CID_LEN: usize = 256;
+
+/// Cids beginning with this prefix bypass persistence entirely:
+/// `load` returns empty, `append_and_truncate` is a no-op, `purge` is a
+/// no-op. Used by callers (notably the WeChat plugin's intent
+/// classifier) for one-shot LLM calls whose "history" has no
+/// conversation continuity to preserve — without this hook those calls
+/// would write a fresh per-classification jsonl every time and clutter
+/// the session dir indefinitely.
+pub const EPHEMERAL_CID_PREFIX: &str = "_ephemeral_";
 
 /// Reusable persistent history store. Cheap to clone — only holds a
 /// `PathBuf` and a `usize`. Wrap in `Arc` when sharing across the channel
@@ -87,7 +99,13 @@ impl SessionStore {
     /// Individual malformed lines are skipped (with a `tracing::warn!`)
     /// rather than failing the whole load — one bad line shouldn't lose
     /// the user's entire memory.
+    ///
+    /// Cids starting with [`EPHEMERAL_CID_PREFIX`] return `Ok(vec![])`
+    /// without touching the filesystem.
     pub fn load(&self, cid: &str) -> io::Result<Vec<Message>> {
+        if cid.starts_with(EPHEMERAL_CID_PREFIX) {
+            return Ok(Vec::new());
+        }
         let path = self.path_for(cid)?;
         let file = match File::open(&path) {
             Ok(f) => f,
@@ -125,11 +143,17 @@ impl SessionStore {
     /// processes can't clash), fsynced, then renamed over the target.
     /// POSIX guarantees the rename is atomic, so a crash mid-write leaves
     /// either the old contents or the new — never a half-written file.
+    ///
+    /// Ephemeral cids (see [`EPHEMERAL_CID_PREFIX`]) are silently
+    /// dropped — no file is written.
     pub fn append_and_truncate(&self, cid: &str, history: &[Message]) -> io::Result<()> {
+        if cid.starts_with(EPHEMERAL_CID_PREFIX) {
+            return Ok(());
+        }
         let path = self.path_for(cid)?;
         let trimmed = truncate_to_pairs(history, self.max_turns);
         let mut buf = Vec::with_capacity(trimmed.len() * 128);
-        for msg in trimmed {
+        for msg in &trimmed {
             let line = serde_json::to_string(msg).map_err(io::Error::other)?;
             buf.extend_from_slice(line.as_bytes());
             buf.push(b'\n');
@@ -140,6 +164,9 @@ impl SessionStore {
     /// Delete a single user's history (e.g. GDPR right-to-forget). No-op
     /// when the file does not exist.
     pub fn purge(&self, cid: &str) -> io::Result<()> {
+        if cid.starts_with(EPHEMERAL_CID_PREFIX) {
+            return Ok(());
+        }
         let path = self.path_for(cid)?;
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -188,10 +215,17 @@ fn validate_cid(cid: &str) -> io::Result<()> {
 /// once we've kept `max_pairs` pairs. System messages and any pre-pair
 /// tail are left in place (they're cheap and lossy truncation in the
 /// middle is harder to reason about).
-fn truncate_to_pairs(history: &[Message], max_pairs: usize) -> &[Message] {
+/// Keep at most `max_pairs` user/assistant pairs (counted by Role::User
+/// occurrences). When truncating, the leading System message is
+/// **preserved** at index 0 so the loaded history is still legal as a
+/// runtime starting state — without that the runtime's
+/// `if self.history.is_empty()` branch in `runtime/exec.rs` would NOT
+/// fire (non-empty after truncation) and the LLM call would proceed
+/// without any system prompt at all.
+fn truncate_to_pairs(history: &[Message], max_pairs: usize) -> Vec<Message> {
     use evo_providers::Role;
     if max_pairs == 0 || history.is_empty() {
-        return history;
+        return history.to_vec();
     }
     let user_positions: Vec<usize> = history
         .iter()
@@ -199,16 +233,16 @@ fn truncate_to_pairs(history: &[Message], max_pairs: usize) -> &[Message] {
         .filter_map(|(i, m)| matches!(m.role, Role::User).then_some(i))
         .collect();
     if user_positions.len() <= max_pairs {
-        return history;
+        return history.to_vec();
     }
-    // Cut just before the user message that opens the oldest pair we
-    // want to keep. The leading system prompt (if any) is dropped along
-    // with the oldest pairs; the runtime's `if history.is_empty()` branch
-    // repopulates a fresh system prompt on the next run, so this is
-    // recoverable — and avoids needing to allocate a new Vec from a fn
-    // returning a borrowed slice.
     let cut_idx = user_positions[user_positions.len() - max_pairs];
-    &history[cut_idx..]
+    let preserve_sys = matches!(history.first().map(|m| &m.role), Some(Role::System));
+    let mut out = Vec::with_capacity(history.len() - cut_idx + usize::from(preserve_sys));
+    if preserve_sys && cut_idx > 0 {
+        out.push(history[0].clone());
+    }
+    out.extend_from_slice(&history[cut_idx..]);
+    out
 }
 
 /// Atomic write: tmp file with unique suffix → fsync → rename.
@@ -299,8 +333,6 @@ mod tests {
         // max_pairs = 5 (from store() helper)
         s.append_and_truncate("user_c", &h).unwrap();
         let loaded = s.load("user_c").unwrap();
-        // System message may or may not be preserved depending on truncation —
-        // the contract is "at most max_turns pairs", not "system preserved".
         let user_count = loaded.iter().filter(|m| m.role == Role::User).count();
         assert_eq!(user_count, 5, "should keep exactly max_turns user msgs");
         // The newest pair must be present.
@@ -308,6 +340,74 @@ mod tests {
         assert!(loaded.iter().any(|m| m.content == "a9"));
         // The oldest must be gone.
         assert!(!loaded.iter().any(|m| m.content == "q0"));
+    }
+
+    #[test]
+    fn truncation_preserves_leading_system_message() {
+        let (s, _root) = store("trunc-sys");
+        let mut h: Vec<Message> = vec![Message::system("sys-prompt-original")];
+        for i in 0..10 {
+            h.push(Message::user(format!("q{i}")));
+            h.push(Message::assistant(format!("a{i}")));
+        }
+        s.append_and_truncate("user_sys", &h).unwrap();
+        let loaded = s.load("user_sys").unwrap();
+        // The whole point of this fix: without it, the System message
+        // would be dropped and the next runtime turn would skip the
+        // `if history.is_empty()` system-prompt branch — leaving the
+        // LLM call with NO system context at all.
+        assert_eq!(
+            loaded.first().map(|m| &m.role),
+            Some(&Role::System),
+            "system message must survive truncation"
+        );
+        assert_eq!(loaded[0].content, "sys-prompt-original");
+    }
+
+    #[test]
+    fn ephemeral_cid_skips_load_and_save() {
+        let (s, root) = store("eph");
+        let cid = format!("{EPHEMERAL_CID_PREFIX}foo-123");
+        // Save: must be a no-op (no file created).
+        s.append_and_truncate(&cid, &[Message::user("ignore me")])
+            .unwrap();
+        // Load: must return empty.
+        let loaded = s.load(&cid).unwrap();
+        assert!(loaded.is_empty());
+        // Purge: must be a no-op (Ok even though file doesn't exist).
+        s.purge(&cid).unwrap();
+        // Confirm no shard dir was created for this cid.
+        // (root may have other shards from setup, so we just verify no
+        // file matches the ephemeral filename anywhere under root.)
+        let mut found = false;
+        for entry in walkdir(&root) {
+            let p = entry.display().to_string();
+            if p.contains(EPHEMERAL_CID_PREFIX) {
+                found = true;
+                break;
+            }
+        }
+        assert!(!found, "ephemeral cid leaked a file: {root:?}");
+    }
+
+    /// Minimal recursive lister for the ephemeral-cid test. Avoids adding
+    /// a walkdir dependency for one test.
+    fn walkdir(root: &std::path::Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(p) = stack.pop() {
+            if let Ok(rd) = std::fs::read_dir(&p) {
+                for entry in rd.flatten() {
+                    let pp = entry.path();
+                    if pp.is_dir() {
+                        stack.push(pp);
+                    } else {
+                        out.push(pp);
+                    }
+                }
+            }
+        }
+        out
     }
 
     #[test]
